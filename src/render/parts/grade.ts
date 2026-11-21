@@ -224,7 +224,30 @@ export function gradeComponent(c: Component, rocket: RocketModel): PartGrade {
   return { id: c.id, name: c.name, key: partKey(c), tier, reasons, external: isExternal(c) };
 }
 
-/** Grade every component, in model order. */
+/** A side body's own parts as a small rocket, so they can be graded and drawn like any other. */
+export function sideBodyModel(rocket: RocketModel, index: number): RocketModel {
+  const sb = (rocket.sideBodies ?? [])[index];
+  let maxRadius = 0;
+  for (const c of sb.components) {
+    if (c.kind === 'bodytube') maxRadius = Math.max(maxRadius, c.outerRadius);
+    else if (c.kind === 'nosecone') maxRadius = Math.max(maxRadius, c.baseRadius);
+    else if (c.kind === 'transition') maxRadius = Math.max(maxRadius, c.foreRadius, c.aftRadius);
+  }
+  return { name: sb.name, components: sb.components, length: rocket.length, maxRadius, stageCount: 1, warnings: rocket.warnings };
+}
+
+/**
+ * Grade every component: the main stack in model order, then each side body's parts.
+ * The first `rocket.components.length` entries line up with `rocket.components`.
+ */
 export function gradeRocket(rocket: RocketModel): PartGrade[] {
-  return rocket.components.map((c) => gradeComponent(c, rocket));
+  const out = rocket.components.map((c) => gradeComponent(c, rocket));
+  (rocket.sideBodies ?? []).forEach((sb, i) => {
+    const sub = sideBodyModel(rocket, i);
+    for (const c of sb.components) {
+      const g = gradeComponent(c, sub);
+      out.push({ ...g, name: `${sb.name}: ${c.name}${sb.count > 1 ? ` ×${sb.count}` : ''}` });
+    }
+  });
+  return out;
 }

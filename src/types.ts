@@ -181,7 +181,8 @@ export interface StageBoundary {
 
 /**
  * Bodies mounted beside the main stack: strap-on boosters, pods and tube fins.
- * They are drawn, but the flight model does not yet count their mass or drag.
+ * They fly as fixed parts of the rocket: mass, drag and lift are counted, motors
+ * inside them do not fire, and they do not separate.
  */
 export interface SideBody {
   id: string;

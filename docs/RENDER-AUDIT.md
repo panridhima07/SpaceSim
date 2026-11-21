@@ -31,9 +31,9 @@ A grade changes workmanship and detail only. Lengths, radii, chords, spans and s
 | Motor cluster | `clusterconfiguration` | tube count and layout, scale, rotation | every tube drawn; mass and thrust count one |
 | Protruding mount tube | `innertube` past the aft end | length and position | drawn when it sticks out |
 | Strap-on pod | builder part (`radialCount`) | radius, length, count, offset | drawn |
-| Parallel booster | `parallelstage` | whole side stack | **not supported**: warned, missing from model |
-| Pod set | `podset` | whole side stack | **not supported**: warned, missing from model |
-| Tube fins | `tubefinset` | ring fins | **not supported**: warned, missing from model |
+| Parallel booster | `parallelstage` | its own nose / tube / transition stack with fins and motors, instance count, angle, radial offset method, axial position | drawn and flown |
+| Pod set | `podset` | same as a booster | drawn and flown |
+| Tube fins | `tubefinset` | count, length, radius (explicit or automatic), rotation | drawn and flown |
 | Decals | `appearance/decal` | image wrapped on a part | not drawn (paint colour only) |
 
 Inside parts (cutaway view): inner tube, centering ring, bulkhead, tube coupler, engine block, nose and transition shoulders, mass component, shock cord, parachute, streamer.
@@ -54,7 +54,7 @@ Each reason is good, poor or a defect. One defect makes the part bad; otherwise 
 
 ## Mock imports
 
-`src/validate/mockOrk.ts` holds 59 hand-written designs, each with the result a correct import must give. The test also runs the five real OpenRocket sample files. Every design is parsed, built at all three grades plus the automatic one, with and without cutaway, and measured: no bad vertices, every outside part drawn, axial extent and radius of each part, fin tip radius and root contact, fittings outside the body, motor end, overall length.
+`src/validate/mockOrk.ts` holds 62 hand-written designs, each with the result a correct import must give. The test also runs the five real OpenRocket sample files. Every design is parsed, built at all three grades plus the automatic one, with and without cutaway, and measured: no bad vertices, every outside part drawn, axial extent and radius of each part, fin tip radius and root contact, fittings outside the body, motor end, overall length.
 
 ### Faults found and fixed
 
@@ -80,10 +80,11 @@ Each reason is good, poor or a defect. One defect makes the part bad; otherwise 
 | Gzip-compressed .ork files (OpenRocket 1.0–1.1) and UTF-16 files were read as garbage | mock | unpacked and decoded |
 | A zip with no design inside failed with "No `<rocket>` element"; a corrupt zip threw a raw library error | mock | clear messages |
 | Self-crossing or collapsed freeform fin outlines vanished silently | mock | warned |
+| Parallel boosters, pod sets and tube fins were dropped from the model | mock | read into `sideBodies` and drawn |
 
 ### Known gaps
 
-- **Parallel boosters, pod sets and tube fins** are skipped with a warning. They change the outside shape, so a file that uses them renders incomplete. Supporting them needs side-mounted bodies in `RocketModel` and in the aerodynamics.
+- **Boosters, pods and tube fins** fly as fixed parts of the rocket (`RocketModel.sideBodies`): mass, inertia, skin, nose and base drag are counted, and they leave with the stage they are mounted on. Their lift is an estimate: each booster's nose and fins lift as if alone (no interference), and tube fins use a slender-body enclosing-circle formula; neither has been checked against OpenRocket. Motors inside boosters do not fire, and boosters do not separate on their own. In the builder they stay where the file put them and cannot be edited. Tests: `src/physics/sideBodies.test.ts`.
 - **`RocketModel.length`** is the airframe length. Swept fin tips and motor overhang extend past it in the mesh, but the exhaust plume and the builder ruler still start from the airframe end.
 - **Tail cone aerodynamics** use the nose-cone formulas.
 - **Clusters** fly as one motor.

@@ -6,6 +6,8 @@ import type { Component, RocketModel } from '../types';
 import { buildRocketMesh, disposeGroup } from '../render/rocketMesh';
 import { PART_ICONS, PART_LABELS, partKey, type PartKindKey } from '../render/parts/grade';
 import { PART_TIERS, type PartTier } from '../render/parts/types';
+import { parseOrkXml } from '../ork/parser';
+import { MOCK_CASES } from '../validate/mockOrk';
 
 const R = 0.025;
 const base = { id: 'p', name: 'part', density: 0 };
@@ -110,3 +112,43 @@ for (const sample of SAMPLES) {
     cell.append(wrap);
   }
 }
+
+// ---------- Whole rockets with bodies beside the main stack ----------
+
+const wholeNames = ['boosters-with-fins-and-gap', 'pods', 'tube-fins-auto'];
+const wholeLabels = ['Strap-on boosters', 'Pod set', 'Tube fins'];
+const title = document.createElement('h1');
+title.textContent = 'Boosters, pods and tube fins';
+title.style.marginTop = '28px';
+const rowEl = document.createElement('div');
+rowEl.style.cssText = 'display:flex;gap:16px;flex-wrap:wrap;margin-top:10px';
+document.body.append(title, rowEl);
+
+wholeNames.forEach((name, i) => {
+  const rocket = parseOrkXml(MOCK_CASES.find((c) => c.name === name)!.xml);
+  const group = buildRocketMesh(rocket);
+  const scene = new THREE.Scene();
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 1.6));
+  const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+  sun.position.set(2, 3, 4);
+  scene.add(sun, group);
+  const box = new THREE.Box3().setFromObject(group);
+  const centre = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3()).length();
+  const cam = new THREE.PerspectiveCamera(30, W / H, size / 100, size * 20);
+  cam.position.copy(centre).addScaledVector(new THREE.Vector3(1.2, -0.9, 1.4).normalize(), size * 1.9);
+  cam.lookAt(centre);
+  renderer.render(scene, cam);
+  const fig = document.createElement('figure');
+  fig.style.margin = '0';
+  const img = document.createElement('img');
+  img.src = renderer.domElement.toDataURL('image/png');
+  img.alt = wholeLabels[i];
+  img.style.cssText = 'width:330px;height:225px;border-radius:8px;display:block';
+  const cap = document.createElement('figcaption');
+  cap.textContent = wholeLabels[i];
+  cap.style.cssText = 'color:var(--dim);margin-top:4px';
+  fig.append(img, cap);
+  rowEl.append(fig);
+  disposeGroup(group);
+});

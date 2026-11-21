@@ -9,7 +9,7 @@ import type { Component, FinSet, InnerTube, Ring, RocketModel } from '../types';
 import { buildFin, buildNoseCone, buildTransition } from './parts/aero';
 import { buildBodyTube, buildBoosterPod, buildLaunchLug, buildMotor, buildRailButton } from './parts/airframe';
 import { buildInnerTube, buildMass, buildPackedChute, buildRing } from './parts/internals';
-import { gradeRocket, isPod, type PartGrade } from './parts/grade';
+import { gradeRocket, isPod, sideBodyModel, type PartGrade } from './parts/grade';
 import { airframeOutline, surfaceRadiusAt } from './parts/profile';
 import { PART_COLORS, partMaterial, type PartContext, type PartTier } from './parts/types';
 
@@ -80,7 +80,9 @@ export function buildRocketMesh(rocket: RocketModel, opts: RocketMeshOptions = {
     if (typeof choice === 'string') return choice;
     return choice[c.id] ?? grades[i].tier;
   };
-  grades.forEach((g, i) => { g.tier = tierOf(i, rocket.components[i]); });
+  // Entries past the main stack belong to side bodies, in the same order they are drawn below.
+  const sideParts = (rocket.sideBodies ?? []).flatMap((sb) => sb.components);
+  grades.forEach((g, i) => { g.tier = tierOf(i, rocket.components[i] ?? sideParts[i - rocket.components.length]); });
   group.userData.grades = grades;
 
   const ctx: PartContext = {
@@ -216,6 +218,24 @@ export function buildRocketMesh(rocket: RocketModel, opts: RocketMeshOptions = {
       case 'parachute':
         if (cutaway) group.add(draw(buildPackedChute, c, tier));
         break;
+    }
+  });
+
+  // Boosters, pods and tube fins: each is its own small stack, repeated around the axis.
+  (rocket.sideBodies ?? []).forEach((sb, i) => {
+    const sub = sideBodyModel(rocket, i);
+    const tiers: Record<string, PartTier> = {};
+    for (const g of grades) tiers[g.id] = g.tier;
+    const body = buildRocketMesh(sub, { cutaway, tiers });
+    const count = Math.min(64, Math.max(1, Math.round(sb.count) || 1));
+    const offset = Number.isFinite(sb.radialOffset) ? sb.radialOffset : 0;
+    for (let k = 0; k < count; k++) {
+      // Same sense as fin and fitting angles: turning about +Y from the +X axis.
+      const ang = (Number.isFinite(sb.angle) ? sb.angle : 0) + (2 * Math.PI * k) / count;
+      const inst = k === 0 ? body : body.clone();
+      inst.position.set(offset * Math.cos(ang), 0, -offset * Math.sin(ang));
+      inst.userData.sideBody = sb.id;
+      group.add(inst);
     }
   });
   return group;

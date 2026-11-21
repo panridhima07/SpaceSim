@@ -115,10 +115,10 @@ function isVisibleOutside(c: Component): boolean {
   }
 }
 
-/** Aft-most station anything on the rocket reaches, including motor overhang. */
+/** Aft-most station anything on the rocket reaches, including motor overhang and side bodies. */
 export function trueAftStation(rocket: RocketModel): number {
   let aft = 0;
-  for (const c of rocket.components) {
+  for (const c of [...rocket.components, ...(rocket.sideBodies ?? []).flatMap((sb) => sb.components)]) {
     if (c.kind === 'nosecone' || c.kind === 'bodytube' || c.kind === 'transition') {
       aft = Math.max(aft, c.x + c.length);
     } else if (c.kind === 'finset') {
@@ -246,6 +246,47 @@ export function auditRender(rocket: RocketModel, root: THREE.Object3D, opts: Aud
     }
   }
 
+  // Side bodies: each part at its own station, the right distance from the axis, once per copy.
+  for (const sb of rocket.sideBodies ?? []) {
+    for (const c of sb.components) {
+      if (c.kind !== 'nosecone' && c.kind !== 'bodytube' && c.kind !== 'transition') continue;
+      const r = c.kind === 'nosecone' ? c.baseRadius : c.kind === 'bodytube' ? c.outerRadius : Math.max(c.foreRadius, c.aftRadius);
+      if (!(c.length > 0) || !(r > 0)) continue;
+      const label = `${sb.name} ${c.kind} "${c.name}"`;
+      const mine = (m: THREE.Mesh): boolean => (m.userData.component as Component | undefined)?.id === c.id && !isDetail(m);
+      const e = measure(root, mine);
+      if (e.vertices === 0) {
+        add('fault', 'not-drawn', c.id, `${label} is visible on the real rocket but nothing was drawn.`);
+        continue;
+      }
+      if (e.nan > 0) add('fault', 'nan-vertex', c.id, `${label}: ${e.nan} bad vertices.`);
+      if (!near(e.yMax, -c.x, scale, tol * 0.05) || !near(e.yMin, -(c.x + c.length), scale, tol * 0.05)) {
+        add('fault', 'axial-extent', c.id,
+          `${label} drawn from ${mm(-e.yMax)} to ${mm(-e.yMin)}, model says ${mm(c.x)} to ${mm(c.x + c.length)}.`);
+      }
+      const far = sb.radialOffset + r;
+      if (!near(e.rMax, far, far, tol)) {
+        add('fault', 'side-offset', c.id, `${label} reaches ${mm(e.rMax)} from the axis, model says ${mm(far)}.`);
+      }
+      if (sb.radialOffset > r && e.rMin < (sb.radialOffset - r) * (1 - tol) - 1e-6) {
+        add('fault', 'side-offset', c.id, `${label} comes within ${mm(e.rMin)} of the axis, model says ${mm(sb.radialOffset - r)}.`);
+      }
+      if (sb.radialOffset > 1e-6) {
+        const spots = new Set<string>();
+        const v = new THREE.Vector3();
+        root.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (!m.isMesh || !mine(m)) return;
+          m.getWorldPosition(v);
+          spots.add(`${v.x.toFixed(5)},${v.z.toFixed(5)}`);
+        });
+        if (spots.size !== sb.count) {
+          add('fault', 'side-count', c.id, `${label} drawn ${spots.size} times, model says ${sb.count}.`);
+        }
+      }
+    }
+  }
+
   if (whole.vertices > 0) {
     const aft = trueAftStation(rocket);
     if (!near(-whole.yMin, aft, scale, tol * 0.25)) {
@@ -254,7 +295,8 @@ export function auditRender(rocket: RocketModel, root: THREE.Object3D, opts: Aud
     if (whole.yMax > tol * 0.25 * scale) {
       const ahead = rocket.components.some((c) =>
         (c.kind === 'innertube' && (!!c.radialCount || c.x < 0)) || (c.kind === 'finset' && c.x + finAxialSpan(c)[0] < 0));
-      if (!ahead) add('fault', 'ahead-of-tip', '', `Geometry extends ${mm(whole.yMax)} ahead of the nose tip.`);
+      const sideAhead = (rocket.sideBodies ?? []).some((sb) => sb.components.some((c) => c.x < 0));
+      if (!ahead && !sideAhead) add('fault', 'ahead-of-tip', '', `Geometry extends ${mm(whole.yMax)} ahead of the nose tip.`);
     }
   }
 

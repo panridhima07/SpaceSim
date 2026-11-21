@@ -193,7 +193,7 @@ export function parseOrkXml(xml: string): RocketModel {
     sb.components.forEach((c, i) => { c.id = `s${k}_${i}`; });
   });
   if (sideBodies.length > 0) {
-    warnings.push(`${sideBodies.map((sb) => `"${sb.name}"`).join(', ')}: drawn in 3D, but the flight model does not yet count the mass or drag of boosters, pods and tube fins.`);
+    warnings.push(`${sideBodies.map((sb) => `"${sb.name}"`).join(', ')}: flown as fixed parts of the rocket. Their mass, drag and lift are counted (lift is an estimate); motors inside them do not fire and they do not separate.`);
   }
 
   return { name, components, length, maxRadius, stageCount, stages, warnings, ...(sideBodies.length > 0 ? { sideBodies } : {}) };

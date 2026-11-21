@@ -335,3 +335,74 @@ describe('speed', () => {
     expect(tris).toBeLessThan(400_000);
   });
 });
+
+// ---------- Bodies beside the main stack ----------
+
+describe('boosters, pods and tube fins', () => {
+  it('two boosters rest on the body surface, at the bottom', () => {
+    const m = one('strap-on-boosters');
+    const [sb] = m.sideBodies!;
+    expect(sb.type).toBe('booster');
+    expect(sb.count).toBe(2);
+    expect(sb.radialOffset).toBeCloseTo(0.025 + 0.012, 9); // surfaces touching
+    const [n, t] = sb.components;
+    expect(n.x).toBeCloseTo(0.4 - 0.19, 9); // 40 + 150 mm stack, aft ends level
+    expect(t.x + t.length).toBeCloseTo(0.4, 9);
+    // The main stack is untouched: boosters do not lengthen or widen it.
+    expect(m.length).toBeCloseTo(0.4, 9);
+    expect(m.maxRadius).toBeCloseTo(0.025, 9);
+    const g = buildRocketMesh(m, { tiers: 'ok' });
+    const e = measure(g, (x) => x.name === t.id);
+    expect(e.rMax).toBeCloseTo(0.025 + 0.024, 4);
+    expect(e.rMin).toBeCloseTo(0.025, 4);
+  });
+
+  it('boosters keep their gap, angle, fins and motors, and hang below the body', () => {
+    const m = one('boosters-with-fins-and-gap');
+    const [sb] = m.sideBodies!;
+    expect(sb.count).toBe(4);
+    expect(sb.radialOffset).toBeCloseTo(0.025 + 0.012 + 0.005, 9);
+    expect(sb.angle).toBeCloseTo(Math.PI / 4, 9);
+    expect(sb.components.map((c) => c.kind)).toEqual(['nosecone', 'bodytube', 'finset', 'innertube']);
+    expect((sb.components[0] as NoseCone).baseRadius).toBeCloseTo(0.012, 9); // automatic, from its tube
+    const g = buildRocketMesh(m, { tiers: 'ok' });
+    // Aft end 30 mm below the main body.
+    expect(-measure(g, (x) => x.name === sb.components[1].id).yMin).toBeCloseTo(0.43, 4);
+    // No booster sits on the +X axis: they are turned 45°.
+    const centres = meshesOf(g, sb.components[1].id).map((x) => x.getWorldPosition(new THREE.Vector3()));
+    expect(centres.length).toBe(4);
+    for (const c of centres) expect(Math.abs(Math.abs(c.x) - Math.abs(c.z))).toBeLessThan(1e-5);
+    // Booster fins are graded and drawn too.
+    expect(gradeRocket(m).some((x) => x.name.startsWith('Strap-ons: ') && x.key === 'finset')).toBe(true);
+    expect(meshesOf(g, sb.components[2].id).length).toBeGreaterThanOrEqual(12);
+  });
+
+  it('pods at a fixed radius sit where the file says', () => {
+    const m = one('pods-free-radius');
+    expect(m.sideBodies!.length).toBe(1);
+    const [sb] = m.sideBodies!;
+    expect(sb.type).toBe('pod');
+    expect(sb.radialOffset).toBeCloseTo(0.08, 9);
+    expect(sb.components[0].x).toBeCloseTo(0.1 + 0.05, 9);
+  });
+
+  it('tube fins lie against the body, and an automatic radius makes them touch', () => {
+    const fixed = one('tube-fins').sideBodies![0];
+    expect(fixed.type).toBe('tubefin');
+    expect(fixed.count).toBe(6);
+    expect(fixed.radialOffset).toBeCloseTo(0.025 + 0.0125, 9);
+    const auto = one('tube-fins-auto').sideBodies![0];
+    const r = (auto.components[0] as { outerRadius: number }).outerRadius;
+    // Six equal tubes around a tube all touch when they are the same size as it.
+    expect(r).toBeCloseTo(0.025, 9);
+    expect(2 * auto.radialOffset * Math.sin(Math.PI / 6)).toBeCloseTo(2 * r, 9);
+  });
+
+  it('side bodies survive a trip through the builder', async () => {
+    const { fromRocketModel, toRocketModel } = await import('../builder/design');
+    const m = one('strap-on-boosters');
+    const back = toRocketModel(fromRocketModel(m));
+    expect(back.sideBodies?.[0].count).toBe(2);
+    expect(faultsOf(back, ['auto'])).toEqual([]);
+  });
+});

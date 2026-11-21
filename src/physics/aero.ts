@@ -295,44 +295,54 @@ export function dragBreakdown(rocket: RocketModel, mach: number): DragBreakdown 
   let finTrailing = 0; // fin trailing-edge area, base-drag weight applied below
   let protrusionPressure = 0; // external rings (lugs, rail buttons), referenced to A
   let aftRadius = 0;
-  let aftX = -Infinity;
+  let sideBase = 0; // aft-facing area of side bodies, m^2
 
-  for (const c of rocket.components) {
+  /** Add one component, `n` times over. `aft` remembers the aft-most body radius of its stack. */
+  const addPart = (c: Component, n: number, aft: { x: number; r: number }, openTube: boolean): void => {
     switch (c.kind) {
       case 'nosecone': {
-        wettedBody += noseLateralArea(c);
+        wettedBody += n * noseLateralArea(c);
         if (c.shape === 'conical' && M >= 0 && c.length > 0 && c.baseRadius > 0) {
           // Conical nose pressure drag, 0.8 sin²(half-angle), referenced to the nose base.
           const half = Math.atan(c.baseRadius / c.length);
-          pressureNose += 0.8 * Math.sin(half) ** 2 * (c.baseRadius / maxR) ** 2;
+          pressureNose += n * 0.8 * Math.sin(half) ** 2 * (c.baseRadius / maxR) ** 2;
         }
-        if (c.x + c.length > aftX) {
-          aftX = c.x + c.length;
-          aftRadius = c.baseRadius;
+        if (c.x + c.length > aft.x) {
+          aft.x = c.x + c.length;
+          aft.r = c.baseRadius;
         }
         break;
       }
       case 'bodytube': {
-        wettedBody += 2 * PI * c.outerRadius * c.length;
-        if (c.x + c.length > aftX) {
-          aftX = c.x + c.length;
-          aftRadius = c.outerRadius;
+        if (openTube) {
+          // A tube fin is wetted inside and out; its blunt ends are thin rings.
+          const ri = Math.max(0, c.outerRadius - c.thickness);
+          wettedBody += n * 2 * PI * (c.outerRadius + ri) * c.length;
+          const rim = PI * (c.outerRadius * c.outerRadius - ri * ri);
+          protrusionPressure += (n * 0.8 * stagnationRatio(M) * rim) / A;
+          sideBase += n * rim;
+          break;
+        }
+        wettedBody += n * 2 * PI * c.outerRadius * c.length;
+        if (c.x + c.length > aft.x) {
+          aft.x = c.x + c.length;
+          aft.r = c.outerRadius;
         }
         break;
       }
       case 'transition': {
         const R1 = c.foreRadius;
         const R2 = c.aftRadius;
-        wettedBody += PI * (R1 + R2) * Math.sqrt((R1 - R2) ** 2 + c.length ** 2);
-        if (c.x + c.length > aftX) {
-          aftX = c.x + c.length;
-          aftRadius = c.aftRadius;
+        wettedBody += n * PI * (R1 + R2) * Math.sqrt((R1 - R2) ** 2 + c.length ** 2);
+        if (c.x + c.length > aft.x) {
+          aft.x = c.x + c.length;
+          aft.r = c.aftRadius;
         }
         break;
       }
       case 'finset': {
         const { area } = finPlanform(c);
-        const N = Math.max(0, c.count);
+        const N = Math.max(0, c.count) * n;
         const wetted = 2 * area * N;
         wettedFins += wetted;
         const mac = meanAerodynamicChord(c);
@@ -350,21 +360,33 @@ export function dragBreakdown(rocket: RocketModel, mach: number): DragBreakdown 
         // area (annulus for a tube, disc if solid) see the flow.
         const ro = c.outerRadius;
         const ri = Math.max(0, c.innerRadius);
-        wettedBody += 2 * PI * ro * c.length;
+        wettedBody += n * 2 * PI * ro * c.length;
         const frontalArea = ri > 0 ? PI * (ro * ro - ri * ri) : PI * ro * ro;
-        protrusionPressure += (0.8 * stagnationRatio(M) * frontalArea) / A;
+        protrusionPressure += (n * 0.8 * stagnationRatio(M) * frontalArea) / A;
         break;
       }
       default:
         break;
     }
+  };
+
+  const mainAft = { x: -Infinity, r: 0 };
+  for (const c of rocket.components) addPart(c, 1, mainAft, false);
+  aftRadius = mainAft.r;
+
+  // Boosters, pods and tube fins: their skin, noses, fins and blunt aft ends all drag.
+  for (const sb of rocket.sideBodies ?? []) {
+    const n = Math.max(1, Math.round(sb.count) || 1);
+    const aft = { x: -Infinity, r: 0 };
+    for (const c of sb.components) addPart(c, n, aft, sb.type === 'tubefin');
+    sideBase += n * PI * aft.r * aft.r;
   }
 
   // Skin friction: body (with fineness correction) plus fins, referenced to A.
   const friction = (cf * (bodyFactor * wettedBody + finFactorTerm)) / A;
 
   // Base drag on the full aft body disc plus the fin trailing-edge area.
-  const aftArea = PI * aftRadius * aftRadius + finTrailing;
+  const aftArea = PI * aftRadius * aftRadius + finTrailing + sideBase;
   const cdBase0 = M < 1 ? 0.12 + 0.13 * M * M : 0.25 / Math.max(M, 1e-6);
   const base = (cdBase0 * aftArea) / A;
 
@@ -427,6 +449,28 @@ export const aeroProps: AeroPropsFn = (rocket: RocketModel, mach: number, cgX: n
     }
   };
   for (const c of rocket.components) comp(c);
+
+  // Side bodies. Each copy's nose, transitions and fins lift as they would alone
+  // (Barrowman, no interference between neighbours). Tube fins use slender-body theory:
+  // the cluster lifts like the circle that encloses it, less the body it surrounds.
+  for (const sb of rocket.sideBodies ?? []) {
+    const n = Math.max(1, Math.round(sb.count) || 1);
+    if (sb.type === 'tubefin') {
+      const t = sb.components[0];
+      if (!t || t.kind !== 'bodytube' || !(maxR > 0)) continue;
+      const a = sb.radialOffset - t.outerRadius; // body radius the tubes sit on
+      const s = sb.radialOffset + t.outerRadius; // radius of the enclosing circle
+      const full = (2 * (s * s - a * a)) / (maxR * maxR);
+      comps.push({
+        cn: full * Math.min(1, n / 3) * compressibilityFactor(Math.max(0, mach)),
+        cp: t.x + t.length / 4,
+      });
+      continue;
+    }
+    const before = comps.length;
+    for (const c of sb.components) comp(c);
+    for (let k = before; k < comps.length; k++) comps[k].cn *= n;
+  }
 
   let cnAlpha = 0;
   let cpNum = 0;

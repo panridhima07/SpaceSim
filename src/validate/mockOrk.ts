@@ -230,7 +230,7 @@ export const MOCK_CASES: MockCase[] = [
     name: 'tube-fins',
     probes: 'tube fin set (ring fins)',
     xml: simple(nose() + tube({}, el('tubefinset', { fincount: 6, length: 0.06, radius: 0.0125, thickness: 0.0005 }, `${CARD}<position type="bottom">0.0</position>`))),
-    expect: { warns: 'tubefinset' },
+    expect: { warns: 'flown as fixed parts' },
   },
 
   // ---------- External fittings ----------
@@ -289,13 +289,30 @@ export const MOCK_CASES: MockCase[] = [
     name: 'strap-on-boosters',
     probes: 'parallel boosters (OpenRocket 22+ <parallelstage>)',
     xml: simple(nose() + tube({}, `<parallelstage><name>Boosters</name><instancecount>2</instancecount><radiusoffset method="surface">0.0</radiusoffset><angleoffset method="relative">0.0</angleoffset><axialoffset method="bottom">0.0</axialoffset><subcomponents>${nose({ aftradius: 0.012, length: 0.04 })}${tube({ radius: 0.012, length: 0.15 })}</subcomponents></parallelstage>`)),
-    expect: { warns: 'parallelstage' },
+    expect: { warns: 'flown as fixed parts' },
   },
   {
     name: 'pods',
     probes: 'pod set with a body inside',
     xml: simple(nose() + tube({}, `<podset><name>Pods</name><instancecount>3</instancecount><radiusoffset method="surface">0.0</radiusoffset><axialoffset method="bottom">0.0</axialoffset><subcomponents>${nose({ aftradius: 0.008, length: 0.03 })}${tube({ radius: 0.008, length: 0.08 })}</subcomponents></podset>`)),
-    expect: { warns: 'podset' },
+    expect: { warns: 'flown as fixed parts' },
+  },
+  {
+    name: 'boosters-with-fins-and-gap',
+    probes: 'four boosters with their own fins and motor mounts, held 5 mm off the body, hanging 30 mm below it',
+    xml: simple(nose() + tube({}, `<parallelstage><name>Strap-ons</name><instancecount>4</instancecount><radiusoffset method="relative">0.005</radiusoffset><angleoffset method="relative">45.0</angleoffset><axialoffset method="bottom">0.03</axialoffset><subcomponents>${nose({ aftradius: 'auto', length: 0.04 })}${tube({ radius: 0.012, length: 0.15 }, fins({ rootchord: 0.04, tipchord: 0.02, height: 0.02, sweeplength: 0.01 }) + mount({ outerradius: 0.0095 }))}</subcomponents></parallelstage>`)),
+    expect: { length: 0.4, warns: 'flown as fixed parts' },
+  },
+  {
+    name: 'pods-free-radius',
+    probes: 'pods placed at a fixed distance from the axis, and an empty pod set',
+    xml: simple(nose() + tube({}, `<podset><name>Wing pods</name><instancecount>2</instancecount><radiusoffset method="free">0.08</radiusoffset><axialoffset method="top">0.05</axialoffset><subcomponents>${tube({ radius: 0.01, length: 0.1 })}</subcomponents></podset><podset><name>Empty pods</name><instancecount>2</instancecount></podset>`)),
+    expect: { warns: 'no body parts' },
+  },
+  {
+    name: 'tube-fins-auto',
+    probes: 'tube fins with an automatic radius: six tubes that just touch around the body',
+    xml: simple(nose() + tube({}, el('tubefinset', { fincount: 6, length: 0.06, radius: 'auto', thickness: 0.0005 }, `${CARD}<position type="bottom">0.0</position>`))),
   },
 
   // ---------- Appearance ----------

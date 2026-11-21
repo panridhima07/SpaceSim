@@ -2,6 +2,7 @@
 // Pure TypeScript — no DOM, no three.js. Converts to/from src/types.ts RocketModel.
 
 import type {
+  SideBody,
   BodyTube,
   Component,
   FinSet,
@@ -399,6 +400,7 @@ export function toRocketModel(design: Design): RocketModel {
     stageCount: stages ? stages.length : 1,
     ...(stages ? { stages } : {}),
     warnings: [],
+    ...(design.sideBodies && design.sideBodies.length > 0 ? { sideBodies: design.sideBodies } : {}),
   };
 }
 
@@ -475,6 +477,7 @@ export function fromRocketModel(rocket: RocketModel): Design {
     name: rocket.name || 'Imported Rocket',
     stack,
     nextId,
+    ...(rocket.sideBodies && rocket.sideBodies.length > 0 ? { sideBodies: rocket.sideBodies } : {}),
   };
 }
 

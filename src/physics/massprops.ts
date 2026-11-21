@@ -342,6 +342,35 @@ function motorParts(rocket: RocketModel, motor: Motor, tBurn: number): Part[] {
   return parts;
 }
 
+// ---------- Boosters, pods and tube fins ----------
+
+/**
+ * Mass elements of every side body. Each copy has the mass of its own parts; `count`
+ * copies sit `radialOffset` from the axis, which adds m·d² to roll inertia and, for
+ * copies spread evenly around the axis, m·d²/2 to pitch inertia.
+ */
+function sideBodyParts(rocket: RocketModel): Part[] {
+  const out: Part[] = [];
+  for (const sb of rocket.sideBodies ?? []) {
+    const n = Math.max(1, Math.round(sb.count) || 1);
+    const d2 = sb.radialOffset * sb.radialOffset;
+    for (const c of sb.components) {
+      for (const p of componentParts(c)) {
+        if (!(p.m > 0) || !Number.isFinite(p.m)) continue;
+        const m = p.m * n;
+        out.push({
+          m,
+          cg: p.cg,
+          ownPitch: p.ownPitch * n,
+          roll: p.roll * n + m * d2,
+          radialPitch: p.radialPitch * n + (m * d2) / 2,
+        });
+      }
+    }
+  }
+  return out;
+}
+
 // ---------- Totals ----------
 
 export const massProps: MassPropsFn = (
@@ -374,6 +403,7 @@ export const massProps: MassPropsFn = (
       parts.push(...componentParts(c));
     }
   }
+  parts.push(...sideBodyParts(rocket));
   if (motor) {
     parts.push(...motorParts(rocket, motor, tBurn));
   }

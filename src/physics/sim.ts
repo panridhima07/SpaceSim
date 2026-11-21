@@ -505,7 +505,13 @@ export function createSim(
           else if (c.kind === 'bodytube') newMaxR = Math.max(newMaxR, c.outerRadius);
           else if (c.kind === 'transition') newMaxR = Math.max(newMaxR, c.foreRadius, c.aftRadius);
         }
-        activeRocket = { ...activeRocket, components: kept, length: newLen, maxRadius: newMaxR };
+        // Boosters, pods and tube fins leave with the stage they are mounted on.
+        const keptSide = (activeRocket.sideBodies ?? []).filter((sb) => {
+          const x0 = Math.min(...sb.components.map((c) => c.x));
+          const x1 = Math.max(...sb.components.map((c) => c.x + c.length));
+          return (x0 + x1) / 2 <= newLen;
+        });
+        activeRocket = { ...activeRocket, components: kept, length: newLen, maxRadius: newMaxR, sideBodies: keptSide };
         const keptSet = new Set<Component>(kept);
         for (let ci = chutes.length - 1; ci >= 0; ci--) {
           if (!keptSet.has(chutes[ci].chute)) chutes.splice(ci, 1);
