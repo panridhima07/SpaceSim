@@ -26,6 +26,18 @@ export interface UICallbacks {
   onBuild?(): void;
 }
 
+/** One component's build-quality grade, as listed in the UI. */
+export interface PartInfo {
+  name: string;
+  /** Kind of part, e.g. "Fin set". */
+  label: string;
+  tier: 'best' | 'ok' | 'bad';
+  /** Trusted inline SVG for this kind at this tier. */
+  icon: string;
+  /** Why it got this grade. */
+  reasons: string[];
+}
+
 export interface RocketInfo {
   name: string;
   length: number;
@@ -34,6 +46,8 @@ export interface RocketInfo {
   stabilityCal: number;
   motor: string | null;
   warnings: string[];
+  /** Grade of every part visible on the outside, fore to aft. */
+  parts?: PartInfo[];
 }
 
 export interface UI {

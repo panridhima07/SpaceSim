@@ -2,7 +2,8 @@
 // Every check is geometric: it reads vertex positions, never the builder's own inputs.
 
 import * as THREE from 'three';
-import type { Component, RocketModel } from '../types';
+import type { Component, FinSet, RocketModel } from '../types';
+import { airframeOutline, surfaceRadiusAt } from '../render/parts/profile';
 
 export type FindingLevel = 'fault' | 'warn';
 
@@ -71,20 +72,31 @@ function near(a: number, b: number, scale: number, tol: number): boolean {
 
 const mm = (v: number): string => `${(v * 1000).toFixed(2)} mm`;
 
-/** Outer radius of the airframe at a station, from the external parts. NaN off the rocket. */
+/** Outer radius of the airframe at a station. NaN off the rocket. */
 export function bodyRadiusAt(rocket: RocketModel, x: number): number {
-  let best = NaN;
-  for (const c of rocket.components) {
-    if (c.kind !== 'nosecone' && c.kind !== 'bodytube' && c.kind !== 'transition') continue;
-    if (x < c.x - 1e-9 || x > c.x + c.length + 1e-9 || !(c.length > 0)) continue;
-    const u = (x - c.x) / c.length;
-    let r: number;
-    if (c.kind === 'bodytube') r = c.outerRadius;
-    else if (c.kind === 'transition') r = c.foreRadius + (c.aftRadius - c.foreRadius) * u;
-    else r = c.baseRadius * (c.flipped ? 1 - u : u); // linear estimate; only used for mounts
-    if (!(r >= best)) best = Number.isNaN(best) ? r : Math.max(best, r);
+  return surfaceRadiusAt(airframeOutline(rocket), x);
+}
+
+/** Area of one fin's outline, m^2. Zero for a fin that cannot be drawn. */
+function planformArea(c: FinSet): number {
+  if (c.finShape === 'freeform') {
+    const p = c.points ?? [];
+    if (p.length < 3) return 0;
+    let a = 0;
+    for (let i = 0; i < p.length; i++) a += p[i][0] * p[(i + 1) % p.length][1] - p[(i + 1) % p.length][0] * p[i][1];
+    return Math.abs(a) / 2;
   }
-  return best;
+  if (c.finShape === 'elliptical') return (Math.PI / 4) * c.rootChord * c.span;
+  return 0.5 * (c.rootChord + c.tipChord) * c.span;
+}
+
+/** Axial span of one fin's outline, metres aft of the root leading edge: [fore, aft]. */
+function finAxialSpan(c: FinSet): [number, number] {
+  if (c.finShape === 'freeform' && c.points && c.points.length >= 3) {
+    return [Math.min(...c.points.map((q) => q[0])), Math.max(...c.points.map((q) => q[0]))];
+  }
+  if (c.finShape === 'elliptical') return [0, c.rootChord];
+  return [Math.min(0, c.sweepLength), Math.max(c.rootChord, c.sweepLength + c.tipChord)];
 }
 
 function isVisibleOutside(c: Component): boolean {
@@ -110,9 +122,10 @@ export function trueAftStation(rocket: RocketModel): number {
     if (c.kind === 'nosecone' || c.kind === 'bodytube' || c.kind === 'transition') {
       aft = Math.max(aft, c.x + c.length);
     } else if (c.kind === 'finset') {
-      aft = Math.max(aft, c.x + Math.max(c.rootChord, c.sweepLength + c.tipChord));
-    } else if (c.kind === 'innertube' && c.isMotorMount && c.motor) {
-      aft = Math.max(aft, c.x + c.length + c.overhang);
+      if (c.span > 0 && c.rootChord > 0) aft = Math.max(aft, c.x + finAxialSpan(c)[1]);
+    } else if (c.kind === 'innertube') {
+      // A tube or motor that sticks out of the back of the airframe is part of the outside.
+      aft = Math.max(aft, c.x + c.length + (c.isMotorMount && c.motor ? Math.max(0, c.overhang) : 0));
     }
   }
   return aft;
@@ -134,7 +147,11 @@ export function auditRender(rocket: RocketModel, root: THREE.Object3D, opts: Aud
     out.push({ level, code, component, detail });
   };
 
-  const whole = measure(root, (m) => !!m.userData.component);
+  const whole = measure(root, (m) => {
+    const c = m.userData.component as Component | undefined;
+    // Parts inside the body may legitimately be placed anywhere; only the outside defines the envelope.
+    return !!c && (isVisibleOutside(c) || c.kind === 'innertube');
+  });
   if (whole.nan > 0) add('fault', 'nan-vertex', '', `${whole.nan} vertices are NaN or infinite.`);
   if (whole.triangles > (opts.maxTriangles ?? 400_000)) {
     add('warn', 'triangle-budget', '', `${whole.triangles} triangles in one rocket.`);
@@ -151,7 +168,8 @@ export function auditRender(rocket: RocketModel, root: THREE.Object3D, opts: Aud
     const drawn = core.vertices > 0;
     const shouldDraw = isVisibleOutside(c) || !!opts.cutaway;
     if (!drawn) {
-      const degenerate = !(c.length > 0) && c.kind !== 'mass' && c.kind !== 'parachute';
+      const degenerate = (!(c.length > 0) && c.kind !== 'mass' && c.kind !== 'parachute') ||
+        (c.kind === 'finset' && !(planformArea(c) > 1e-10));
       if (shouldDraw && isVisibleOutside(c) && !degenerate) {
         add('fault', 'not-drawn', c.id, `${label} is visible on the real rocket but nothing was drawn.`);
       }
@@ -182,22 +200,26 @@ export function auditRender(rocket: RocketModel, root: THREE.Object3D, opts: Aud
         if (Math.abs(core.rMax - tipR) > tol * tipR + slack) {
           add('fault', 'fin-span', c.id, `${label} tip at ${mm(core.rMax)} radius, model says ${mm(tipR)}.`);
         }
-        if (!c.cant && !near(core.yMax, -c.x, scale, tol * 0.05)) {
-          add('fault', 'fin-station', c.id, `${label} leading edge at ${mm(-core.yMax)}, model says ${mm(c.x)}.`);
+        const [foreA, aftA] = finAxialSpan(c);
+        if (!c.cant && !near(core.yMax, -(c.x + foreA), scale, tol * 0.05)) {
+          add('fault', 'fin-station', c.id, `${label} foremost point at ${mm(-core.yMax)}, model says ${mm(c.x + foreA)}.`);
         }
-        const mid = c.x + c.rootChord / 2;
-        const surface = bodyRadiusAt(rocket, mid);
-        const fore = bodyRadiusAt(rocket, c.x);
-        const aft = bodyRadiusAt(rocket, c.x + c.rootChord);
-        if (Number.isNaN(surface)) {
-          add('warn', 'fin-off-body', c.id, `${label} sits at station ${mm(mid)}, beyond the airframe.`);
-        } else {
-          const worst = [fore, surface, aft].filter((v) => !Number.isNaN(v))
-            .reduce((m, v) => Math.max(m, Math.abs(v - c.bodyRadius)), 0);
-          if (worst > Math.max(tol * c.bodyRadius, 2e-4)) {
-            add('fault', 'fin-root-gap', c.id,
-              `${label} root is drawn at ${mm(c.bodyRadius)} radius but the body there is ${mm(fore)}–${mm(aft)}: the fin floats or is buried by up to ${mm(worst)}.`);
-          }
+        if (!c.cant && !near(core.yMin, -(c.x + aftA), scale, tol * 0.05)) {
+          add('fault', 'fin-station', c.id, `${label} aftmost point at ${mm(-core.yMin)}, model says ${mm(c.x + aftA)}.`);
+        }
+        // The root must reach the body surface along its whole length.
+        let lowest = Infinity;
+        let off = 0;
+        for (let k = 0; k <= 8; k++) {
+          const r = bodyRadiusAt(rocket, c.x + (c.rootChord * k) / 8);
+          if (Number.isNaN(r)) off++;
+          else lowest = Math.min(lowest, r);
+        }
+        if (off === 9) {
+          add('warn', 'fin-off-body', c.id, `${label} sits at station ${mm(c.x)}, beyond the airframe.`);
+        } else if (core.rMin > lowest + Math.max(tol * lowest, 2e-4)) {
+          add('fault', 'fin-root-gap', c.id,
+            `${label} root stops at ${mm(core.rMin)} radius but the body under it narrows to ${mm(lowest)}: a ${mm(core.rMin - lowest)} gap shows.`);
         }
         break;
       }
@@ -211,8 +233,8 @@ export function auditRender(rocket: RocketModel, root: THREE.Object3D, opts: Aud
         break;
       }
       case 'innertube': {
-        if (c.isMotorMount && c.motor && !opts.cutaway) {
-          const aft = c.x + c.length + c.overhang;
+        if (c.isMotorMount && c.motor) {
+          const aft = c.x + c.length + Math.max(0, c.overhang);
           if (core.yMin < -aft - tol * 0.05 * scale) {
             add('fault', 'motor-extent', c.id, `${label} motor drawn to ${mm(-core.yMin)}, model says ${mm(aft)}.`);
           }
@@ -230,8 +252,9 @@ export function auditRender(rocket: RocketModel, root: THREE.Object3D, opts: Aud
       add('fault', 'overall-length', '', `Rocket drawn ${mm(-whole.yMin)} long, real aft end is at ${mm(aft)}.`);
     }
     if (whole.yMax > tol * 0.25 * scale) {
-      const pods = rocket.components.some((c) => c.kind === 'innertube' && !!c.radialCount);
-      if (!pods) add('fault', 'ahead-of-tip', '', `Geometry extends ${mm(whole.yMax)} ahead of the nose tip.`);
+      const ahead = rocket.components.some((c) =>
+        (c.kind === 'innertube' && (!!c.radialCount || c.x < 0)) || (c.kind === 'finset' && c.x + finAxialSpan(c)[0] < 0));
+      if (!ahead) add('fault', 'ahead-of-tip', '', `Geometry extends ${mm(whole.yMax)} ahead of the nose tip.`);
     }
   }
 

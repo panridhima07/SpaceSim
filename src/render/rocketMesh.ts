@@ -5,159 +5,52 @@
 // Units are metres, not rescaled.
 
 import * as THREE from 'three';
-import type {
-  Component, FinSet, InnerTube, MassComponent, NoseCone, NoseShape, Parachute,
-  Ring, RocketModel, BodyTube, Transition,
-} from '../types';
+import type { Component, FinSet, InnerTube, Ring, RocketModel } from '../types';
+import { buildFin, buildNoseCone, buildTransition } from './parts/aero';
+import { buildBodyTube, buildBoosterPod, buildLaunchLug, buildMotor, buildRailButton } from './parts/airframe';
+import { buildInnerTube, buildMass, buildPackedChute, buildRing } from './parts/internals';
+import { gradeRocket, isPod, type PartGrade } from './parts/grade';
+import { airframeOutline, surfaceRadiusAt } from './parts/profile';
+import { PART_COLORS, partMaterial, type PartContext, type PartTier } from './parts/types';
 
-const COLORS = {
-  nose: 0xe2552f,
-  tube: 0xf2f1ec,
-  decoupler: 0xd9a426,
-  fin: 0x2b3440,
-  transition: 0x8a9099,
-  ring: 0xc9c5b8,
-  mass: 0x1d1f24,
-  chute: 0xf0622a,
-};
+export { noseProfile } from './parts/profile';
+export type { PartTier } from './parts/types';
 
-const RADIAL_SEGMENTS = 48;
-const NOSE_POINTS = 64;
-const CUTAWAY_OPACITY = 0.25;
-
-// ---------- Nose profile ----------
-
-function clamp(v: number, lo: number, hi: number): number {
-  return Math.min(hi, Math.max(lo, v));
+export interface RocketMeshOptions {
+  cutaway?: boolean;
+  /**
+   * Which design each part is drawn with. 'auto' (default) grades every part from the
+   * design data; a tier name forces all parts; a map sets parts by component id and
+   * grades the rest.
+   */
+  tiers?: 'auto' | PartTier | Record<string, PartTier>;
 }
 
-function noseRadius(shape: NoseShape, shapeParam: number, R: number, L: number, s: number): number {
-  const u = s / L;
-  switch (shape) {
-    case 'conical':
-      return R * u;
-    case 'ogive': {
-      const rho = (R * R + L * L) / (2 * R);
-      return Math.sqrt(Math.max(0, rho * rho - (L - s) * (L - s))) + R - rho;
-    }
-    case 'ellipsoid': {
-      const q = (L - s) / L;
-      return R * Math.sqrt(Math.max(0, 1 - q * q));
-    }
-    case 'power': {
-      const p = shapeParam || 0.5;
-      return R * Math.pow(u, p);
-    }
-    case 'parabolic': {
-      const K = shapeParam;
-      return (R * (2 * u - K * u * u)) / (2 - K);
-    }
-    case 'haack': {
-      const C = shapeParam;
-      const th = Math.acos(clamp(1 - 2 * u, -1, 1));
-      const val = (th - Math.sin(2 * th) / 2 + C * Math.pow(Math.sin(th), 3)) / Math.PI;
-      return R * Math.sqrt(Math.max(0, val));
-    }
-    default:
-      return R * u;
-  }
-}
+/** Thickness drawn for a fin whose file gives none, metres. */
+const MIN_FIN_THICKNESS = 2e-4;
 
-/** Nose profile as [s, r] pairs, s from the tip (0) to the base (L), n points. */
-export function noseProfile(
-  shape: NoseShape,
-  shapeParam: number,
-  R: number,
-  L: number,
-  n: number,
-): [number, number][] {
-  const count = Math.max(2, Math.floor(n));
-  if (!(L > 0) || !(R > 0)) return [[0, 0], [Math.max(L, 0), Math.max(R, 0)]];
-  const out: [number, number][] = [];
-  for (let i = 0; i < count; i++) {
-    const s = (L * i) / (count - 1);
-    out.push([s, noseRadius(shape, shapeParam, R, L, s)]);
-  }
-  return out;
-}
-
-// ---------- Materials and helpers ----------
-
-function makeMaterial(color: number, transparent: boolean): THREE.MeshStandardMaterial {
-  const m = new THREE.MeshStandardMaterial({
-    color,
-    roughness: 0.45,
-    metalness: 0.05,
-    side: THREE.DoubleSide,
+/** Name every mesh after its component so picking and highlighting find it. */
+function tag(obj: THREE.Object3D, c: Component): THREE.Object3D {
+  obj.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh) {
+      o.name = c.id;
+      o.userData.component = c;
+    }
   });
-  if (transparent) {
-    m.transparent = true;
-    m.opacity = CUTAWAY_OPACITY;
-    m.depthWrite = false;
-  }
-  return m;
+  return obj;
 }
 
-function addMesh(
-  parent: THREE.Group,
-  geometry: THREE.BufferGeometry,
-  material: THREE.Material,
-  component: Component,
-): THREE.Mesh {
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.name = component.id;
-  mesh.userData.component = component;
-  parent.add(mesh);
-  return mesh;
-}
-
-/** Open-ended cylinder whose fore end is at station x. */
-function tubeGeometry(rTop: number, rBottom: number, x: number, length: number): THREE.BufferGeometry {
-  const g = new THREE.CylinderGeometry(rTop, rBottom, length, RADIAL_SEGMENTS, 1, true);
-  g.translate(0, -(x + length / 2), 0);
-  return g;
-}
-
-/** Closed solid cylinder (for masses and chutes). */
-function solidCylinderGeometry(radius: number, x: number, length: number): THREE.BufferGeometry {
-  const g = new THREE.CylinderGeometry(radius, radius, length, 32, 1, false);
-  g.translate(0, -(x + length / 2), 0);
-  return g;
-}
-
-// ---------- Fins ----------
-
-function finPlanform(c: FinSet): THREE.Vector2[] {
-  if (c.finShape === 'freeform' && c.points && c.points.length >= 3) {
-    return c.points.map(([a, r]) => new THREE.Vector2(a, r));
-  }
-  if (c.finShape === 'elliptical') {
-    const pts: THREE.Vector2[] = [];
-    const n = 40;
-    const half = c.rootChord / 2;
-    for (let k = 0; k <= n; k++) {
-      const th = (Math.PI * k) / n;
-      pts.push(new THREE.Vector2(half - half * Math.cos(th), c.span * Math.sin(th)));
-    }
-    return pts;
-  }
-  // trapezoid (also the fallback for freeform without points)
-  return [
-    new THREE.Vector2(0, 0),
-    new THREE.Vector2(c.sweepLength, c.span),
-    new THREE.Vector2(c.sweepLength + c.tipChord, c.span),
-    new THREE.Vector2(c.rootChord, 0),
-  ];
-}
-
-function buildFinGeometry(c: FinSet): THREE.BufferGeometry {
+/**
+ * A flat slab in a fin's plane: `outline` is [axial aft of the root leading edge,
+ * radial from the fin's mounting radius] in metres. Used for the parts of a fin that
+ * lie below its root line.
+ */
+function finPlaneSlab(c: FinSet, outline: [number, number][], ctx: PartContext): THREE.Mesh | null {
   const t = Math.max(c.thickness, 1e-4);
-  const shape = new THREE.Shape(finPlanform(c));
+  if (outline.length < 3 || outline.some(([a, r]) => !Number.isFinite(a) || !Number.isFinite(r))) return null;
+  const shape = new THREE.Shape(outline.map(([a, r]) => new THREE.Vector2(a, r)));
   const geom = new THREE.ExtrudeGeometry(shape, { depth: t, bevelEnabled: false, steps: 1 });
-  // Centre on the fin plane thickness.
   geom.translate(0, 0, -t / 2);
-  // Shape x (axial, aft) -> -Y ; shape y (radial) -> +X ; extrude z -> +Z.
-  // Root leading edge sits at station x on the body surface.
   const basis = new THREE.Matrix4().makeBasis(
     new THREE.Vector3(0, -1, 0),
     new THREE.Vector3(1, 0, 0),
@@ -165,138 +58,166 @@ function buildFinGeometry(c: FinSet): THREE.BufferGeometry {
   );
   basis.setPosition(c.bodyRadius, -c.x, 0);
   geom.applyMatrix4(basis);
-
-  // Cant: rotate about the fin's radial axis through the middle of the root chord.
-  if (c.cant) {
-    const pivot = new THREE.Vector3(c.bodyRadius, -(c.x + c.rootChord / 2), 0);
-    const cant = new THREE.Matrix4()
-      .makeTranslation(pivot.x, pivot.y, pivot.z)
-      .multiply(new THREE.Matrix4().makeRotationX(c.cant))
-      .multiply(new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z));
-    geom.applyMatrix4(cant);
-  }
-  return geom;
+  return new THREE.Mesh(geom, partMaterial(c.color ?? PART_COLORS.fin, ctx));
 }
-
-// ---------- Component builders ----------
-
-function buildNose(c: NoseCone, cutaway: boolean): { geometry: THREE.BufferGeometry; transparent: boolean } {
-  const prof = noseProfile(c.shape, c.shapeParam, c.baseRadius, c.length, NOSE_POINTS);
-  const pts = prof.map(([s, r]) => new THREE.Vector2(r, -(c.x + s)));
-  return { geometry: new THREE.LatheGeometry(pts, RADIAL_SEGMENTS), transparent: cutaway };
-}
-
-function buildRing(c: Ring): THREE.BufferGeometry {
-  const shape = new THREE.Shape();
-  shape.absarc(0, 0, c.outerRadius, 0, Math.PI * 2, false);
-  if (c.innerRadius > 0) {
-    const hole = new THREE.Path();
-    hole.absarc(0, 0, c.innerRadius, 0, Math.PI * 2, true);
-    shape.holes.push(hole);
-  }
-  const g = new THREE.ExtrudeGeometry(shape, {
-    depth: Math.max(c.length, 1e-4),
-    bevelEnabled: false,
-    curveSegments: RADIAL_SEGMENTS,
-    steps: 1,
-  });
-  // Extrude runs along +Z; rotate so it runs along -Y (aft), then place at station x.
-  g.rotateX(Math.PI / 2);
-  g.translate(0, -c.x, 0);
-  return g;
-}
-
-// ---------- Public API ----------
 
 /**
  * Build the 3D group for a rocket. Origin at the nose tip, +Y toward the nose.
- * Without `cutaway`, only external parts are built. With `cutaway`, internal parts
- * (inner tube, rings, masses, parachutes) are added and external tubes/nose are
- * rendered transparent.
+ * Every part is drawn at its own dimensions with the design its grade selects.
+ * Without `cutaway`, only parts visible from outside are built. With `cutaway`,
+ * internal parts are added and the outer skin turns see-through.
+ * The grades used are left on `group.userData.grades`.
  */
-export function buildRocketMesh(rocket: RocketModel, opts: { cutaway?: boolean } = {}): THREE.Group {
+export function buildRocketMesh(rocket: RocketModel, opts: RocketMeshOptions = {}): THREE.Group {
   const cutaway = !!opts.cutaway;
   const group = new THREE.Group();
   group.name = rocket.name || 'rocket';
 
-  for (const c of rocket.components) {
+  const grades: PartGrade[] = gradeRocket(rocket);
+  const choice = opts.tiers ?? 'auto';
+  const tierOf = (i: number, c: Component): PartTier => {
+    if (choice === 'auto') return grades[i].tier;
+    if (typeof choice === 'string') return choice;
+    return choice[c.id] ?? grades[i].tier;
+  };
+  grades.forEach((g, i) => { g.tier = tierOf(i, rocket.components[i]); });
+  group.userData.grades = grades;
+
+  const ctx: PartContext = {
+    cutaway,
+    maxRadius: Number.isFinite(rocket.maxRadius) ? rocket.maxRadius : 0,
+    rocketLength: Number.isFinite(rocket.length) ? rocket.length : 0,
+  };
+  const outline = airframeOutline(rocket);
+  const airframeAft = outline.reduce((m, o) => Math.max(m, o.x + o.length), 0);
+
+  /** Run a part design; a design that throws costs one part, not the whole rocket. */
+  const draw = <C extends Component>(build: (c: C, tier: PartTier, ctx: PartContext) => THREE.Object3D, c: C, tier: PartTier): THREE.Object3D => {
+    try {
+      return tag(build(c, tier, ctx), c);
+    } catch {
+      rocket.warnings.includes(`"${c.name}" could not be drawn.`) || rocket.warnings.push(`"${c.name}" could not be drawn.`);
+      return new THREE.Group();
+    }
+  };
+
+  rocket.components.forEach((c, index) => {
+    const tier = grades[index].tier;
     switch (c.kind) {
-      case 'nosecone': {
-        const { geometry, transparent } = buildNose(c, cutaway);
-        addMesh(group, geometry, makeMaterial(c.color ?? COLORS.nose, transparent), c);
+      case 'nosecone':
+        group.add(draw(buildNoseCone, c, tier));
         break;
-      }
-      case 'bodytube': {
-        const c2 = c as BodyTube;
-        const geometry = tubeGeometry(c2.outerRadius, c2.outerRadius, c2.x, c2.length);
-        const col = c2.color ?? (c2.isDecoupler ? COLORS.decoupler : COLORS.tube);
-        addMesh(group, geometry, makeMaterial(col, cutaway), c2);
+      case 'bodytube':
+        group.add(draw(buildBodyTube, c, tier));
         break;
-      }
-      case 'transition': {
-        const c2 = c as Transition;
-        // Cylinder top is +Y, i.e. the fore end.
-        const geometry = tubeGeometry(c2.foreRadius, c2.aftRadius, c2.x, c2.length);
-        addMesh(group, geometry, makeMaterial(c2.color ?? COLORS.transition, cutaway), c2);
+      case 'transition':
+        group.add(draw(buildTransition, c, tier));
         break;
-      }
       case 'finset': {
-        const count = Math.max(1, Math.round(c.count));
-        const geometry = buildFinGeometry(c);
-        const material = makeMaterial(c.color ?? COLORS.fin, false);
+        const count = Math.min(64, Math.max(1, Math.round(c.count) || 1));
+        const one = new THREE.Group();
+        // A fin with no thickness in the file is still a visible sheet.
+        const fin0: FinSet = c.thickness > 0 ? c : { ...c, thickness: MIN_FIN_THICKNESS };
+        one.add(tag(draw(buildFin, fin0, tier), c));
+
+        // Where the body narrows under the root, carry the fin down to the surface.
+        if (c.rootChord > 0 && c.bodyRadius > 0) {
+          const n = 12;
+          const drops: [number, number][] = [];
+          let worst = 0;
+          for (let k = 0; k <= n; k++) {
+            const a = (c.rootChord * k) / n;
+            const r = surfaceRadiusAt(outline, c.x + a);
+            const drop = Number.isNaN(r) ? 0 : Math.min(0, r - c.bodyRadius);
+            worst = Math.min(worst, drop);
+            drops.push([a, drop]);
+          }
+          if (worst < -1e-5) {
+            const skirt = finPlaneSlab(c, [[0, 0], [c.rootChord, 0], ...drops.reverse().map(([a, d]) => [a, d - 2e-4] as [number, number])], ctx);
+            if (skirt) one.add(tag(skirt, c));
+          }
+        }
+        // Through-the-wall tab, seen in cutaway.
+        if (cutaway && c.tabHeight && c.tabLength && c.tabHeight > 0 && c.tabLength > 0) {
+          const a0 = c.tabOffset ?? 0;
+          const tab = finPlaneSlab(c, [[a0, 0], [a0 + c.tabLength, 0], [a0 + c.tabLength, -c.tabHeight], [a0, -c.tabHeight]], ctx);
+          if (tab) one.add(tag(tab, c));
+        }
+
+        const start = Number.isFinite(c.angleOffset) ? (c.angleOffset as number) : 0;
         for (let i = 0; i < count; i++) {
-          const mesh = addMesh(group, geometry, material, c);
-          mesh.rotation.y = (2 * Math.PI * i) / count;
+          const fin = i === 0 ? one : one.clone();
+          fin.rotation.y = start + (2 * Math.PI * i) / count;
+          group.add(fin);
         }
         break;
       }
       case 'innertube': {
         const c2 = c as InnerTube;
-        if (c2.radialCount && c2.radialCount >= 2 && c2.radialOffset && c2.radialOffset > 0) {
-          // Side-mounted radial booster pods are external and always visible.
-          const podGeo = solidCylinderGeometry(c2.outerRadius, c2.x, c2.length);
-          const capGeo = new THREE.ConeGeometry(c2.outerRadius, c2.outerRadius * 2.4, 24);
-          capGeo.translate(0, -c2.x + c2.outerRadius * 1.2, 0);
-          const podMat = makeMaterial(c2.color ?? COLORS.tube, false);
-          const capMat = makeMaterial(COLORS.nose, false);
-          const count = Math.round(c2.radialCount);
+        if (isPod(c2)) {
+          // Side-mounted booster pods are external and always visible.
+          const count = Math.min(64, Math.round(c2.radialCount as number));
+          const pod = draw(buildBoosterPod, c2, tier);
           for (let i = 0; i < count; i++) {
             const ang = (2 * Math.PI * i) / count;
-            const px = Math.cos(ang) * c2.radialOffset;
-            const pz = Math.sin(ang) * c2.radialOffset;
-            const pod = addMesh(group, podGeo, podMat, c2);
-            pod.position.set(px, 0, pz);
-            const cap = addMesh(group, capGeo, capMat, c2);
-            cap.position.set(px, 0, pz);
+            const p = i === 0 ? pod : pod.clone();
+            p.position.set(Math.cos(ang) * (c2.radialOffset as number), 0, Math.sin(ang) * (c2.radialOffset as number));
+            group.add(p);
           }
           break;
         }
-        if (!cutaway) break;
-        const geometry = tubeGeometry(c2.outerRadius, c2.outerRadius, c2.x, c2.length);
-        addMesh(group, geometry, makeMaterial(c2.color ?? COLORS.tube, false), c2);
+        // A tube that sticks out of the back of the airframe shows from outside.
+        const protrudes = c2.x + c2.length > airframeAft + 1e-6;
+        const parts: THREE.Object3D[] = [];
+        if (cutaway || protrudes) parts.push(draw(buildInnerTube, c2, tier));
+        if (c2.isMotorMount && c2.motor) parts.push(draw(buildMotor, c2, tier));
+        if (parts.length === 0) break;
+        const spots = c2.cluster && c2.cluster.length > 0 ? c2.cluster : [[0, 0] as [number, number]];
+        spots.forEach(([px, pz], i) => {
+          for (const part of parts) {
+            const p = i === 0 ? part : part.clone();
+            p.position.set(px, 0, pz);
+            group.add(p);
+          }
+        });
         break;
       }
       case 'ring': {
-        if (!cutaway) break;
-        addMesh(group, buildRing(c), makeMaterial(COLORS.ring, false), c);
+        const c2 = c as Ring;
+        if (!c2.external) {
+          if (cutaway) group.add(draw(buildRing, c2, tier));
+          break;
+        }
+        // Lugs and rail buttons sit on the body surface, at their own angle.
+        const isButton = c2.ringType === 'railbutton';
+        const station = isButton ? c2.x + c2.outerRadius : c2.x + c2.length / 2;
+        const surface = surfaceRadiusAt(outline, station);
+        // The surface as it is now wins over the radius recorded at import, so a fitting
+        // follows its tube when the tube is resized in the builder.
+        const mountRadius = Number.isNaN(surface) ? (c2.mountRadius ?? ctx.maxRadius) : surface;
+        const placed: Ring = { ...c2, mountRadius };
+        const one = draw(isButton ? buildRailButton : buildLaunchLug, placed, tier);
+        tag(one, c2);
+        const copies = Math.min(32, Math.max(1, Math.round(c2.instanceCount ?? 1) || 1));
+        const sep = Number.isFinite(c2.instanceSeparation) ? (c2.instanceSeparation as number) : 0;
+        const holder = new THREE.Group();
+        for (let i = 0; i < copies; i++) {
+          const inst = i === 0 ? one : one.clone();
+          inst.position.y = -i * sep;
+          holder.add(inst);
+        }
+        holder.rotation.y = Number.isFinite(c2.angle) ? (c2.angle as number) : 0;
+        group.add(holder);
         break;
       }
-      case 'mass': {
-        if (!cutaway) break;
-        const c2 = c as MassComponent;
-        const r = 0.6 * rocket.maxRadius;
-        addMesh(group, solidCylinderGeometry(r, c2.x, c2.length), makeMaterial(COLORS.mass, false), c2);
+      case 'mass':
+        if (cutaway) group.add(draw(buildMass, c, tier));
         break;
-      }
-      case 'parachute': {
-        if (!cutaway) break;
-        const c2 = c as Parachute;
-        const r = 0.7 * rocket.maxRadius;
-        addMesh(group, solidCylinderGeometry(r, c2.x, c2.length), makeMaterial(COLORS.chute, false), c2);
+      case 'parachute':
+        if (cutaway) group.add(draw(buildPackedChute, c, tier));
         break;
-      }
     }
-  }
+  });
   return group;
 }
 

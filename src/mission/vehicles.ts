@@ -2,13 +2,22 @@
 // rocket-physics/examples/lvm3-gto.ts.
 
 import type { ReferenceEvent } from './adapter';
-import { lvm3, SITES, type AscentOptions, type SimConfig, type VehicleSpec } from './engine';
+import {
+  lvm3,
+  lvm3FaultSpec,
+  SITES,
+  type AscentOptions,
+  type FaultSpec,
+  type SimConfig,
+  type VehicleSpec,
+} from './engine';
 
 export interface MissionDef {
   id: string;
   name: string;
   description: string;
   vehicle: () => VehicleSpec;
+  faults?: () => FaultSpec;
   config: SimConfig;
   ascent: AscentOptions;
   tMax: number;                         // s, safety limit
@@ -22,6 +31,7 @@ export const MISSIONS: MissionDef[] = [
     name: 'LVM3-M4 / Chandrayaan-3',
     description: 'LVM3-M4 launched Chandrayaan-3 from Sriharikota on 14 July 2023 into a 170 x 36 500 km transfer orbit.',
     vehicle: () => lvm3(),
+    faults: () => lvm3FaultSpec(),
     config: { site: SITES.sriharikota, epoch: new Date('2023-07-14T09:05:17Z') },
     ascent: { target: { perigeeAltitude: 170e3, apogeeAltitude: 36500e3 }, pitchKickDeg: 8 },
     tMax: 3000,

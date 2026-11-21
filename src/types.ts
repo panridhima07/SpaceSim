@@ -122,6 +122,8 @@ export interface InnerTube extends BaseComponent {
   radialCount?: number;
   /** Radial centre-to-centre offset from rocket axis (m) for side-mounted pods. */
   radialOffset?: number;
+  /** Cluster: centre of every tube as [x, z] metres from the rocket axis. Absent for one tube. */
+  cluster?: [number, number][];
 }
 
 export interface Parachute extends BaseComponent {
@@ -177,6 +179,24 @@ export interface StageBoundary {
   overrideSubcomponentsMass?: boolean;
 }
 
+/**
+ * Bodies mounted beside the main stack: strap-on boosters, pods and tube fins.
+ * They are drawn, but the flight model does not yet count their mass or drag.
+ */
+export interface SideBody {
+  id: string;
+  name: string;
+  type: 'booster' | 'pod' | 'tubefin';
+  /** How many copies sit evenly around the rocket axis. */
+  count: number;
+  /** Distance from the rocket axis to each copy's own axis, metres. */
+  radialOffset: number;
+  /** Angle of the first copy about the rocket axis, rad. */
+  angle: number;
+  /** The copy's own parts on its own axis; every x is an absolute station. */
+  components: Component[];
+}
+
 export interface RocketModel {
   name: string;
   /** Flat list, every x absolute. External parts (nose, tubes, transitions) are in fore-to-aft order. */
@@ -190,6 +210,8 @@ export interface RocketModel {
   stages?: StageBoundary[];
   /** Things the parser could not represent. Shown to the user. */
   warnings: string[];
+  /** Boosters, pods and tube fins beside the main stack. */
+  sideBodies?: SideBody[];
 }
 
 // ---------- Motor ----------

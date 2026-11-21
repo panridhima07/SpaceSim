@@ -38,6 +38,7 @@ import { fetchMotorFromThrustCurve } from '../ork/thrustcurve';
 import { SAMPLE_ORK_XML } from '../ork/sample';
 import { ALL_MOTORS, findMotor, parseEng, thrustAt } from '../ork/motors';
 import { buildRocketMesh, buildCgCpMarkers, disposeGroup } from '../render/rocketMesh';
+import { gradeRocket, PART_ICONS, PART_LABELS } from '../render/parts/grade';
 import { buildForceArrows } from '../render/arrows';
 import {
   applyFlatStyle,
@@ -392,6 +393,13 @@ function refreshRocketInfo(): void {
     stabilityCal,
     motor: motor ? motorKey(motor) : null,
     warnings: rocket.warnings,
+    parts: gradeRocket(rocket).filter((g) => g.external).map((g) => ({
+      name: g.name,
+      label: PART_LABELS[g.key],
+      tier: g.tier,
+      icon: PART_ICONS[g.key][g.tier],
+      reasons: g.reasons.map((r) => r.text),
+    })),
   });
   staticFlaws = preflightFlaws(rocket, motor, mp.mass, stabilityCal);
 }

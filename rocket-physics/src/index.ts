@@ -27,3 +27,5 @@ export * from './faults/pressure.ts';
 export * from './faults/thermal.ts';
 export * from './faults/spec.ts';
 export * from './faults/monitor.ts';
+export * from './faults/inject.ts';
+export * from './faults/outcome.ts';

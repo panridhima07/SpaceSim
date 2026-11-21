@@ -64,6 +64,8 @@ const TOGGLES: { name: ToggleName; label: string }[] = [
   { name: 'trail', label: 'Trail' },
 ];
 
+const TIER_WORD = { best: 'Best', ok: 'OK', bad: 'Bad' } as const;
+
 type TabName = 'rocket' | 'launch' | 'flaws' | 'log' | 'view';
 
 const TABS: { name: TabName; label: string }[] = [
@@ -401,12 +403,17 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   const flawList = h('ul', 'sfb-flaws sfb-hidden');
   flawPanel.append(flawEmpty, flawList);
 
+  const partsPanel = h('section', 'sfb-panel sfb-hidden');
+  partsPanel.append(h('h2', 'sfb-section-title', 'Build quality'));
+  const partsList = h('ul', 'sfb-parts');
+  partsPanel.append(partsList);
+
   const stressPanel = h('section', 'sfb-panel sfb-hidden');
   stressPanel.append(h('h2', 'sfb-section-title', 'Stress test'));
   const stressBody = h('div', 'sfb-stress');
   stressPanel.append(stressBody);
 
-  right.append(telePanel, logPanel, flawPanel, stressPanel);
+  right.append(telePanel, logPanel, flawPanel, partsPanel, stressPanel);
 
   // ===== Bottom dock: launch controls (bottom bar on phones) =====
   const dock = h('section', 'sfb-panel sfb-dock');
@@ -646,7 +653,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   function layoutDesktop(): void {
     fill(left, [brand, rocketPanel, launchPanel]);
     fill(telePanel, [clockRow, teleList]);
-    fill(right, [telePanel, logPanel, flawPanel, stressPanel]);
+    fill(right, [telePanel, logPanel, flawPanel, partsPanel, stressPanel]);
     fill(dock, [
       launchBtn, resetBtn, pauseBtn, sep(),
       warpGroup, sep(),
@@ -661,7 +668,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
     fill(topExpand, [telePanel]);
     fill(pageOf('rocket'), [brand, rocketPanel]);
     fill(pageOf('launch'), [launchPanel]);
-    fill(pageOf('flaws'), [flawPanel, stressGroup, stressPanel]);
+    fill(pageOf('flaws'), [flawPanel, partsPanel, stressGroup, stressPanel]);
     fill(pageOf('log'), [logPanel]);
     fill(pageOf('view'), [cameraGroup, toggleGroup]);
     // Bottom bar: Reset and Pause left of the round Launch button, warp on the right.
@@ -845,6 +852,21 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   // ===== UI =====
   const ui: UI = {
     setRocket(info: RocketInfo | null): void {
+      const parts = info?.parts ?? [];
+      partsPanel.classList.toggle('sfb-hidden', parts.length === 0);
+      partsList.textContent = '';
+      for (const p of parts) {
+        const li = h('li', `sfb-part tier-${p.tier}`);
+        const icon = h('span', 'sfb-part-icon');
+        icon.innerHTML = p.icon; // our own static SVG, never file content
+        icon.setAttribute('aria-hidden', 'true');
+        const text = h('div', 'sfb-part-text');
+        const head = h('div', 'sfb-part-head');
+        head.append(h('span', 'sfb-part-name', p.name), h('span', 'sfb-part-tier', TIER_WORD[p.tier]));
+        text.append(head, h('div', 'sfb-part-why', p.reasons.length > 0 ? p.reasons.join(' · ') : p.label));
+        li.append(icon, text);
+        partsList.append(li);
+      }
       if (!info) {
         rocketHint.classList.remove('sfb-hidden');
         rocketBody.classList.add('sfb-hidden');

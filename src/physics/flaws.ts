@@ -11,6 +11,7 @@ import {
   type SimConfig,
   type SimState,
 } from '../types';
+import { analyzeEnvironment } from './envFlaws';
 
 const SEVERITY_ORDER: Record<FlawSeverity, number> = { critical: 0, warning: 1, info: 2 };
 const RAD2DEG = 180 / Math.PI;
@@ -374,6 +375,8 @@ export function analyzeFlight(
       });
     }
   }
+
+  flaws.push(...analyzeEnvironment(sim, rocket, config));
 
   return flaws.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 }

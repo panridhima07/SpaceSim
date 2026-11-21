@@ -35,6 +35,8 @@ export interface Fault {
   severity: FaultSeverity;
   stage?: number;
   t: number;
+  tFirst: number;
+  tLast: number;
   value: number;
   limit: number;
   unit: string;
@@ -50,14 +52,38 @@ export interface FaultChannels {
   depressRate: number;
 }
 
+export interface HealthPeak {
+  key: string;
+  value: number;
+  t: number;
+}
+
+const HEALTH_KEYS = [
+  'maxQ',
+  'qAlpha',
+  'axialG',
+  'skin',
+  'fairingDp',
+  'depressRate',
+  'tankBurst',
+  'caseBurst',
+  'tankBuckling',
+  'cavitation',
+  'nozzle',
+  'payloadHeat',
+] as const;
+
 const SEVERITY_RANK: Record<FaultSeverity, number> = {
   info: 1,
   warning: 2,
   critical: 3,
 };
 
+type FaultInput = Omit<Fault, 'tFirst' | 'tLast'>;
+
 export class FaultMonitor {
   channels: FaultChannels;
+  health: Record<string, number>;
 
   private readonly vehicle: VehicleSpec;
   private readonly spec: FaultSpec;
@@ -66,6 +92,9 @@ export class FaultMonitor {
   private readonly boilOff: number[];
   private readonly sepTimers: number[];
   private readonly faults = new Map<string, Fault>();
+  private readonly criticalSeen = new Set<string>();
+  private readonly newCriticals: Fault[] = [];
+  private readonly healthPeaks = new Map<string, HealthPeak>();
 
   private initialized = false;
   private prevAttached: boolean[];
@@ -114,24 +143,79 @@ export class FaultMonitor {
       fairingPressure: NaN,
       depressRate: 0,
     };
+    this.health = {};
+    for (const key of HEALTH_KEYS) {
+      this.health[key] = 0;
+      this.healthPeaks.set(key, { key, value: 0, t: 0 });
+    }
   }
 
-  private raise(fault: Fault, lowerIsWorse = false): void {
-    const existing = this.faults.get(fault.id);
+  private raise(input: FaultInput, lowerIsWorse = false): void {
+    const existing = this.faults.get(input.id);
+    let stored: Fault;
     if (!existing) {
-      this.faults.set(fault.id, fault);
-      return;
-    }
-    const newRank = SEVERITY_RANK[fault.severity];
-    const oldRank = SEVERITY_RANK[existing.severity];
-    if (newRank > oldRank) {
-      this.faults.set(fault.id, fault);
-    } else if (newRank === oldRank) {
-      const worse = lowerIsWorse ? fault.value < existing.value : fault.value > existing.value;
-      if (worse) {
-        this.faults.set(fault.id, fault);
+      stored = { ...input, tFirst: input.t, tLast: input.t };
+      this.faults.set(input.id, stored);
+    } else {
+      const tFirst = Math.min(existing.tFirst, input.t);
+      const tLast = Math.max(existing.tLast, input.t);
+      existing.tFirst = tFirst;
+      existing.tLast = tLast;
+
+      const newRank = SEVERITY_RANK[input.severity];
+      const oldRank = SEVERITY_RANK[existing.severity];
+      const shouldReplace =
+        newRank > oldRank ||
+        (newRank === oldRank && (lowerIsWorse ? input.value < existing.value : input.value > existing.value));
+      if (shouldReplace) {
+        stored = { ...input, tFirst, tLast };
+        this.faults.set(input.id, stored);
+      } else {
+        stored = existing;
       }
     }
+
+    if (input.severity === 'critical' && !this.criticalSeen.has(input.id)) {
+      this.criticalSeen.add(input.id);
+      this.newCriticals.push(stored);
+    }
+  }
+
+  private recordHealth(key: string, value: number, mt: number): void {
+    const v = Number.isFinite(value) ? Math.max(0, value) : 0;
+    this.health[key] = v;
+    const peak = this.healthPeaks.get(key);
+    if (peak && v > peak.value) {
+      peak.value = v;
+      peak.t = mt;
+    }
+  }
+
+  drainNewCriticals(): Fault[] {
+    if (this.newCriticals.length === 0) return [];
+    const out = this.newCriticals.slice();
+    this.newCriticals.length = 0;
+    return out;
+  }
+
+  worst(): { key: string; value: number } {
+    let bestKey: string = HEALTH_KEYS[0];
+    let bestVal = this.health[bestKey] ?? 0;
+    for (const key of HEALTH_KEYS) {
+      const v = this.health[key] ?? 0;
+      if (v > bestVal) {
+        bestVal = v;
+        bestKey = key;
+      }
+    }
+    return { key: bestKey, value: bestVal };
+  }
+
+  peaks(): HealthPeak[] {
+    return HEALTH_KEYS.map((key) => {
+      const p = this.healthPeaks.get(key)!;
+      return { key: p.key, value: p.value, t: p.t };
+    });
   }
 
   observe(sim: Simulation): void {
@@ -179,6 +263,7 @@ export class FaultMonitor {
     const moment = Math.hypot(d.aeroMoment[1], d.aeroMoment[2]);
 
     // 1. max-q
+    const hMaxQ = lifted ? d.q / limits.maxQ : 0;
     if (lifted && d.q > 0.9 * limits.maxQ) {
       const severity: FaultSeverity = d.q > limits.maxQ ? 'critical' : 'warning';
       this.raise({
@@ -196,8 +281,10 @@ export class FaultMonitor {
     }
 
     // 2. q-alpha
+    let hQAlpha = 0;
     if (lifted && d.q > 1000) {
       const qa = d.q * Math.abs(d.alpha);
+      hQAlpha = qa / limits.maxQAlpha;
       if (qa > 0.7 * limits.maxQAlpha) {
         const severity: FaultSeverity = qa > limits.maxQAlpha ? 'critical' : 'warning';
         this.raise({
@@ -216,6 +303,7 @@ export class FaultMonitor {
     }
 
     // 3. axial-g
+    const hAxialG = d.accelG / (1.25 * limits.maxG);
     if (d.accelG > limits.maxG) {
       const severity: FaultSeverity = d.accelG > 1.25 * limits.maxG ? 'critical' : 'warning';
       this.raise({
@@ -233,6 +321,10 @@ export class FaultMonitor {
     }
 
     // 4. Per tank
+    let hTankBurst = 0;
+    let hTankBuckling = 0;
+    let hCavitation = 0;
+
     for (let i = 0; i < this.vehicle.stages.length; i++) {
       if (!sim.rt.stages[i].attached) continue;
       const stage = this.vehicle.stages[i];
@@ -256,6 +348,7 @@ export class FaultMonitor {
         const dpTank = pBottom - d.pressure;
         if (dpTank > 0) {
           const fos = mat.ultimate / hoopStress(dpTank, r, ts.wallThickness);
+          hTankBurst = Math.max(hTankBurst, 1.1 / fos);
           if (fos < 1.4) {
             const severity: FaultSeverity = fos < 1.1 ? 'critical' : 'warning';
             this.raise(
@@ -297,6 +390,7 @@ export class FaultMonitor {
           const compress = load / (2 * Math.PI * r * ts.wallThickness);
           const relief = axialPressureStress(ts.ullagePressure - d.pressure, r, ts.wallThickness);
           const util = (compress - relief) / shellBucklingStress(mat.youngsModulus, ts.wallThickness, r);
+          hTankBuckling = Math.max(hTankBuckling, Math.max(0, util));
           if (util > 0.6) {
             const severity: FaultSeverity = util > 1.0 ? 'critical' : 'warning';
             this.raise({
@@ -317,7 +411,10 @@ export class FaultMonitor {
 
         // cavitation:i:k
         if (st.engineOn && st.throttle > 0) {
-          const margin = ts.ullagePressure + head - vapourPressure(fluid, fluid.storageTemp) - ts.npshRequired;
+          const pAvail = ts.ullagePressure + head - vapourPressure(fluid, fluid.storageTemp);
+          const cavUtil = pAvail <= 0 ? 2 : ts.npshRequired / pAvail;
+          hCavitation = Math.max(hCavitation, cavUtil);
+          const margin = pAvail - ts.npshRequired;
           if (margin < 0.25 * ts.npshRequired) {
             const severity: FaultSeverity = margin < 0 ? 'critical' : 'warning';
             this.raise(
@@ -368,6 +465,9 @@ export class FaultMonitor {
     }
 
     // 5. Per burning stage
+    let hCaseBurst = 0;
+    let hNozzle = 0;
+
     for (let i = 0; i < this.vehicle.stages.length; i++) {
       const st = sim.rt.stages[i];
       if (!st.attached || !st.engineOn) {
@@ -384,6 +484,9 @@ export class FaultMonitor {
       // flow-separation:i
       if (thr >= 0.5) {
         const pe = nozzleExitPressure(pc, ss.expansionRatio, ss.gamma);
+        if (pe > 0) {
+          hNozzle = Math.max(hNozzle, (0.25 * d.pressure) / pe);
+        }
         const state = separationState(pe, d.pressure);
         if (state !== 'attached') {
           this.sepTimers[i] += dt;
@@ -420,6 +523,7 @@ export class FaultMonitor {
           const fos =
             MATERIALS[ss.solid.caseMaterial].ultimate /
             hoopStress(dpCase, ss.solid.caseRadius, ss.solid.caseThickness);
+          hCaseBurst = Math.max(hCaseBurst, 1.1 / fos);
           if (fos < 1.4) {
             const severity: FaultSeverity = fos < 1.1 ? 'critical' : 'warning';
             this.raise(
@@ -449,6 +553,8 @@ export class FaultMonitor {
       this.fairingJettisoned = true;
     }
 
+    let hFairingDp = 0;
+    let hDepressRate = 0;
     if (this.spec.fairing) {
       const f = this.spec.fairing;
       if (sim.rt.fairingAttached && dt > 0) {
@@ -513,10 +619,17 @@ export class FaultMonitor {
         this.fairingDeltaP = 0;
         this.depressRate = 0;
       }
+
+      if (sim.rt.fairingAttached) {
+        hFairingDp = this.fairingDeltaP / f.maxDeltaP;
+        hDepressRate = this.depressRate / f.maxDepressRate;
+      }
     }
 
     // 7. payload-heating
+    let hPayloadHeat = 0;
     if (this.fairingJettisoned && d.altitude < 200e3) {
+      hPayloadHeat = d.fmHeatFlux / (2 * limits.payloadHeatFlux);
       if (d.fmHeatFlux > limits.payloadHeatFlux) {
         const severity: FaultSeverity = d.fmHeatFlux > 2 * limits.payloadHeatFlux ? 'critical' : 'warning';
         this.raise({
@@ -535,6 +648,7 @@ export class FaultMonitor {
     }
 
     // 8. skin-temp
+    const skinMat = MATERIALS[this.spec.noseSkin.material];
     if ((sim.rt.fairingAttached || !this.vehicle.fairing) && dt > 0) {
       const Tinf = Math.min(300, atmosphere(d.altitude).temperature);
       const Taw = recoveryTemperature(Tinf, d.mach);
@@ -546,23 +660,23 @@ export class FaultMonitor {
         this.skinCapacity,
         this.spec.noseSkin.emissivity,
       );
-      const mat = MATERIALS[this.spec.noseSkin.material];
-      if (this.skinTemp > mat.warnTemp) {
-        const severity: FaultSeverity = this.skinTemp > mat.maxTemp ? 'critical' : 'warning';
+      if (this.skinTemp > skinMat.warnTemp) {
+        const severity: FaultSeverity = this.skinTemp > skinMat.maxTemp ? 'critical' : 'warning';
         this.raise({
           id: 'skin-temp',
           system: 'thermal',
           severity,
           t: mt,
           value: this.skinTemp,
-          limit: mat.warnTemp,
+          limit: skinMat.warnTemp,
           unit: 'K',
           title: 'Nose skin temperature',
-          detail: `Nose skin temperature reached ${this.skinTemp.toFixed(1)} K (warning ${mat.warnTemp} K, max ${mat.maxTemp} K for ${mat.name}).`,
+          detail: `Nose skin temperature reached ${this.skinTemp.toFixed(1)} K (warning ${skinMat.warnTemp} K, max ${skinMat.maxTemp} K for ${skinMat.name}).`,
           fix: 'Thicken the nose cap or add thermal protection.',
         });
       }
     }
+    const hSkin = (this.skinTemp - this.spec.ambientTemp) / (skinMat.maxTemp - this.spec.ambientTemp);
 
     // 9. separation-q:i
     for (let i = 0; i < this.vehicle.stages.length; i++) {
@@ -590,6 +704,20 @@ export class FaultMonitor {
     }
 
     this.prevFairingAttached = sim.rt.fairingAttached;
+
+    this.recordHealth('maxQ', hMaxQ, mt);
+    this.recordHealth('qAlpha', hQAlpha, mt);
+    this.recordHealth('axialG', hAxialG, mt);
+    this.recordHealth('skin', hSkin, mt);
+    this.recordHealth('fairingDp', hFairingDp, mt);
+    this.recordHealth('depressRate', hDepressRate, mt);
+    this.recordHealth('tankBurst', hTankBurst, mt);
+    this.recordHealth('caseBurst', hCaseBurst, mt);
+    this.recordHealth('tankBuckling', hTankBuckling, mt);
+    this.recordHealth('cavitation', hCavitation, mt);
+    this.recordHealth('nozzle', hNozzle, mt);
+    this.recordHealth('payloadHeat', hPayloadHeat, mt);
+
     this.channels = {
       skinTemp: this.skinTemp,
       fairingDeltaP: this.fairingDeltaP,

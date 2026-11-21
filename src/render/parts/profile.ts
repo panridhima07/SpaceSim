@@ -1,7 +1,7 @@
 // Axisymmetric outline maths shared by every part design.
 // Profiles are [s, r] pairs: s metres aft of the part's fore end, r the outer radius there.
 
-import type { NoseCone, NoseShape, Transition } from '../../types';
+import type { NoseCone, NoseShape, RocketModel, Transition } from '../../types';
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
@@ -130,4 +130,48 @@ export function transitionProfile(c: Transition, n: number): [number, number][] 
   out[0] = [0, r1];
   out[count - 1] = [L, r2];
   return out;
+}
+
+/** Value of a profile at distance s from the part's fore end, by linear interpolation. */
+function sampleProfile(prof: [number, number][], s: number): number {
+  if (s <= prof[0][0]) return prof[0][1];
+  for (let i = 1; i < prof.length; i++) {
+    const [s1, r1] = prof[i];
+    if (s <= s1) {
+      const [s0, r0] = prof[i - 1];
+      return s1 > s0 ? r0 + ((r1 - r0) * (s - s0)) / (s1 - s0) : r1;
+    }
+  }
+  return prof[prof.length - 1][1];
+}
+
+type Outline = { x: number; length: number; radiusAt: (s: number) => number };
+
+/** The airframe's outer surface as a list of spans, for placing parts that sit on it. */
+export function airframeOutline(rocket: RocketModel): Outline[] {
+  const out: Outline[] = [];
+  for (const c of rocket.components) {
+    if (!(c.length > 0)) continue;
+    if (c.kind === 'bodytube') {
+      out.push({ x: c.x, length: c.length, radiusAt: () => c.outerRadius });
+    } else if (c.kind === 'nosecone') {
+      const prof = noseConeProfile(c, 48);
+      out.push({ x: c.x, length: c.length, radiusAt: (s) => sampleProfile(prof, s) });
+    } else if (c.kind === 'transition') {
+      const prof = transitionProfile(c, 48);
+      out.push({ x: c.x, length: c.length, radiusAt: (s) => sampleProfile(prof, s) });
+    }
+  }
+  return out;
+}
+
+/** Outer radius of the airframe at a station (the larger where parts overlap). NaN off the rocket. */
+export function surfaceRadiusAt(outline: Outline[], x: number): number {
+  let best = NaN;
+  for (const o of outline) {
+    if (x < o.x - 1e-9 || x > o.x + o.length + 1e-9) continue;
+    const r = o.radiusAt(Math.min(o.length, Math.max(0, x - o.x)));
+    if (Number.isNaN(best) || r > best) best = r;
+  }
+  return best;
 }

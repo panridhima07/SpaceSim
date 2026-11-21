@@ -47,7 +47,7 @@ export function toMarkers(
   const used = new Set<number>();
   return events.map((e) => {
     const severity: FlightMarker['severity'] =
-      e.type === 'abort' || e.type === 'impact' ? 'critical'
+      e.type === 'abort' || e.type === 'impact' || e.type === 'failure' || e.type === 'breakup' ? 'critical'
         : e.type === 'warning' ? 'warning'
           : 'info';
     const marker: FlightMarker = {
@@ -69,6 +69,19 @@ export function toMarkers(
 export function toSample(sim: Simulation): FlightSample {
   const tm = sim.telemetry();
   const core = sim.lowestCore();
+  const propellant: number[] = [];
+  let off = 0;
+  for (let i = 0; i < sim.vehicle.stages.length; i++) {
+    const nTanks = sim.vehicle.stages[i].tanks.length;
+    if (!sim.rt.stages[i].attached) {
+      propellant.push(0);
+    } else {
+      let sum = 0;
+      for (let k = 0; k < nTanks; k++) sum += sim.prop[off + k];
+      propellant.push(sum);
+    }
+    off += nTanks;
+  }
   return {
     // missionTime is NaN before liftoff, so fall back to elapsed pad time.
     t: Number.isFinite(sim.missionTime) ? sim.missionTime : sim.t,
@@ -83,5 +96,15 @@ export function toSample(sim: Simulation): FlightSample {
     mass: tm.mass,
     thrust: tm.thrust,
     stage: core >= 0 ? core : Math.max(0, sim.vehicle.stages.length - 1),
+    latDeg: tm.latDeg,
+    lonDeg: tm.lonDeg,
+    downrange: tm.downrange,
+    verticalSpeed: tm.verticalSpeed,
+    pitchDeg: tm.pitchDeg,
+    alphaDeg: tm.alphaDeg,
+    apoapsis: tm.apoapsis,
+    periapsis: tm.periapsis,
+    dvExpended: sim.dvExpended,
+    propellant,
   };
 }

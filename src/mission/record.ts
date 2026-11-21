@@ -9,12 +9,55 @@ export interface FlightSample {
   accelG: number; mass: number; thrust: number;
   stage: number;          // index of the active stage
   stageThrottle?: number[];   // one entry per vehicle stage, 0..1; 0 when the engine is off or the stage is gone
+  skinTemp?: number;          // K
+  fairingDeltaP?: number;     // Pa
+  heatFlux?: number;          // W/m^2
+  ambientPressure?: number;   // Pa
+  latDeg?: number;
+  lonDeg?: number;
+  downrange?: number;         // m
+  verticalSpeed?: number;     // m/s
+  pitchDeg?: number;
+  alphaDeg?: number;
+  apoapsis?: number;          // m above equatorial radius
+  periapsis?: number;         // m above equatorial radius
+  dvExpended?: number;        // m/s
+  phase?: string;             // autopilot phase string
+  propellant?: number[];      // kg remaining per vehicle stage, 0 once gone
+  health?: Record<string, number>;
 }
 
 export interface FlightMarker {  // an event or a flaw, shown on the timeline
   t: number; kind: 'event' | 'flaw'; label: string;
   severity?: 'info' | 'warning' | 'critical';
   reference?: number;     // real-flight time for the same event, if known
+}
+
+export interface FlightFault {
+  id: string;
+  system: 'pressure' | 'thermal' | 'structure' | 'propulsion';
+  severity: 'info' | 'warning' | 'critical';
+  stage?: number;
+  t: number;
+  tFirst?: number;
+  tLast?: number;
+  value: number;
+  limit: number;
+  unit: string;
+  title: string;
+  detail: string;
+  fix: string;
+}
+
+export type FlightOutcomeKind = 'nominal' | 'degraded-orbit' | 'suborbital' | 'impact' | 'breakup' | 'pad-abort';
+
+export interface FlightOutcome {
+  outcome: FlightOutcomeKind;
+  summary: string;
+  perigeeAltitude: number;
+  apogeeAltitude: number;
+  apogeeShortfall: number;
+  impact: { latDeg: number; lonDeg: number; t: number } | null;
 }
 
 export interface FlightRecord {
@@ -29,4 +72,12 @@ export interface FlightRecord {
   /** Earth rotation: angle (rad) of the prime meridian from the inertial X axis at liftoff, and rate (rad/s). */
   earth?: { angleAtLiftoff: number; rate: number };
   reachedTarget?: boolean;
+  faults?: FlightFault[];
+  scenario?: string;
+  epochJD?: number;
+  liftoffSimTime?: number;
+  healthPeaks?: { key: string; value: number; t: number }[];
+  iipTrack?: { t: number; latDeg: number; lonDeg: number }[];
+  outcome?: FlightOutcome;
+  failureCase?: string;
 }

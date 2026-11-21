@@ -4,6 +4,7 @@
 
 import JSZip from 'jszip';
 import { DOMParser as XmldomParser } from '@xmldom/xmldom';
+import { decodeOrkText } from './parser';
 
 export interface OrkSimulation {
   name: string;
@@ -158,13 +159,19 @@ export async function readOrkZip(
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
   const isZip = bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b;
   if (!isZip) {
-    return { xml: new TextDecoder('utf-8').decode(bytes), files: {} };
+    return { xml: await decodeOrkText(bytes), files: {} };
   }
 
-  const zip = await JSZip.loadAsync(bytes);
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(bytes);
+  } catch {
+    throw new Error('The .ork archive is damaged and cannot be opened.');
+  }
   const entries = Object.values(zip.files).filter((f) => !f.dir);
-  const rocket = zip.file('rocket.ork') ?? entries.find((f) => f.name.endsWith('.ork'));
-  const xml = rocket ? await rocket.async('string') : '';
+  const rocket = zip.file('rocket.ork') ?? entries.find((f) => /\.ork$/i.test(f.name));
+  if (!rocket) throw new Error('The archive has no rocket.ork inside. Is this an OpenRocket file?');
+  const xml = await decodeOrkText(await rocket.async('uint8array'));
 
   const files: Record<string, string> = {};
   for (const f of entries) {

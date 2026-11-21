@@ -6,10 +6,12 @@ import { getMission, type MissionDef } from './vehicles';
 
 const mission = getMission('lvm3-m4')!;
 let record: FlightRecord;
+let thinNoseRecord: FlightRecord;
 
 beforeAll(() => {
   record = flyMission(mission);
-}, 60_000);
+  thinNoseRecord = flyMission(mission, { scenario: 'thin-nose' });
+}, 120_000);
 
 function sampleNear(t: number): FlightSample {
   let best = record.samples[0];
@@ -129,4 +131,28 @@ describe('flyMission lvm3-m4', () => {
     expect(aborted.reachedTarget).toBe(false);
     expect(aborted.samples).toHaveLength(0);
   }, 60_000);
+
+  it('records fault monitor telemetry and no warning or critical faults on nominal flight', () => {
+    expect(record.reachedTarget).toBe(true);
+    expect(record.faults).toBeDefined();
+    const bad = record.faults!.filter((f) => f.severity === 'warning' || f.severity === 'critical');
+    expect(bad).toEqual([]);
+    for (const s of record.samples) {
+      expectFinite(s.skinTemp!, 'skinTemp');
+      expectFinite(s.fairingDeltaP!, 'fairingDeltaP');
+      expectFinite(s.heatFlux!, 'heatFlux');
+      expectFinite(s.ambientPressure!, 'ambientPressure');
+    }
+  });
+
+  it('flags critical skin-temp fault and flaw marker on thin-nose scenario', () => {
+    expect(thinNoseRecord.scenario).toBe('thin-nose');
+    expect(thinNoseRecord.faults).toBeDefined();
+    const skinFault = thinNoseRecord.faults!.find((f) => f.id === 'skin-temp');
+    expect(skinFault).toBeDefined();
+    expect(skinFault!.severity).toBe('critical');
+    const flawMarker = thinNoseRecord.markers.find((m) => m.kind === 'flaw' && m.severity === 'critical');
+    expect(flawMarker).toBeDefined();
+    expect(JSON.parse(JSON.stringify(thinNoseRecord))).toEqual(thinNoseRecord);
+  });
 });

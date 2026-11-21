@@ -41,6 +41,8 @@ export interface Design {
   stack: StackNode[];
   /** Monotonic counter for deterministic part IDs. */
   nextId: number;
+  /** Boosters, pods and tube fins carried over from an imported file, unchanged. */
+  sideBodies?: SideBody[];
 }
 
 export function isExternal(c: Component): c is ExternalComponent {

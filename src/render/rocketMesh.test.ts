@@ -118,7 +118,14 @@ describe('buildRocketMesh', () => {
     const plain = countMeshes(buildRocketMesh(rocket));
     const cut = countMeshes(buildRocketMesh(rocket, { cutaway: true }));
     expect(cut).toBeGreaterThan(plain);
-    expect(cut).toBe(7); // plain 5 + inner tube + parachute
+    // The inner tube and the parachute appear only in cutaway.
+    const ids = (cutaway: boolean): Set<string> => {
+      const out = new Set<string>();
+      buildRocketMesh(rocket, { cutaway }).traverse((o) => { if (o instanceof THREE.Mesh) out.add(o.name); });
+      return out;
+    };
+    expect([...ids(false)].sort()).toEqual(['body', 'fins', 'nose']);
+    expect([...ids(true)].sort()).toEqual(['body', 'chute', 'fins', 'itube', 'nose']);
   });
 
   it('cutaway makes external nose and tube transparent', () => {
