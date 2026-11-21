@@ -145,3 +145,12 @@ Checks: openrocket.test.ts 2/2, massprops.test.ts 7/7
 Numbers: Dual parachute deployment: rodV err +10.5%..+18.1% -> -3.1%..+0.6%; vmax err +11.2%..+40.4% -> -2.3%..-0.1%; alt err -9.5%..+55.4% -> -5.4%..-1.0%. Design 1 unchanged (-4.3%..-1.9% alt).
 Decisions: Scaled stage component masses by `massOverride / sum` to preserve CG and inertia distribution.
 Open issues: none
+
+## ITEM 3 Measure fin lift term by term
+Status: done
+Commit: pending
+What changed: Measured `A_simple_model_rocket.ork` fin set (`N=3`, `Cr=0.0508`, `Ct=0.0508`, `s=0.03`, `m=0.0254`, `rb=0.0125`, `d=0.025`) by hand: `l = 0.039309 m`, `Kfb = 1.29412`, `denom = 2.2644`, `CN_alpha_fin = 9.876`, `CN_alpha_nose = 2.0`, total `11.876` (`11.918` at `M=0.092`). Matches `aeroProps` to 4 digits (`11.877` at `M=0.017`, `11.918` at `M=0.092`).
+Checks: tsc/vitest unchanged
+Numbers: OpenRocket `CNa = 15.607` at `t=0.388 s` (after rail exit, `alpha > 0`, includes body lift); `NaN` at `t=0.132 s` (`alpha = 0`).
+Decisions: Left `finCnAlphaIncompressible` unchanged because the hand-worked Barrowman fin + nose terms match `aeroProps` exactly; the `~3.7` difference in OpenRocket's `CNa` column is body normal force at `alpha > 0`.
+Open issues: none
