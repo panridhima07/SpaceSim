@@ -91,6 +91,15 @@ const cameraRig: CameraRig = createCameraRig(camera, renderer.domElement);
 
 scene.add(solar.group, site.group, sky.mesh, smoke.object, trail.line, arrows.group);
 
+// C toggles the constellation lines (visible once the stars are, i.e. from the map view or space).
+let constellationsOn = false;
+window.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || e.key.toLowerCase() !== 'c') return;
+  const tag = (e.target as HTMLElement | null)?.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  constellationsOn = solar.setConstellations(!constellationsOn);
+});
+
 // ---------- App state ----------
 
 const clock = new SimClock();
@@ -730,7 +739,7 @@ function updateSky(state: SimState | null, origin: Vec3): void {
 }
 
 function updateWorld(state: SimState | null, origin: Vec3, realDt: number, simDt: number, now: number): void {
-  solar.update(clock.jd, origin);
+  solar.update(clock.jd, origin, camera.position);
   site.update(origin, activeConfig.launchAltitude);
   site.group.position.y -= padLift;
 
@@ -858,3 +867,10 @@ interface DebugHook {
 
 loadSample();
 requestAnimationFrame(frame);
+
+// Debug hook to fly a mission from the browser console.
+interface MissionDebugHook {
+  astraRunMission?: (id?: string) => Promise<unknown>;
+}
+(window as Window & MissionDebugHook).astraRunMission = (id = 'lvm3-m4') =>
+  import('../mission/client').then((m) => m.runMission(id));
