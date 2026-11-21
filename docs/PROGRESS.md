@@ -42,3 +42,5 @@
 - Baseline: `npm run typecheck` passed and `npm test` passed 218 tests in 22 files.
 - Step 1: extended `FlightSample` with optional `stageThrottle` and `FlightRecord` with optional `vehicleName`, `stageSeparation`, `fairingSeparation`, `earth` and `reachedTarget`; updated the contract block in `docs/SYSTEM_DESIGN.md` to match.
 - Step 1 check: `npm run typecheck` passed.
+- Step 2: added an adapter test that checks app body +Z and +X against library body +Z and -Y for the same three quaternions, pinning all three axes.
+- Step 2 check: `npm test` passed 219 tests in 22 files.

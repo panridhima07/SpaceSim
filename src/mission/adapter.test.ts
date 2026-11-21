@@ -8,6 +8,12 @@ import { Simulation, SITES, twoStageKerolox } from './engine';
 
 const D2R = Math.PI / 180;
 
+const ATTITUDE_CASES: Quat[] = [
+  [0, 0, 0, 1],
+  [0.5, 0.5, 0.5, 0.5],
+  qnormalize([0.3, -0.4, 0.5, 0.7]),
+];
+
 describe('eciToApp', () => {
   it('maps ECI +Z to app +Y', () => {
     const mapped = eciToApp([0, 0, 1]);
@@ -40,16 +46,28 @@ describe('eciToApp', () => {
 
 describe('attitudeToApp', () => {
   it('points body +Y along the same direction as the library nose', () => {
-    const cases: Quat[] = [
-      [0, 0, 0, 1],
-      [0.5, 0.5, 0.5, 0.5],
-      qnormalize([0.3, -0.4, 0.5, 0.7]),
-    ];
-    for (const q of cases) {
+    for (const q of ATTITUDE_CASES) {
       const appNose = quatRotate(attitudeToApp(q), [0, 1, 0]);
       const expected = eciToApp(qrot(q, [1, 0, 0]));
       for (let i = 0; i < 3; i++) {
         expect(Math.abs(appNose[i] - expected[i])).toBeLessThan(1e-9);
+      }
+    }
+  });
+
+  it('maps the other two body axes consistently', () => {
+    const pairs: [Vec3, Vec3][] = [
+      [[0, 0, 1], [0, 0, 1]],
+      [[1, 0, 0], [0, -1, 0]],
+    ];
+    for (const q of ATTITUDE_CASES) {
+      const app = attitudeToApp(q);
+      for (const [appBody, libBody] of pairs) {
+        const got = quatRotate(app, appBody);
+        const expected = eciToApp(qrot(q, libBody));
+        for (let i = 0; i < 3; i++) {
+          expect(Math.abs(got[i] - expected[i])).toBeLessThan(1e-9);
+        }
       }
     }
   });
