@@ -302,3 +302,37 @@ describe('createSim', () => {
     expect(sim.state.phase).toBe('landed');
   });
 });
+
+
+describe('multi-stage simulation', () => {
+  it('emits stage separation and stage ignition events and drops lower stage mass', () => {
+    const base = makeRocket();
+    const twoStage: RocketModel = {
+      ...base,
+      stageCount: 2,
+      stages: [
+        { name: 'Sustainer', startComponent: 0, componentCount: base.components.length },
+        { name: 'Booster', startComponent: base.components.length, componentCount: 0 },
+      ],
+    };
+    const motor = makeMotor();
+    const sim = createSim(
+      twoStage,
+      motor,
+      makeConfig({
+        stageMotors: [
+          { motor },
+          { motor, ignitionDelay: 0.5 },
+        ],
+      }),
+      makeDeps(),
+    );
+    sim.ignite();
+    sim.step(15);
+
+    const types = sim.events.map((e) => e.type);
+    expect(types).toContain('stage separation');
+    expect(types).toContain('stage ignition');
+    expect(types).toContain('burnout');
+  });
+});

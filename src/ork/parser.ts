@@ -78,9 +78,6 @@ export function parseOrkXml(xml: string): RocketModel {
   }
   const stageContainers: XNode[] = stageEls.length > 0 ? stageEls : [rocketEl];
   const stageCount = Math.max(1, stageEls.length);
-  if (stageCount > 1) {
-    warnings.push(`Rocket has ${stageCount} stages. Staging is not simulated; all stages are stacked into one rocket.`);
-  }
 
   // Pass A: collect external components (fore to aft) with their raw radii.
   const raws: (ExternalRaw & { stageIndex: number })[] = [];

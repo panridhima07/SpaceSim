@@ -235,6 +235,8 @@ export interface SimConfig {
   launchAltitude: number;
   /** Overrides the motor's ejection delay if set. */
   ejectionDelay?: number;
+  /** Optional multi-stage motors in firing order (booster first, sustainer last). */
+  stageMotors?: { motor: Motor; ignitionDelay?: number }[];
 }
 
 export interface Controls {
@@ -274,8 +276,9 @@ export interface SimState {
 }
 
 export type FlightEventType =
-  | 'ignition' | 'liftoff' | 'railExit' | 'burnout' | 'apogee' | 'ejection'
-  | 'chuteDeploy' | 'landing' | 'crash' | 'maxQ';
+  | 'ignition' | 'liftoff' | 'railExit' | 'burnout'
+  | 'stage separation' | 'stage ignition'
+  | 'apogee' | 'ejection' | 'chuteDeploy' | 'landing' | 'crash' | 'maxQ';
 
 export interface FlightEvent {
   t: number;

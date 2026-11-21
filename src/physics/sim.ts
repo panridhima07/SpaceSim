@@ -141,6 +141,15 @@ export function createSim(
   const railQuat = quatFromAxisAngle(cross([0, 1, 0], [hx, 0, hz]), config.railAngle);
   const railStart: Vec3 = [0, R_EARTH + config.launchAltitude, 0];
 
+  const stageMotors = config.stageMotors;
+  const isMultiStage = Boolean(
+    stageMotors && stageMotors.length > 1 && rocket.stages && rocket.stages.length >= stageMotors.length,
+  );
+  let activeRocket: RocketModel = rocket;
+  let activeMotor: Motor | null = stageMotors && stageMotors.length > 0 ? stageMotors[0].motor : motor;
+  let firingStageIdx = 0;
+  let nextStageIgnitionT: number | undefined;
+
   const ejectionDelay = resolveEjectionDelay(rocket, config);
   const chutes: ChuteRun[] = rocket.components
     .filter((c: Component): c is Parachute => c.kind === 'parachute')
@@ -209,9 +218,9 @@ export function createSim(
     const altitude = r - R_EARTH - config.launchAltitude;
     const atm = deps.atmosphere(r - R_EARTH);
     const tBurn = ignited ? t - tIgnition : -1;
-    const mp: MassProps = deps.massProps(rocket, motor, tBurn);
+    const mp: MassProps = deps.massProps(activeRocket, activeMotor, tBurn);
     const thrust =
-      motor && ignited && tBurn < motor.burnTime ? deps.thrust(motor, tBurn) : 0;
+      activeMotor && ignited && tBurn < activeMotor.burnTime ? deps.thrust(activeMotor, tBurn) : 0;
     const mass = mp.mass;
 
     const gravity = scale(pos, -MU_EARTH / (r * r * r));
@@ -220,7 +229,7 @@ export function createSim(
     const a = quatRotate(quat, [0, 1, 0]); // nose direction, world
     const mach = atm.soundSpeed > 0 ? v / atm.soundSpeed : 0;
     const q = 0.5 * atm.rho * v * v;
-    const aero: AeroProps = deps.aeroProps(rocket, mach, mp.cgX);
+    const aero: AeroProps = deps.aeroProps(activeRocket, mach, mp.cgX);
     const alpha = v < 0.1 ? 0 : Math.acos(clamp(dot(vRel, a) / v, -1, 1));
 
     let force: Vec3 = [0, 0, 0];
@@ -458,10 +467,39 @@ export function createSim(
 
     const tBurn = ignited ? t - tIgnition : -1;
 
-    if (state.phase === 'boost' && motor && tBurn >= motor.burnTime) {
+    if (nextStageIgnitionT !== undefined && t >= nextStageIgnitionT && stageMotors) {
+      activeMotor = stageMotors[firingStageIdx].motor;
+      tIgnition = t;
+      nextStageIgnitionT = undefined;
+      state.phase = 'boost';
+      emit('stage ignition', `Stage ${firingStageIdx + 1} ignition at ${state.altitude.toFixed(1)} m`);
+    }
+
+    if (state.phase === 'boost' && activeMotor && tBurn >= activeMotor.burnTime) {
       state.phase = 'coast';
-      burnoutT = t;
-      emit('burnout', `Burnout at ${state.speed.toFixed(1)} m/s, ${state.altitude.toFixed(1)} m`);
+      if (isMultiStage && stageMotors && rocket.stages && firingStageIdx + 1 < stageMotors.length) {
+        const dropBoundary = rocket.stages[rocket.stages.length - 1 - firingStageIdx];
+        const kept = activeRocket.components.slice(0, dropBoundary.startComponent);
+        let newLen = 0;
+        let newMaxR = 0;
+        for (const c of kept) {
+          if (c.kind === 'nosecone' || c.kind === 'bodytube' || c.kind === 'transition' || c.kind === 'finset') {
+            newLen = Math.max(newLen, c.x + c.length);
+          }
+          if (c.kind === 'nosecone') newMaxR = Math.max(newMaxR, c.baseRadius);
+          else if (c.kind === 'bodytube') newMaxR = Math.max(newMaxR, c.outerRadius);
+          else if (c.kind === 'transition') newMaxR = Math.max(newMaxR, c.foreRadius, c.aftRadius);
+        }
+        activeRocket = { ...activeRocket, components: kept, length: newLen, maxRadius: newMaxR };
+        emit('stage separation', `Stage ${firingStageIdx + 1} separation at ${state.altitude.toFixed(1)} m`);
+        firingStageIdx++;
+        const nextStage = stageMotors[firingStageIdx];
+        nextStageIgnitionT = t + (nextStage.ignitionDelay ?? 0);
+        activeMotor = null;
+      } else {
+        burnoutT = t;
+        emit('burnout', `Burnout at ${state.speed.toFixed(1)} m/s, ${state.altitude.toFixed(1)} m`);
+      }
     }
 
     const rv = radialVelocity(state.pos, state.vel);
@@ -474,10 +512,11 @@ export function createSim(
 
     if (
       ejectionT === undefined &&
-      motor &&
+      activeMotor &&
       ignited &&
+      nextStageIgnitionT === undefined &&
       ejectionDelay !== undefined &&
-      tBurn >= motor.burnTime + ejectionDelay
+      tBurn >= activeMotor.burnTime + ejectionDelay
     ) {
       ejectionT = t;
       emit('ejection', `Ejection charge fired at ${state.altitude.toFixed(1)} m`);

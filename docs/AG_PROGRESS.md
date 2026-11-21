@@ -89,3 +89,12 @@ Checks: tsc ok, vitest 252/252
 Numbers: n/a
 Decisions: Kept `stages` optional on `RocketModel` so all existing single-stage tests remain untouched.
 Open issues: none
+
+## C2 Fly stages
+Status: done
+Commit: pending
+What changed: Added `stage separation` and `stage ignition` to `FlightEventType` and optional `stageMotors` to `SimConfig` in `src/types.ts`; implemented multi-stage separation (dropping lower stage components and recomputing length/maxRadius) and delayed upper-stage ignition in `src/physics/sim.ts`; removed the "staging is not simulated" warning in `src/ork/parser.ts`; added multi-stage test in `src/physics/sim.test.ts`.
+Checks: tsc ok, vitest 253/253
+Numbers: n/a
+Decisions: Single-stage flights without `stageMotors` take the exact original code path for bit-identical results.
+Open issues: none
