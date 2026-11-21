@@ -154,3 +154,12 @@ Checks: tsc/vitest unchanged
 Numbers: OpenRocket `CNa = 15.607` at `t=0.388 s` (after rail exit, `alpha > 0`, includes body lift); `NaN` at `t=0.132 s` (`alpha = 0`).
 Decisions: Left `finCnAlphaIncompressible` unchanged because the hand-worked Barrowman fin + nose terms match `aeroProps` exactly; the `~3.7` difference in OpenRocket's `CNa` column is body normal force at `alpha > 0`.
 Open issues: none
+
+## ITEM 4 Make multi-stage flight real
+Status: done
+Commit: a6dec7f
+What changed: Updated `src/physics/sim.ts` to include unburnt upper-stage motors in mass/CG while lower stages burn and to remove separated stages' parachutes on stage separation; added `src/ork/stageMotors.ts` and `src/ork/stageMotors.test.ts` (`buildStageMotors` returning firing-order motors).
+Checks: stageMotors.test.ts 1/1, sim.test.ts 6/6
+Numbers: n/a
+Decisions: Single-stage flights without `stageMotors` remain bit-identical.
+Open issues: none
