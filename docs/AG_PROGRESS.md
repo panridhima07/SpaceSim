@@ -26,3 +26,12 @@ Checks: tsc ok, vitest 244/244
 Numbers: n/a
 Decisions: Default line color `0x4cc9f0`.
 Open issues: none
+
+## A4 Launch pad for big rockets
+Status: done
+Commit: pending
+What changed: Added `src/render/launchComplex.ts` and `src/render/launchComplex.test.ts` with `buildLaunchComplex` and `disposeLaunchComplex` (apron, pedestal, flame trench, umbilical tower, two lightning towers), parameterised by `vehicleHeight` and `maxRadius`.
+Checks: tsc ok, vitest 247/247
+Numbers: n/a
+Decisions: Umbilical tower is `vehicleHeight + 6` m, lightning towers are `vehicleHeight + 12` m, all non-tower geometry sits at `y <= 0`.
+Open issues: none
