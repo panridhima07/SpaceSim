@@ -17,3 +17,12 @@ Checks: tsc ok, vitest 239/239
 Numbers: n/a
 Decisions: Solid booster plumes use brighter colors (`0xffaa33`/`0xfff3c4`), 1.25x length, 1.3x width; `isSolid` defaults to `Boolean(stage.parallel)` when omitted.
 Open issues: none
+
+## A3 Orbit path geometry
+Status: done
+Commit: pending
+What changed: Added `src/render/orbitLine.ts` and `src/render/orbitLine.test.ts` with `orbitPoints`, `groundTrackPoints`, and `buildOrbitLine` converting Z-up ECI orbital elements to the Y-up app frame `(x, z, -y)` and building a closed `THREE.Line`.
+Checks: tsc ok, vitest 244/244
+Numbers: n/a
+Decisions: Default line color `0x4cc9f0`.
+Open issues: none
