@@ -8,3 +8,12 @@ Checks: tsc ok, vitest 235/235
 Numbers: n/a
 Decisions: Used simple kinematic drift/tilt curves; `HIDE_AFTER_S = 8`.
 Open issues: none
+
+## A2 Engine plumes
+Status: done
+Commit: pending
+What changed: Added `src/render/launcherPlume.ts` and `src/render/launcherPlume.test.ts` with `buildLauncherPlumes`, `updatePlumes`, and `disposeLauncherPlumes` for two-cone exhaust plumes per nozzle that scale length with throttle and width with ambient pressure (1x at sea level, 3x in vacuum), and hide when throttle is 0 or stage is hidden.
+Checks: tsc ok, vitest 239/239
+Numbers: n/a
+Decisions: Solid booster plumes use brighter colors (`0xffaa33`/`0xfff3c4`), 1.25x length, 1.3x width; `isSolid` defaults to `Boolean(stage.parallel)` when omitted.
+Open issues: none
