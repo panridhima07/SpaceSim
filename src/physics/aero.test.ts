@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aeroProps, dragBreakdown } from './aero';
+import { aeroProps, dragBreakdown, transonicWaveCd } from './aero';
 import { massProps } from './massprops';
 import { FIXTURE_ROCKET, FIXTURE_MOTOR } from './fixture';
 
@@ -116,5 +116,21 @@ describe('external rings and fin cross-section drag', () => {
 
   it('undefined cross-section behaves as rounded', () => {
     expect(dragBreakdown(FIXTURE_ROCKET, 0.3).total).toBeCloseTo(dragBreakdown(withFins('rounded'), 0.3).total, 12);
+  });
+});
+
+
+describe('transonicWaveCd', () => {
+  it('is exact 0 below drag-divergence Mach 0.8', () => {
+    expect(transonicWaveCd(0)).toBe(0);
+    expect(transonicWaveCd(0.5)).toBe(0);
+    expect(transonicWaveCd(0.8)).toBe(0);
+  });
+
+  it('rises across Mach 0.8..1.15 and decays supersonically', () => {
+    expect(transonicWaveCd(0.95)).toBeGreaterThan(0);
+    expect(transonicWaveCd(1.15)).toBeCloseTo(0.30, 6);
+    expect(transonicWaveCd(1.5)).toBeLessThan(transonicWaveCd(1.15));
+    expect(transonicWaveCd(2.0)).toBeLessThan(transonicWaveCd(1.5));
   });
 });

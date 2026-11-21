@@ -71,3 +71,12 @@ Checks: tsc ok, vitest 249/249
 Numbers: `Dual_parachute_deployment.ork` (6 sims): alt err -2.5% to +55.4%, vmax err +17.3% to +40.4%, tApo err -8.0% to +17.4%, rodV err +10.5% to +18.1%.
 Decisions: Asserted finite positive apogee rather than tight tolerances, as instructed.
 Open issues: Only one additional single-stage `.ork` file was present in `fixtures/external/`.
+
+## B4 Transonic drag
+Status: done
+Commit: pending
+What changed: Added `transonicWaveCd(M)` in `src/physics/aero.ts` (exact 0 for M <= 0.8, smoothstep rise to 0.30 at M = 1.15, Prandtl-Glauert-style supersonic decay `~ 1 / sqrt(M^2 - 1)` above 1.15) and added unit tests in `src/physics/aero.test.ts`.
+Checks: tsc ok, vitest 251/251
+Numbers: Subsonic validation table unchanged (e.g. Sim 1 alt err -4.3 %, Sim 3 alt err -1.9 %).
+Decisions: Drag-divergence Mach = 0.8, peak wave Cd = 0.30 at M = 1.15.
+Open issues: none

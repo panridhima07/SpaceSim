@@ -368,7 +368,7 @@ export function dragBreakdown(rocket: RocketModel, mach: number): DragBreakdown 
   const cdBase0 = M < 1 ? 0.12 + 0.13 * M * M : 0.25 / Math.max(M, 1e-6);
   const base = (cdBase0 * aftArea) / A;
 
-  const pressure = pressureNose + finLE + protrusionPressure;
+  const pressure = pressureNose + finLE + protrusionPressure + transonicWaveCd(M);
   const total = friction + pressure + base;
   const ok = Number.isFinite(total) && total > 0;
   return {
@@ -379,6 +379,23 @@ export function dragBreakdown(rocket: RocketModel, mach: number): DragBreakdown 
     cf,
     reynolds: Re,
   };
+}
+
+/**
+ * Transonic and supersonic wave-drag increment (referenced to body frontal area).
+ * Exact 0 below drag-divergence Mach 0.8 so subsonic results are unchanged;
+ * smooth cubic rise across Mach 0.8..1.15 (Lock/Barrowman transonic rise),
+ * followed by Prandtl-Glauert supersonic decay ~ 1 / sqrt(M^2 - 1).
+ */
+export function transonicWaveCd(M: number): number {
+  if (!(M > 0.8)) return 0;
+  const peakCd = 0.30;
+  const mPeak = 1.15;
+  if (M < mPeak) {
+    const t = (M - 0.8) / (mPeak - 0.8);
+    return peakCd * t * t * (3 - 2 * t);
+  }
+  return peakCd * Math.sqrt((mPeak * mPeak - 1) / (M * M - 1));
 }
 
 // ---------- Public ----------
