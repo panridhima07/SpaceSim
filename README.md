@@ -31,3 +31,7 @@ node scripts/make-icons.mjs   # app icons for web and Android
 ```
 
 OpenRocket's example files are GPL, so they are downloaded into `fixtures/external/` and not committed. Tests that need them skip when the folder is missing.
+
+## Space imagery
+
+Planet, Moon and Sun maps in `public/assets/space/` are the NASA-derived textures distributed with the three.js examples. The star catalogue, Milky Way outline and constellation lines are from d3-celestial (BSD-3-Clause). Press `C` in the map view to toggle constellation lines.

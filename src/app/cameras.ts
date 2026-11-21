@@ -24,6 +24,7 @@ export interface CameraRig {
   /** Switch mode. The camera is re-placed on the next update. */
   setMode(mode: CameraMode, rocketLength: number): void;
   update(dt: number, ctx: CameraContext): void;
+  setEnabled(on: boolean): void;
   readonly mode: CameraMode;
 }
 
@@ -159,6 +160,9 @@ export function createCameraRig(camera: THREE.PerspectiveCamera, dom: HTMLElemen
   return {
     setMode,
     update,
+    setEnabled(on: boolean) {
+      controls.enabled = on;
+    },
     get mode() {
       return mode;
     },

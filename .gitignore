@@ -3,3 +3,7 @@ dist
 fixtures/external
 space-flight-godot
 .claude
+astra-spaceflight (1)
+
+.vercel
+.env*

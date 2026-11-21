@@ -1,0 +1,12 @@
+# Only the website is deployed. Keep the Android project, the Godot prototype, the
+# reference site and local tooling out of the upload.
+android
+space-flight-godot
+astra-spaceflight (1)
+.claude
+docs
+dist
+fixtures/external
+rocket-physics/test
+rocket-physics/examples
+*.txt

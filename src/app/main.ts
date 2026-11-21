@@ -53,6 +53,19 @@ import { SimClock } from '../world/clock';
 import { createUI } from './ui';
 import { createCameraRig, type CameraRig } from './cameras';
 import type { CameraMode, ToggleName, UI } from './uiTypes';
+import {
+  addExternalPart,
+  addInternalPart,
+  createEmptyDesign,
+  findPart,
+  fromRocketModel,
+  isExternal,
+  removePart,
+  toRocketModel,
+  type Design,
+} from '../builder/design';
+import { createBuilderView } from '../builder/view';
+import { createBuilderUI, type BuilderStats } from './builderUi';
 
 type Markers = ReturnType<typeof buildCgCpMarkers>;
 type Exhaust = ReturnType<typeof buildExhaust>;
@@ -776,6 +789,12 @@ function frame(now: number): void {
   const realDt = Math.max(0, (now - lastNow) / 1000);
   lastNow = now;
 
+  if (appMode === 'builder') {
+    builderView.render(renderer);
+    requestAnimationFrame(frame);
+    return;
+  }
+
   const simDt = clock.tick(realDt);
   clock.setMaxWarp(maxWarpFor(sim));
   advanceSim(simDt);
@@ -832,6 +851,170 @@ const ui: UI = createUI(app, {
     if (!sim || !sim.done) return;
     replayT = t;
   },
+  onBuild: () => enterBuilder(),
+});
+
+// ---------- Build mode glue ----------
+
+let appMode: 'flight' | 'builder' = 'flight';
+let builderDesign: Design | null = null;
+let builderSelectedId: string | null = null;
+let builderCutaway = false;
+
+const builderView = createBuilderView(renderer.domElement);
+
+function computeBuilderStats(model: RocketModel): { stats: BuilderStats; cgX: number; cpX: number } {
+  if (model.components.length === 0 || model.length <= 0 || model.maxRadius <= 0) {
+    return {
+      stats: { length: 0, mass: 0, stabilityCal: NaN, twr: null, motorLabel: null },
+      cgX: 0,
+      cpX: 0,
+    };
+  }
+  const ref = findMotorRef(model);
+  const m = ref ? findMotor(ref, extraMotors) : null;
+  const mp = massProps(model, m, 0);
+  const ap = aeroProps(model, 0.1, mp.cgX);
+  const stabilityCal = (ap.cpX - mp.cgX) / (2 * model.maxRadius);
+  const twr = m && mp.mass > 0 ? peakThrust(m) / (mp.mass * G0) : null;
+  return {
+    stats: {
+      length: model.length,
+      mass: mp.mass,
+      stabilityCal,
+      twr,
+      motorLabel: m ? motorKey(m) : null,
+    },
+    cgX: mp.cgX,
+    cpX: ap.cpX,
+  };
+}
+
+function refreshBuilder(refitCamera = false): void {
+  if (!builderDesign) return;
+  const model = toRocketModel(builderDesign);
+  const { stats, cgX, cpX } = computeBuilderStats(model);
+  builderView.updateRocket({
+    rocket: model,
+    cutaway: builderCutaway,
+    cgX,
+    cpX,
+    selectedId: builderSelectedId,
+    refitCamera,
+  });
+  builderUi.render(builderDesign, builderSelectedId, stats);
+}
+
+function defaultInternalParentId(d: Design): string | null {
+  if (builderSelectedId) {
+    const found = findPart(d, builderSelectedId);
+    if (found) {
+      return found.parentId ?? found.part.id;
+    }
+  }
+  for (let i = d.stack.length - 1; i >= 0; i--) {
+    if (d.stack[i].part.kind === 'bodytube') return d.stack[i].id;
+  }
+  return d.stack.length > 0 ? d.stack[d.stack.length - 1].id : null;
+}
+
+const builderUi = createBuilderUI(app, {
+  onAddPreset: (preset) => {
+    if (!builderDesign) builderDesign = createEmptyDesign();
+    const part = preset.create();
+    if (isExternal(part)) {
+      const res = addExternalPart(builderDesign, part);
+      builderDesign = res.design;
+      builderSelectedId = res.id;
+    } else {
+      const parentId = defaultInternalParentId(builderDesign);
+      if (!parentId) {
+        ui.toast('Add a body tube first');
+        return;
+      }
+      const res = addInternalPart(builderDesign, parentId, part, preset.defaultAnchor, preset.defaultOffset);
+      if (res) {
+        builderDesign = res.design;
+        builderSelectedId = res.id;
+        if (part.kind !== 'finset' && !builderCutaway) {
+          builderCutaway = true;
+          builderUi.setCutaway(true);
+        }
+      }
+    }
+    refreshBuilder(false);
+  },
+  onSelectPart: (partId) => {
+    builderSelectedId = partId;
+    refreshBuilder(false);
+  },
+  onDeletePart: (partId) => {
+    if (!builderDesign) return;
+    builderDesign = removePart(builderDesign, partId);
+    if (builderSelectedId === partId) builderSelectedId = null;
+    refreshBuilder(false);
+  },
+  onRename: (name) => {
+    if (!builderDesign) return;
+    builderDesign = { ...builderDesign, name };
+    refreshBuilder(false);
+  },
+  onClear: () => {
+    builderDesign = createEmptyDesign('New Rocket');
+    builderSelectedId = null;
+    refreshBuilder(true);
+  },
+  onToggleCutaway: (on) => {
+    builderCutaway = on;
+    refreshBuilder(false);
+  },
+  onFrameCamera: () => builderView.frameRocket(),
+  onGoToPad: () => exitBuilderToPad(),
+});
+
+function enterBuilder(): void {
+  if (!builderDesign) {
+    builderDesign = rocket ? fromRocketModel(rocket) : createEmptyDesign();
+  }
+  appMode = 'builder';
+  cameraRig.setEnabled(false);
+  builderView.setEnabled(true);
+  ui.setVisible(false);
+  builderUi.setVisible(true);
+  refreshBuilder(true);
+}
+
+function exitBuilderToPad(): void {
+  if (!builderDesign || builderDesign.stack.length === 0) {
+    ui.toast('Add at least a nose cone and body tube first');
+    return;
+  }
+  const model = toRocketModel(builderDesign);
+  appMode = 'flight';
+  builderView.setEnabled(false);
+  cameraRig.setEnabled(true);
+  builderUi.setVisible(false);
+  ui.setVisible(true);
+  ui.setBuildLabel?.('Back to Builder');
+  loadRocket(model);
+}
+
+// Click on the 3D canvas in builder mode selects the clicked part.
+let builderDownPos: { x: number; y: number } | null = null;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (appMode !== 'builder') return;
+  builderDownPos = { x: e.clientX, y: e.clientY };
+});
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (appMode !== 'builder' || !builderDownPos) return;
+  const dist = Math.hypot(e.clientX - builderDownPos.x, e.clientY - builderDownPos.y);
+  builderDownPos = null;
+  if (dist > 6) return;
+  const hit = builderView.pickPart(e.clientX, e.clientY);
+  if (hit !== builderSelectedId) {
+    builderSelectedId = hit;
+    refreshBuilder(false);
+  }
 });
 
 activeConfig = ui.getConfig();
@@ -841,6 +1024,7 @@ window.addEventListener('resize', () => {
   const h = window.innerHeight;
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
+  builderView.resize(w, h);
   renderer.setSize(w, h);
 });
 

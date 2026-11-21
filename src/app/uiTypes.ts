@@ -22,6 +22,8 @@ export interface UICallbacks {
   onScrub(t: number): void;
   /** Run the headless stress test on the current design. */
   onStressTest(): void;
+  /** Switch to rocket build mode. */
+  onBuild?(): void;
 }
 
 export interface RocketInfo {
@@ -46,4 +48,6 @@ export interface UI {
   setStress(report: StressReport | null | 'running'): void;
   toast(msg: string): void;
   getConfig(): SimConfig;
+  setVisible(visible: boolean): void;
+  setBuildLabel?(label: string): void;
 }

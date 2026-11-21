@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#101c30" />
+    <link rel="icon" type="image/png" href="/icon-192.png" />
+    <title>Moon Landing · Space Flight Builder</title>
+    <style>
+      /* Same look as the rocket builder (src/app/style.css): ASTRA dark glass, cyan accent,
+         panels tilted in perspective, raised keys, ease-out in and a faster ease-in out. */
+      @property --sfb-px { syntax: '<number>'; inherits: false; initial-value: 0; }
+      @property --sfb-py { syntax: '<number>'; inherits: false; initial-value: 0; }
+      :root { color-scheme: dark;
+        --ink: #dbe9ff; --dim: #93a6c4; --line: rgba(150, 195, 255, 0.18); --glass: rgba(6, 11, 20, 0.8);
+        --acc: #7fd7ff; --acc2: #ffb454; --ok: #7dffb2; --bad: #ff5d6c;
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+        --ease-out: cubic-bezier(0.16, 1, 0.3, 1); --ease-in: cubic-bezier(0.7, 0, 0.84, 0); }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #02040a; color: var(--ink);
+        font: 13px/1.4 "Inter", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+        -webkit-font-smoothing: antialiased; }
+      #view { position: fixed; inset: 0; }
+      #view canvas { display: block; touch-action: none; }
+      @keyframes in-left { from { opacity: 0; translate: -28px 0; } }
+      @keyframes in-right { from { opacity: 0; translate: 28px 0; } }
+      @keyframes rise { from { opacity: 0; translate: 0 18px; } }
+      @keyframes pop { from { opacity: 0; scale: 0.95; } }
+      .panel { position: fixed; border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px;
+        background: linear-gradient(180deg, rgba(160, 205, 255, 0.07), rgba(160, 205, 255, 0) 42%), var(--glass);
+        backdrop-filter: blur(18px) saturate(1.4); -webkit-backdrop-filter: blur(18px) saturate(1.4);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.09), inset 0 -1px 0 rgba(0, 0, 0, 0.45),
+          0 1px 0 rgba(2, 6, 14, 0.95), 0 3px 0 rgba(2, 6, 14, 0.6), 0 6px 12px rgba(0, 0, 0, 0.3),
+          0 22px 48px rgba(0, 0, 0, 0.45); }
+      /* Left panels hinge on the left edge, the HUD on the right, the dock tips back. */
+      #brand, #log { transform-origin: left center;
+        transform: perspective(1300px) rotateY(calc(6deg + var(--sfb-px) * 2.5deg)) rotateX(calc(var(--sfb-py) * -1.5deg));
+        animation: in-left 360ms var(--ease-out) backwards; }
+      #brand { top: 14px; left: 14px; display: flex; flex-direction: column; gap: 10px; }
+      #brand b { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 400;
+        letter-spacing: 0.26em; text-transform: uppercase; color: var(--acc); }
+      #brand b strong { color: #fff; font-weight: 700; }
+      #brand b svg { filter: drop-shadow(0 0 8px rgba(127, 215, 255, 0.6)); }
+      #hud { top: 14px; right: 14px; width: 252px; transform-origin: right center;
+        transform: perspective(1300px) rotateY(calc(-6deg + var(--sfb-px) * 2.5deg)) rotateX(calc(var(--sfb-py) * -1.5deg));
+        animation: in-right 360ms var(--ease-out) backwards; }
+      #hud .phase { font-size: 15px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase;
+        color: #fff; text-shadow: 0 0 14px rgba(127, 215, 255, 0.6); }
+      #hud .site { color: var(--acc); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+        margin: 2px 0 8px; min-height: 1.4em; }
+      #hud table { width: 100%; border-collapse: collapse; }
+      #hud td { padding: 2px 0; }
+      #hud td:first-child { color: var(--dim); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; }
+      #hud td:last-child { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums;
+        font-weight: 500; color: #fff; }
+      .bar { height: 6px; border-radius: 99px; background: rgba(0, 4, 12, 0.6); overflow: hidden; margin: 3px 0 7px;
+        box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6); }
+      .bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, #3aa8ff, var(--acc)); }
+      #log { left: 14px; bottom: 96px; width: 310px; max-height: 148px; overflow: hidden; font-size: 12px;
+        animation-delay: 60ms; }
+      #log:empty { display: none; }
+      #log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #c5d2e6; padding: 1px 0; }
+      #log div:first-child { animation: rise 220ms var(--ease-out) backwards; }
+      #log .ok { color: var(--ok); } #log .am { color: var(--acc2); } #log .bad { color: var(--bad); }
+      #dock { left: 0; right: 0; bottom: 14px; margin: 0 auto; width: fit-content; display: flex; flex-wrap: wrap;
+        gap: 8px; justify-content: center; max-width: min(780px, calc(100vw - 24px)); border-radius: 18px;
+        padding: 10px 14px 12px; transform-origin: center bottom;
+        transform: perspective(1100px) rotateX(calc(9deg + var(--sfb-py) * -2deg)) rotateY(calc(var(--sfb-px) * 1.5deg));
+        animation: rise 380ms var(--ease-out) 120ms backwards; }
+      /* Raised keys: they travel down their own edge when pressed, and stay down when latched on. */
+      button, a.btn { font: inherit; font-size: 11px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase;
+        color: var(--ink); text-decoration: none; cursor: pointer; min-height: 34px; padding: 7px 12px;
+        display: inline-flex; align-items: center; justify-content: center;
+        background: linear-gradient(180deg, rgba(48, 70, 110, 0.78), rgba(18, 30, 52, 0.78));
+        border: 1px solid var(--line); border-radius: 10px;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 3px 0 rgba(2, 6, 14, 0.9), 0 7px 14px rgba(0, 0, 0, 0.35);
+        transition: transform 120ms var(--ease-out), box-shadow 120ms var(--ease-out), border-color 150ms ease,
+          filter 150ms ease, color 150ms ease; }
+      @media (hover: hover) {
+        button:hover:not(:disabled), a.btn:hover { border-color: rgba(127, 215, 255, 0.55); filter: brightness(1.18);
+          transform: translateY(-1px); }
+      }
+      button:active:not(:disabled), a.btn:active { transform: translateY(3px) scale(0.97); transition-duration: 60ms;
+        box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.45), 0 0 0 rgba(2, 6, 14, 0.9), 0 1px 3px rgba(0, 0, 0, 0.3); }
+      button:focus-visible, a.btn:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+      button.on { border-color: var(--acc); color: var(--acc); transform: translateY(2px);
+        background: linear-gradient(180deg, rgba(127, 215, 255, 0.12), rgba(127, 215, 255, 0.22));
+        box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(2, 6, 14, 0.9), 0 0 14px rgba(127, 215, 255, 0.28); }
+      button:disabled { opacity: 0.4; cursor: not-allowed; }
+      #help { color: var(--dim); font-size: 11px; letter-spacing: 0.04em; margin-top: 2px; }
+      /* Result: the end of the flight gets the one big moment on this page. */
+      #result { top: 96px; left: 0; right: 0; margin: 0 auto; width: min(400px, calc(100vw - 40px));
+        text-align: center; padding: 22px 24px; display: none; animation: pop 320ms var(--ease-out) backwards; }
+      #result h2 { margin: 0 0 6px; font-size: 24px; font-weight: 300; letter-spacing: 0.18em; text-transform: uppercase;
+        color: #fff; text-shadow: 0 0 30px rgba(127, 215, 255, 0.5); }
+      #result p { margin: 6px 0 16px; color: #c5d2e6; line-height: 1.6; }
+      #busy { top: 50%; left: 0; right: 0; margin: 0 auto; width: fit-content; translate: 0 -50%;
+        font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--acc); }
+      @media (max-width: 640px) {
+        .panel { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(8, 13, 24, 0.92); }
+        #brand, #log, #hud, #dock { transform: none; }
+        #hud { width: 186px; font-size: 12px; } #log { display: none; } #help { display: none; }
+        button, a.btn { min-height: 44px; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * { animation-duration: 0.01ms !important; animation-delay: 0s !important; transition-duration: 0.01ms !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="view"></div>
+    <div id="brand" class="panel">
+      <b><svg viewBox="0 0 32 32" width="20" height="20" aria-hidden="true"><path d="M16 3l6 17-6-3.6L10 20z" fill="currentColor"/><path d="M9 24h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><strong>Astra</strong> Moon Landing</b>
+      <a class="btn" href="./index.html">← Rocket builder</a>
+    </div>
+    <div id="hud" class="panel"></div>
+    <div id="log" class="panel"></div>
+    <div id="dock" class="panel"></div>
+    <div id="result" class="panel"></div>
+    <div id="busy" class="panel">Computing the descent orbit…</div>
+    <script type="module" src="/src/landing/main.ts"></script>
+  </body>
+</html>

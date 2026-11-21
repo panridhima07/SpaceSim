@@ -10,6 +10,29 @@ import type {
 } from '../types';
 import { STRESS_FLIGHT_COUNT } from '../physics/sweep';
 import type { CameraMode, RocketInfo, ToggleName, UI, UICallbacks } from './uiTypes';
+import { attachTilt } from './tilt';
+
+const EASE_OUT = 'cubic-bezier(0.16, 1, 0.3, 1)';
+/** Toasts leave in this long, shorter than the 220 ms they take to arrive. */
+const TOAST_EXIT_MS = 150;
+
+const BRAND_MARK =
+  '<svg viewBox="0 0 32 32" width="20" height="20" aria-hidden="true">' +
+  '<path d="M16 3l6 17-6-3.6L10 20z" fill="currentColor"/>' +
+  '<path d="M9 24h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>' +
+  '<b>Astra</b><i>Space Flight Builder</i>';
+
+/** Short one-shot emphasis. No-op where the Web Animations API is missing (jsdom) or motion is reduced. */
+function pulse(el: HTMLElement, keyframes: Keyframe[], duration: number): void {
+  if (typeof el.animate !== 'function') return;
+  if (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  el.animate(keyframes, { duration, easing: EASE_OUT });
+}
+
+/** Resistance past a bound: the further the drag, the less the content follows. */
+function rubberBand(drag: number, size: number): number {
+  return (1 - 1 / ((drag * 0.55) / size + 1)) * size;
+}
 
 const DEG_PER_RAD = 180 / Math.PI;
 const RAD_PER_DEG = Math.PI / 180;
@@ -226,7 +249,9 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
 
   // ===== Brand (top-left on desktop; first tab on phones) =====
   const brand = h('section', 'sfb-panel sfb-brand');
-  const title = h('h1', 'sfb-title', 'Space Flight Builder');
+  const title = h('h1', 'sfb-title');
+  title.innerHTML = BRAND_MARK;
+  title.setAttribute('aria-label', 'Astra Space Flight Builder');
   const fileInput = h('input', 'sfb-hidden');
   fileInput.type = 'file';
   // Android's picker only lists .ork files when the MIME types are included too.
@@ -236,10 +261,13 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
     fileInput.value = ''; // allow choosing the same file again
     if (file) cb.onFile(file);
   });
+  const buildBtn = button('Build Rocket', 'sfb-btn-primary sfb-btn-wide', () => cb.onBuild?.(), 'Open the rocket builder');
   const brandRow = h('div', 'sfb-row');
   brandRow.append(
+    buildBtn,
     button('Open .ork', '', () => fileInput.click(), 'Open an OpenRocket file'),
     button('Load sample', '', () => cb.onLoadSample(), 'Load the built-in sample rocket'),
+    button('Moon landing', 'sfb-btn-ghost sfb-btn-wide', () => window.location.assign('./landing.html'), 'Fly a lunar landing'),
   );
   brand.append(title, brandRow, fileInput);
 
@@ -329,7 +357,9 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   const teleList = h('dl', 'sfb-tele');
   const teleRow = (label: string): TextCell => {
     const dd = h('dd', undefined, '');
-    teleList.append(h('dt', undefined, label), dd);
+    const cell = h('div', 'sfb-cell');
+    cell.append(h('dt', undefined, label), dd);
+    teleList.append(cell);
     return textCell(dd);
   };
   const tAlt = teleRow('Altitude');
@@ -380,7 +410,14 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   // ===== Bottom dock: launch controls (bottom bar on phones) =====
   const dock = h('section', 'sfb-panel sfb-dock');
 
-  const launchBtn = button('Launch', 'sfb-btn-primary sfb-btn-launch', () => cb.onLaunch(), 'Launch (Space)');
+  const launchBtn = button('Launch', 'sfb-btn-primary sfb-btn-launch', () => {
+    cb.onLaunch();
+    // Confirm the press with one ring of light off the button.
+    pulse(launchBtn, [
+      { boxShadow: '0 0 0 0 rgba(127, 215, 255, 0.7)' },
+      { boxShadow: '0 0 0 22px rgba(127, 215, 255, 0)' },
+    ], 420);
+  }, 'Launch (Space)');
   const resetBtn = button('Reset', '', () => cb.onReset(), 'Reset (R)');
   const pauseBtn = button('Pause', '', () => cb.onPause(), 'Pause / play (P)');
   let lastPaused: boolean | null = null;
@@ -497,8 +534,10 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   }, 'Menu');
   menuBtn.setAttribute('aria-expanded', 'false');
   menuBtn.append(badge);
+  const buildRailBtn = button('B', 'sfb-hud-btn sfb-hud-build', () => cb.onBuild?.(), 'Build Rocket');
+  buildRailBtn.setAttribute('aria-label', 'Build rocket');
   const rail = h('div', 'sfb-hud sfb-hud-rail');
-  rail.append(cycleBtn, menuBtn);
+  rail.append(buildRailBtn, cycleBtn, menuBtn);
 
   const tabPages = new Map<TabName, HTMLElement>();
   const tabButtons = new Map<TabName, HTMLButtonElement>();
@@ -522,14 +561,27 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
 
   const handle = h('div', 'sfb-sheet-handle');
   handle.setAttribute('aria-hidden', 'true');
-  // Drag the handle down to close the sheet.
+  // Drag the handle down to close the sheet. The sheet follows the finger with no easing
+  // while held, and resists when pulled up past its open position.
   handle.addEventListener('pointerdown', (e) => {
     const y0 = e.clientY;
+    sheet.classList.add('is-held');
+    const move = (ev: PointerEvent): void => {
+      const dy = ev.clientY - y0;
+      sheet.style.transform = `translateY(${dy >= 0 ? dy : -rubberBand(-dy, 90)}px)`;
+    };
     const up = (ev: PointerEvent): void => {
+      window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      // Hand back to the stylesheet: it springs to open or slides shut from where it is.
+      sheet.classList.remove('is-held');
+      sheet.style.transform = '';
       if (ev.clientY - y0 > 40) closeSheet();
     };
+    window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
   });
   const closeBtn = h('button', 'sfb-sheet-close', '×');
   closeBtn.type = 'button';
@@ -545,6 +597,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
 
   root.append(left, right, brand, dock, replay, toasts, dropHint, topStrip, rail, sheet);
   container.append(root);
+  attachTilt([left, right, dock, replay]);
 
   // ===== Sheet state =====
 
@@ -582,8 +635,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   const dockLeft = h('div', 'sfb-dock-left');
 
   function layoutDesktop(): void {
-    root.insertBefore(brand, dock);
-    fill(left, [rocketPanel, launchPanel]);
+    fill(left, [brand, rocketPanel, launchPanel]);
     fill(telePanel, [clockRow, teleList]);
     fill(right, [telePanel, logPanel, flawPanel, stressPanel]);
     fill(dock, [
@@ -625,8 +677,9 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
 
   // ===== Events =====
 
-  // Keyboard shortcuts. Ignored while typing in form fields.
+  // Keyboard shortcuts. Ignored while typing in form fields or when hidden (build mode).
   window.addEventListener('keydown', (e) => {
+    if (root.classList.contains('sfb-hidden')) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const target = e.target as HTMLElement | null;
     if (
@@ -726,8 +779,13 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   let hasFlown = false;
   let flightOver = false;
 
+  let renderedFlaws: Flaw[] | null = null;
+
   function renderFlaws(): void {
     flawList.textContent = '';
+    // Cards cascade in for a new analysis only, not for each rebuild during a flight.
+    flawList.classList.toggle('is-fresh', flaws !== renderedFlaws);
+    renderedFlaws = flaws;
     if (flaws.length === 0) {
       flawList.classList.add('sfb-hidden');
       flawEmpty.classList.remove('sfb-hidden');
@@ -826,7 +884,12 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
 
     setTelemetry(s: SimState, warp: number, paused: boolean): void {
       setText(clockCell, `T+${s.t.toFixed(1)}`);
-      setText(phaseCell, s.phase.toUpperCase());
+      const phase = s.phase.toUpperCase();
+      if (phase !== phaseCell.last && phaseCell.last !== '') {
+        // A new flight phase pops once so the change is seen without reading the label.
+        pulse(phaseEl, [{ transform: 'scale(1.2)' }, { transform: 'scale(1)' }], 280);
+      }
+      setText(phaseCell, phase);
       setText(tAlt, fmtAltitude(s.altitude));
       setText(tSpeed, `${s.speed.toFixed(1)} m/s`);
       setText(tMach, s.mach.toFixed(2));
@@ -930,10 +993,20 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
     toast(msg: string): void {
       const t = h('div', 'sfb-toast', msg);
       toasts.append(t);
+      window.setTimeout(() => t.classList.add('is-leaving'), TOAST_MS - TOAST_EXIT_MS);
       window.setTimeout(() => t.remove(), TOAST_MS);
     },
 
     getConfig,
+
+    setVisible(visible: boolean): void {
+      root.classList.toggle('sfb-hidden', !visible);
+      if (!visible && isMobile) closeSheet();
+    },
+
+    setBuildLabel(label: string): void {
+      buildBtn.textContent = label;
+    },
   };
 
   // ===== Viewport switching (last, once every binding above exists) =====
