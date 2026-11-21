@@ -46,3 +46,5 @@
 - Step 2 check: `npm test` passed 219 tests in 22 files.
 - Step 3: added `ReferenceEvent` and `toMarkers` to `src/mission/adapter.ts`, mapping event times to liftoff-relative markers, severities, and one-use reference times; added three tests.
 - Step 3 check: `npm run typecheck` passed and `npm test` passed 222 tests in 22 files.
+- Step 4: added `AscentAutopilot`, `OMEGA_EARTH` and the `AscentOptions` type to `src/mission/engine.ts`; created `src/mission/vehicles.ts` with the `lvm3-m4` definition copied from `rocket-physics/examples/lvm3-gto.ts`, plus `vehicles.test.ts`.
+- Step 4 check: `npm run typecheck` passed and `npm test` passed 226 tests in 23 files.

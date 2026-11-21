@@ -1,4 +1,6 @@
 export {
+  AscentAutopilot,
+  OMEGA_EARTH,
   Simulation,
   SITES,
   flyAscent,
@@ -8,6 +10,7 @@ export {
 } from '../../rocket-physics/src/index.ts';
 
 export type {
+  AscentOptions,
   FlightResult,
   SimConfig,
   Telemetry,
