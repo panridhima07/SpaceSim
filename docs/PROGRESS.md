@@ -36,3 +36,9 @@
 - `Simulation.missionTime` is NaN before liftoff, so `toSample` falls back to pad time `sim.t`. `FlightSample.stage` has no direct field; it is the lowest attached core stage.
 - `docs/SYSTEM_DESIGN.md` also gives the adapter the job of turning engine events into `FlightMarker`s. Round 1 did not ask for that, so it is left for a later round.
 - The untracked `src/render/launcherMesh.ts` and `src/render/launcherMesh.test.ts` noted in Step 3 are no longer in the working tree; the app test count is 218 without them.
+
+## Round 2
+
+- Baseline: `npm run typecheck` passed and `npm test` passed 218 tests in 22 files.
+- Step 1: extended `FlightSample` with optional `stageThrottle` and `FlightRecord` with optional `vehicleName`, `stageSeparation`, `fairingSeparation`, `earth` and `reachedTarget`; updated the contract block in `docs/SYSTEM_DESIGN.md` to match.
+- Step 1 check: `npm run typecheck` passed.
