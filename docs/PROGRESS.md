@@ -9,3 +9,5 @@
 - Step 3: added `allowImportingTsExtensions` to the root `tsconfig.json`, created `src/mission/engine.ts` with re-exports for all requested names, and added `src/mission/engine.test.ts`.
 - Step 3 check: `npm run typecheck` passed, `npm test` passed 226 tests in 22 files, and `npm run build` passed.
 - Step 3 note: every requested export exists. Untracked `src/render/launcherMesh.ts` and `src/render/launcherMesh.test.ts` appeared in the working tree during this session; they are not part of this round, so they were left untouched and out of the commit (the committed tree has 213 tests in 21 files).
+- Step 4: added `src/mission/record.ts` with the `FlightSample`, `FlightMarker` and `FlightRecord` types from the system design, importing `Vec3` and `Quat` from `src/types.ts`.
+- Step 4 check: `npm run typecheck` passed.
