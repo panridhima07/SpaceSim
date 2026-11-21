@@ -22,6 +22,8 @@ import {
   skinStep,
   tankSurfaceArea,
 } from '../src/faults/thermal.ts';
+import { applyScenario, lvm3FaultSpec } from '../src/faults/spec.ts';
+import { lvm3 } from '../src/vehicle/presets.ts';
 
 function close(actual: number, expected: number, tol: number, msg = ''): void {
   assert.ok(Math.abs(actual - expected) <= tol, `${msg} actual=${actual} expected=${expected} diff=${actual - expected} tol=${tol}`);
@@ -109,5 +111,45 @@ describe('thermal', () => {
     relClose(tankSurfaceArea(2, 8), 125.66, 0.0001, 'tankSurfaceArea');
     relClose(heatLeak(0.8, 125.66, 303, 20.28), 28421, 0.001, 'heatLeak');
     relClose(boilOffRate(28421, 446e3), 0.06372, 0.001, 'boilOffRate');
+  });
+});
+
+describe('spec', () => {
+  test('lvm3FaultSpec matches lvm3 stages and tanks', () => {
+    const vehicle = lvm3();
+    const spec = lvm3FaultSpec();
+    assert.equal(spec.stages.length, vehicle.stages.length);
+    for (let i = 0; i < vehicle.stages.length; i++) {
+      assert.equal(spec.stages[i].tanks.length, vehicle.stages[i].tanks.length);
+    }
+  });
+
+  test('applyScenario returns a deep copy and modifies only the expected field', () => {
+    const base = lvm3FaultSpec();
+
+    const blocked = applyScenario(base, 'blocked-vent');
+    assert.equal(blocked.fairing!.ventArea, base.fairing!.ventArea * 0.25);
+    assert.equal(base.fairing!.ventArea, 0.08);
+
+    const low = applyScenario(base, 'regulator-low');
+    assert.equal(low.stages[0].tanks[0].ullagePressure, base.stages[0].tanks[0].ullagePressure * 0.5);
+    assert.equal(low.stages[1].tanks[0].ullagePressure, 0);
+    assert.equal(base.stages[0].tanks[0].ullagePressure, 0.35e6);
+
+    const high = applyScenario(base, 'regulator-high');
+    relClose(high.stages[0].tanks[1].ullagePressure, base.stages[0].tanks[1].ullagePressure * 2.2, 1e-12);
+    assert.equal(base.stages[0].tanks[1].ullagePressure, 0.35e6);
+
+    const hot = applyScenario(base, 'hot-grain');
+    assert.equal(hot.stages[1].solid!.grainTemp, 318);
+    assert.equal(base.stages[1].solid!.grainTemp, 300);
+
+    const thin = applyScenario(base, 'thin-nose');
+    assert.equal(thin.noseSkin.thickness, 0.003);
+    assert.equal(base.noseSkin.thickness, 0.006);
+
+    const hold = applyScenario(base, 'long-hold');
+    assert.equal(hold.padHoldSeconds, 3600);
+    assert.equal(base.padHoldSeconds, 0);
   });
 });
