@@ -127,6 +127,17 @@ export interface Ring extends BaseComponent {
 export type Component =
   | NoseCone | BodyTube | Transition | FinSet | InnerTube | Parachute | MassComponent | Ring;
 
+export interface StageBoundary {
+  /** Stage name from the .ork file, if present. */
+  name: string;
+  /** Index of the first component in `RocketModel.components` belonging to this stage. */
+  startComponent: number;
+  /** Number of components in `RocketModel.components` belonging to this stage. */
+  componentCount: number;
+  /** Designation of the motor in this stage (from motor mount), if any. */
+  motorDesignation?: string;
+}
+
 export interface RocketModel {
   name: string;
   /** Flat list, every x absolute. External parts (nose, tubes, transitions) are in fore-to-aft order. */
@@ -136,6 +147,8 @@ export interface RocketModel {
   /** Largest body radius; reference area is pi * maxRadius^2. */
   maxRadius: number;
   stageCount: number;
+  /** Stage boundaries in order from the top (sustainer) down to the booster. */
+  stages?: StageBoundary[];
   /** Things the parser could not represent. Shown to the user. */
   warnings: string[];
 }

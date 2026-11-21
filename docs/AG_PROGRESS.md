@@ -80,3 +80,12 @@ Checks: tsc ok, vitest 251/251
 Numbers: Subsonic validation table unchanged (e.g. Sim 1 alt err -4.3 %, Sim 3 alt err -1.9 %).
 Decisions: Drag-divergence Mach = 0.8, peak wave Cd = 0.30 at M = 1.15.
 Open issues: none
+
+## C1 Parse stages properly
+Status: done
+Commit: pending
+What changed: Added `StageBoundary` and optional `stages?: StageBoundary[]` to `RocketModel` in `src/types.ts`, populated stage boundaries in `src/ork/parser.ts` (in order from top/sustainer down to booster), and added multi-stage `.ork` tests in `src/ork/parser.test.ts` (skipping if `fixtures/external/` is absent).
+Checks: tsc ok, vitest 252/252
+Numbers: n/a
+Decisions: Kept `stages` optional on `RocketModel` so all existing single-stage tests remain untouched.
+Open issues: none

@@ -8,6 +8,7 @@ import type {
   MassComponent,
   MotorRef,
   NoseCone,
+  StageBoundary,
   NoseShape,
   Parachute,
   Ring,
@@ -82,19 +83,20 @@ export function parseOrkXml(xml: string): RocketModel {
   }
 
   // Pass A: collect external components (fore to aft) with their raw radii.
-  const raws: ExternalRaw[] = [];
-  for (const container of stageContainers) {
+  const raws: (ExternalRaw & { stageIndex: number })[] = [];
+  for (let sIdx = 0; sIdx < stageContainers.length; sIdx++) {
+    const container = stageContainers[sIdx];
     const subs = child(container, 'subcomponents');
     if (!subs) continue;
     for (const el of kids(subs)) {
       const tag = tagOf(el);
       if (tag === 'nosecone') {
-        raws.push({ el, tag, fore: undefined, aft: radiusOf(el, 'aftradius') });
+        raws.push({ el, tag, fore: undefined, aft: radiusOf(el, 'aftradius'), stageIndex: sIdx });
       } else if (tag === 'bodytube') {
         const r = radiusOf(el, 'radius');
-        raws.push({ el, tag, fore: r, aft: r });
+        raws.push({ el, tag, fore: r, aft: r, stageIndex: sIdx });
       } else if (tag === 'transition') {
-        raws.push({ el, tag, fore: radiusOf(el, 'foreradius'), aft: radiusOf(el, 'aftradius') });
+        raws.push({ el, tag, fore: radiusOf(el, 'foreradius'), aft: radiusOf(el, 'aftradius'), stageIndex: sIdx });
       } else if (INTERNAL_TAGS.has(tag)) {
         warnings.push(`<${tag}> ("${nameOf(el)}") is not attached to a body tube and was ignored.`);
       } else {
@@ -134,8 +136,12 @@ export function parseOrkXml(xml: string): RocketModel {
 
   // Pass C: stack externals fore to aft and recurse into their children.
   const components: Component[] = [];
+  const stageStarts = new Array<number>(stageContainers.length).fill(-1);
+  const stageCounts = new Array<number>(stageContainers.length).fill(0);
   let cursor = 0;
   for (const r of raws) {
+    const beforeCount = components.length;
+    if (stageStarts[r.stageIndex] === -1) stageStarts[r.stageIndex] = beforeCount;
     const length = num(r.el, 'length') ?? 0;
     const x = cursor;
     cursor += length;
@@ -152,8 +158,15 @@ export function parseOrkXml(xml: string): RocketModel {
       components.push(...shoulderRings(r.el, comp));
     }
     buildChildren(r.el, frameOf(comp), components, warnings);
+    stageCounts[r.stageIndex] += components.length - beforeCount;
   }
   components.forEach((c, i) => { c.id = `c${i}`; });
+
+  const stages: StageBoundary[] = stageContainers.map((container, sIdx) => ({
+    name: nameOf(container) || `Stage ${sIdx + 1}`,
+    startComponent: stageStarts[sIdx] === -1 ? components.length : stageStarts[sIdx],
+    componentCount: stageCounts[sIdx],
+  }));
 
   if (components.length === 0) warnings.push('No nose cone, body tube or transition was found.');
 
@@ -171,7 +184,7 @@ export function parseOrkXml(xml: string): RocketModel {
     }
   }
 
-  return { name, components, length, maxRadius, stageCount, warnings };
+  return { name, components, length, maxRadius, stageCount, stages, warnings };
 }
 
 /** Parse a .ork file (plain XML, or a zip archive containing rocket.ork). */

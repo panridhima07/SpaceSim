@@ -240,3 +240,44 @@ describe('fin cross-section', () => {
     expect(odd.crossSection).toBeUndefined();
   });
 });
+
+
+const NODE_FS = 'node:fs';
+const NODE_URL = 'node:url';
+const fsMod = (await import(/* @vite-ignore */ NODE_FS)) as unknown as {
+  existsSync(p: string): boolean;
+  readFileSync(p: string): Uint8Array;
+};
+const { fileURLToPath } = (await import(/* @vite-ignore */ NODE_URL)) as unknown as {
+  fileURLToPath(u: URL): string;
+};
+
+const TWO_STAGE = fileURLToPath(
+  new URL('../../fixtures/external/Two_stage_high_power_rocket.ork', import.meta.url),
+);
+const THREE_STAGE = fileURLToPath(
+  new URL('../../fixtures/external/Three_stage_low_power_rocket.ork', import.meta.url),
+);
+
+describe.skipIf(!fsMod.existsSync(TWO_STAGE) || !fsMod.existsSync(THREE_STAGE))(
+  'multi-stage .ork parsing',
+  () => {
+    it('keeps stage boundaries for two-stage and three-stage rockets', async () => {
+      const twoBytes = fsMod.readFileSync(TWO_STAGE);
+      const twoModel = await parseOrkFile(twoBytes);
+      expect(twoModel.stageCount).toBe(2);
+      expect(twoModel.stages).toHaveLength(2);
+      expect(twoModel.stages![0].startComponent).toBe(0);
+      expect(twoModel.stages![0].componentCount).toBeGreaterThan(0);
+      expect(twoModel.stages![1].startComponent).toBe(twoModel.stages![0].componentCount);
+      expect(twoModel.stages![1].componentCount).toBeGreaterThan(0);
+
+      const threeBytes = fsMod.readFileSync(THREE_STAGE);
+      const threeModel = await parseOrkFile(threeBytes);
+      expect(threeModel.stageCount).toBe(3);
+      expect(threeModel.stages).toHaveLength(3);
+      const totalFromStages = threeModel.stages!.reduce((s, st) => s + st.componentCount, 0);
+      expect(totalFromStages).toBe(threeModel.components.length);
+    });
+  },
+);
