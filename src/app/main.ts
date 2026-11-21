@@ -85,6 +85,7 @@ import {
   saveDesign,
 } from '../builder/storage';
 import { exportOrkZip } from '../builder/orkExport';
+import { saveBlob } from './saveFile';
 import {
   evaluateChallenges,
   loadCompletedChallenges,
@@ -1200,12 +1201,10 @@ function safeFilename(name: string): string {
 }
 
 function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  saveBlob(blob, filename).then(
+    (how) => { if (how === 'saved') ui.toast(`Saved ${filename}`); },
+    (err: unknown) => ui.toast(`Could not save ${filename}: ${err instanceof Error ? err.message : String(err)}`),
+  );
 }
 
 async function importBuilderFile(file: File): Promise<void> {
