@@ -42,7 +42,7 @@ export const SAMPLE_ORK_XML = `<?xml version="1.0" encoding="UTF-8"?>
                 <name>Motor mount</name>
                 <material type="bulk" density="680.0">Cardboard</material>
                 <length>0.07</length>
-                <outerradius>0.0095</outerradius>
+                <outerradius>0.0096</outerradius>
                 <thickness>0.0005</thickness>
                 <position type="bottom">0.0</position>
                 <motormount>

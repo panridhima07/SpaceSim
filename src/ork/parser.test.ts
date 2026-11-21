@@ -56,12 +56,18 @@ describe('parseOrkXml on the sample rocket', () => {
     const mount = rocket.components[3] as InnerTube;
     expect(mount.isMotorMount).toBe(true);
     expect(mount.overhang).toBeCloseTo(0.005, 9);
-    expect(mount.outerRadius).toBeCloseTo(0.0095, 9);
+    expect(mount.outerRadius).toBeCloseTo(0.0096, 9);
     expect(mount.motor).toBeDefined();
     expect(mount.motor!.manufacturer).toBe('Estes');
     expect(mount.motor!.designation).toBe('C6');
     expect(mount.motor!.diameter).toBeCloseTo(0.018, 9);
     expect(mount.motor!.delay).toBe(5);
+  });
+
+  it('has a motor mount that fits the C6 motor without a motor-fit flaw', () => {
+    const mount = rocket.components[3] as InnerTube;
+    const innerDiameter = 2 * (mount.outerRadius - mount.thickness);
+    expect(mount.motor!.diameter).toBeLessThanOrEqual(innerDiameter);
   });
 
   it('reads the parachute: diameter, default cd, and surface-density mass', () => {
