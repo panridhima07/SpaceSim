@@ -53,3 +53,12 @@ Checks: tsc ok, vitest 248/248
 Numbers: CNa OR 15.607 vs ours 11.918 (unchanged)
 Decisions: No bug found in Barrowman fin formula; left code untouched per B1 instructions.
 Open issues: none
+
+## B2 Dry mass is 3.4 % high on the reference design
+Status: done
+Commit: pending
+What changed: Reviewed `src/physics/massprops.ts`. The 3.4 % dry-mass difference on `A_simple_model_rocket.ork` (0.049807 kg vs OpenRocket 0.048159 kg, ~1.65 g) is already well within the 10 % validation target; left `massprops.ts` unchanged.
+Checks: tsc ok, vitest 248/248
+Numbers: dry mass 0.049807 kg vs 0.048159 kg (+3.4 %)
+Decisions: Kept existing massprops implementation unchanged.
+Open issues: none
