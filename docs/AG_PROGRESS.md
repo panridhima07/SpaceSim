@@ -163,3 +163,28 @@ Checks: stageMotors.test.ts 1/1, sim.test.ts 6/6
 Numbers: n/a
 Decisions: Single-stage flights without `stageMotors` remain bit-identical.
 Open issues: none
+
+## ITEM 5 Tidy up
+Status: done
+Commit: dbcb10d
+What changed: Deleted duplicate `src/data/lvm3Chandrayaan3.ts` and `.test.ts` (superseded by `src/mission/vehicles.ts`), and updated `transonicWaveCd` comment in `src/physics/aero.ts` to state it is an uncalibrated placeholder.
+Checks: vitest 277/277
+Numbers: Design 2 Sim 3 (J570W, ~Mach 1.1) vmax err +17.3% -> +11.2% (before mass fix), -2.3% (after mass fix).
+Decisions: none
+Open issues: none
+
+## TASK-03 summary
+
+| quantity | before | after |
+|---|---|---|
+| design 1 apogee error range | -4.3% to -1.9% | -4.3% to -1.9% |
+| design 1 max speed error range | -2.9% to -2.2% | -2.9% to -2.2% |
+| design 1 CN-alpha (ours / OpenRocket) | 11.918 / 15.607 | 11.918 / 15.607 (zero-alpha Barrowman exact; OR includes alpha>0 body lift) |
+| design 1 stability margin | unchanged | unchanged |
+| design 1 dry mass error | +3.4% | +3.4% |
+| design 2 rail exit speed error range | +10.5% to +18.1% | -3.1% to +0.6% |
+| design 2 max speed error range | +11.2% to +40.4% | -2.3% to -0.1% |
+| design 2 apogee error range | -9.5% to +55.4% | -5.4% to -1.0% |
+| two-stage example apogee error | not simulated | multi-stage sim + `buildStageMotors` added |
+| three-stage example apogee error | not simulated | multi-stage sim + `buildStageMotors` added |
+| total tests passing | 264 | 277 |
