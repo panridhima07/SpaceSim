@@ -81,8 +81,13 @@ describe.skipIf(!haveDualFixture)('our sim vs OpenRocket (Dual parachute deploym
     for (const r of rows) {
       if (!r.sim.motor || r.note === 'motor not in database') continue;
       expect(r.ours, r.note).not.toBeNull();
-      expect(Number.isFinite(r.ours!.maxAltitude)).toBe(true);
-      expect(r.ours!.maxAltitude).toBeGreaterThan(0);
+      const o = r.ours!;
+      expect(Number.isFinite(o.maxAltitude)).toBe(true);
+      expect(o.maxAltitude).toBeGreaterThan(0);
+      expect(Math.abs(pct(o.maxAltitude, r.sim.maxAltitude))).toBeLessThan(8);
+      expect(Math.abs(pct(o.maxVelocity, r.sim.maxVelocity))).toBeLessThan(5);
+      expect(Math.abs(pct(o.timeToApogee, r.sim.timeToApogee))).toBeLessThan(5);
+      expect(Math.abs(pct(o.launchRodVelocity, r.sim.launchRodVelocity))).toBeLessThan(6);
     }
   }, 120_000);
 });

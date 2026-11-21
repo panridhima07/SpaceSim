@@ -350,8 +350,29 @@ export const massProps: MassPropsFn = (
   tBurn: number,
 ): MassProps => {
   const parts: Part[] = [];
-  for (const c of rocket.components) {
-    parts.push(...componentParts(c));
+  if (rocket.stages && rocket.stages.some((s) => s.massOverride !== undefined && s.overrideSubcomponentsMass)) {
+    for (const s of rocket.stages) {
+      const stageParts: Part[] = [];
+      const end = Math.min(rocket.components.length, s.startComponent + s.componentCount);
+      for (let i = s.startComponent; i < end; i++) {
+        stageParts.push(...componentParts(rocket.components[i]));
+      }
+      if (s.massOverride !== undefined && s.overrideSubcomponentsMass) {
+        const sum = stageParts.reduce((acc, p) => acc + p.m, 0);
+        const scale = sum > 0 ? s.massOverride / sum : 0;
+        for (const p of stageParts) {
+          p.m *= scale;
+          p.ownPitch *= scale;
+          p.roll *= scale;
+          p.radialPitch *= scale;
+        }
+      }
+      parts.push(...stageParts);
+    }
+  } else {
+    for (const c of rocket.components) {
+      parts.push(...componentParts(c));
+    }
   }
   if (motor) {
     parts.push(...motorParts(rocket, motor, tBurn));

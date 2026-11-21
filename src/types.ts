@@ -136,6 +136,10 @@ export interface StageBoundary {
   componentCount: number;
   /** Designation of the motor in this stage (from motor mount), if any. */
   motorDesignation?: string;
+  /** Stage-level mass override, kg. */
+  massOverride?: number;
+  /** Whether the stage-level mass override replaces all subcomponents' mass. */
+  overrideSubcomponentsMass?: boolean;
 }
 
 export interface RocketModel {

@@ -164,11 +164,16 @@ export function parseOrkXml(xml: string): RocketModel {
   }
   components.forEach((c, i) => { c.id = `c${i}`; });
 
-  const stages: StageBoundary[] = stageContainers.map((container, sIdx) => ({
-    name: nameOf(container) || `Stage ${sIdx + 1}`,
-    startComponent: stageStarts[sIdx] === -1 ? components.length : stageStarts[sIdx],
-    componentCount: stageCounts[sIdx],
-  }));
+  const stages: StageBoundary[] = stageContainers.map((container, sIdx) => {
+    const mOver = num(container, 'overridemass');
+    const subOver = textOf(child(container, 'overridesubcomponentsmass')) === 'true';
+    return {
+      name: nameOf(container) || `Stage ${sIdx + 1}`,
+      startComponent: stageStarts[sIdx] === -1 ? components.length : stageStarts[sIdx],
+      componentCount: stageCounts[sIdx],
+      ...(mOver !== undefined ? { massOverride: mOver, overrideSubcomponentsMass: subOver } : {}),
+    };
+  });
 
   if (components.length === 0) warnings.push('No nose cone, body tube or transition was found.');
 

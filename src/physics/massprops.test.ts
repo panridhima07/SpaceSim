@@ -63,3 +63,21 @@ describe('massProps', () => {
     expect(mp.cgX).toBeCloseTo(0.15, 10);
   });
 });
+
+  it('stage massOverride with overrideSubcomponentsMass replaces children mass', () => {
+    const base = { ...FIXTURE_ROCKET };
+    const overridden = {
+      ...base,
+      stages: [
+        {
+          name: 'Sustainer',
+          startComponent: 0,
+          componentCount: base.components.length,
+          massOverride: 1.5,
+          overrideSubcomponentsMass: true,
+        },
+      ],
+    };
+    const mp = massProps(overridden, null, 0);
+    expect(mp.mass).toBeCloseTo(1.5, 6);
+  });
