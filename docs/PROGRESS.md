@@ -44,3 +44,5 @@
 - Step 1 check: `npm run typecheck` passed.
 - Step 2: added an adapter test that checks app body +Z and +X against library body +Z and -Y for the same three quaternions, pinning all three axes.
 - Step 2 check: `npm test` passed 219 tests in 22 files.
+- Step 3: added `ReferenceEvent` and `toMarkers` to `src/mission/adapter.ts`, mapping event times to liftoff-relative markers, severities, and one-use reference times; added three tests.
+- Step 3 check: `npm run typecheck` passed and `npm test` passed 222 tests in 22 files.

@@ -15,7 +15,9 @@
 import { quatMul } from '../physics/vec';
 import type { Quat, Vec3 } from '../types';
 import type { Simulation } from './engine';
-import type { FlightSample } from './record';
+import type { FlightMarker, FlightSample } from './record';
+
+export interface ReferenceEvent { label: string; pattern: RegExp; t: number }  // t = real-flight seconds after liftoff
 
 const SQRT_HALF = Math.SQRT1_2;
 const ECI_TO_APP: Quat = [-SQRT_HALF, 0, 0, SQRT_HALF];
@@ -34,6 +36,33 @@ export function appToEci(v: Vec3): Vec3 {
 /** Library attitude (body +X nose, body-to-ECI) to app attitude (body +Y nose, body-to-app). */
 export function attitudeToApp(q: Quat): Quat {
   return quatMul(quatMul(ECI_TO_APP, q), APP_BODY_TO_LIB_BODY);
+}
+
+/** Convert library flight events into timeline markers, attaching real-flight reference times. */
+export function toMarkers(
+  events: ReadonlyArray<{ t: number; type: string; message: string }>,
+  liftoffTime: number,
+  reference: ReadonlyArray<ReferenceEvent> = [],
+): FlightMarker[] {
+  const used = new Set<number>();
+  return events.map((e) => {
+    const severity: FlightMarker['severity'] =
+      e.type === 'abort' || e.type === 'impact' ? 'critical'
+        : e.type === 'warning' ? 'warning'
+          : 'info';
+    const marker: FlightMarker = {
+      t: e.t - liftoffTime,
+      kind: 'event',
+      label: e.message,
+      severity,
+    };
+    const idx = reference.findIndex((r, i) => !used.has(i) && r.pattern.test(e.message));
+    if (idx >= 0) {
+      used.add(idx);
+      marker.reference = reference[idx].t;
+    }
+    return marker;
+  });
 }
 
 /** Fill a flight sample from a library simulation at its current state. */
