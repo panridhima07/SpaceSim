@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Rocket 3D Viewer</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#8b949e; --accent:#ff7a1a; --blue:#58a6ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+  header { padding:10px 16px; background:var(--panel); display:flex; gap:10px; align-items:center; flex-wrap:wrap; border-bottom:1px solid var(--line); }
+  h1 { font-size:16px; margin:0 8px 0 0; }
+  label.btn, button { background:var(--accent); color:#000; border:0; padding:7px 13px; border-radius:6px; font-weight:600; cursor:pointer; font-size:13px; }
+  button.ghost { background:transparent; color:var(--fg); border:1px solid var(--line); }
+  button.ghost.on { border-color:var(--accent); color:var(--accent); }
+  #status { color:var(--muted); font-size:13px; }
+  #stage { flex:1; position:relative; min-height:0; }
+  #drop { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; color:var(--muted); font-size:15px; }
+  #drop.hover { background:rgba(255,122,26,.12); outline:3px dashed var(--accent); outline-offset:-12px; }
+  .card { position:absolute; background:rgba(22,27,34,.92); border:1px solid var(--line); border-radius:8px; padding:10px 12px; font-size:12px; }
+  #parts { top:12px; right:12px; max-height:45%; overflow:auto; min-width:170px; }
+  #parts:empty, #hud.hidden { display:none; }
+  #hud { left:12px; top:12px; width:290px; }
+  #hud .grid { display:grid; grid-template-columns:1fr 1fr; gap:6px 12px; margin:8px 0; }
+  #hud .k { color:var(--muted); font-size:11px; }
+  #hud .v { font-variant-numeric:tabular-nums; font-size:14px; font-weight:600; }
+  .bar { height:6px; background:#21262d; border-radius:3px; overflow:hidden; margin-top:3px; }
+  .bar > i { display:block; height:100%; width:0; background:var(--accent); }
+  #chart { width:100%; height:80px; display:block; margin-top:6px; }
+  #controls { display:flex; gap:8px; align-items:center; margin-top:8px; }
+  #controls input[type=range] { flex:1; accent-color:var(--accent); }
+  #controls select { background:#0d1117; color:var(--fg); border:1px solid var(--line); border-radius:4px; font-size:12px; }
+  #events { margin-top:6px; max-height:90px; overflow:auto; color:var(--muted); line-height:1.5; }
+  #events b { color:var(--fg); font-weight:600; }
+  .note { color:var(--muted); font-size:10.5px; margin-top:6px; }
+  canvas.three { display:block; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>🚀 OpenRocket → 3D</h1>
+  <label class="btn">Upload .ork<input id="file" type="file" accept=".ork,.xml" hidden /></label>
+  <button class="ghost" id="demo">Load demo rocket</button>
+  <button class="ghost on" id="xray">X-ray: on</button>
+  <span id="status">Drop an OpenRocket (.ork) file anywhere.</span>
+</header>
+<div id="stage">
+  <div id="drop">Drag &amp; drop a .ork file</div>
+  <div id="parts" class="card"></div>
+  <div id="hud" class="card hidden">
+    <div><b>Flight systems</b> <span id="simname" style="color:var(--muted)"></span></div>
+    <div class="grid">
+      <div><div class="k">Time</div><div class="v" id="h-t">0.00 s</div></div>
+      <div><div class="k">Phase</div><div class="v" id="h-phase">Pad</div></div>
+      <div><div class="k">Altitude</div><div class="v" id="h-alt">0 m</div></div>
+      <div><div class="k">Velocity</div><div class="v" id="h-vel">0 m/s</div></div>
+      <div><div class="k">Thrust</div><div class="v" id="h-thr">0 N</div></div>
+      <div><div class="k">Mach</div><div class="v" id="h-mach">0.00</div></div>
+      <div style="grid-column:1/3"><div class="k">Propellant remaining <span id="h-fuelv"></span></div><div class="bar"><i id="h-fuel"></i></div></div>
+      <div style="grid-column:1/3"><div class="k">Chamber pressure (est.) <span id="h-pcv"></span></div><div class="bar"><i id="h-pc" style="background:#f85149"></i></div></div>
+      <div style="grid-column:1/3"><div class="k">Ambient air pressure <span id="h-pav"></span></div><div class="bar"><i id="h-pa" style="background:var(--blue)"></i></div></div>
+    </div>
+    <canvas id="chart"></canvas>
+    <div id="controls">
+      <button id="play">▶ Launch</button>
+      <input id="scrub" type="range" min="0" max="1000" value="0" />
+      <select id="speed"><option value="0.25">¼×</option><option value="1" selected>1×</option><option value="4">4×</option></select>
+    </div>
+    <div id="events"></div>
+    <div class="note" id="note"></div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================= scene ================= */
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.domElement.className = 'three';
+stage.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d1117);
+const camera = new THREE.PerspectiveCamera(40, 1, 0.001, 1000);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(3, 5, 4); scene.add(sun);
+const grid = new THREE.GridHelper(4, 40, 0x30363d, 0x21262d); scene.add(grid);
+let rocket = new THREE.Group(); scene.add(rocket);
+
+function resize() { const { clientWidth: w, clientHeight: h } = stage; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+
+/* ================= procedural textures ================= */
+function canvasTex(draw, w = 256, h = 256) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const noise = (g, w, h, a) => { for (let i = 0; i < w * h / 6; i++) { g.fillStyle = `rgba(0,0,0,${Math.random() * a})`; g.fillRect(Math.random() * w, Math.random() * h, 2, 2); } };
+const TEX = {
+  body: col => canvasTex((g, w, h) => { g.fillStyle = col; g.fillRect(0, 0, w, h); noise(g, w, h, .08);
+    g.fillStyle = 'rgba(255,255,255,.15)'; g.fillRect(0, h * .1, w, 3);
+    g.fillStyle = '#111'; for (let x = 0; x < w; x += w / 4) g.fillRect(x, h * .45, w / 8, h * .1); }),
+  nose: col => canvasTex((g, w, h) => { g.fillStyle = col; g.fillRect(0, 0, w, h); noise(g, w, h, .06);
+    g.fillStyle = 'rgba(0,0,0,.25)'; for (let x = 0; x < w; x += w / 2) g.fillRect(x, 0, w / 4, h); }),
+  fin: col => canvasTex((g, w, h) => { g.fillStyle = col; g.fillRect(0, 0, w, h); noise(g, w, h, .1);
+    g.strokeStyle = 'rgba(255,255,255,.2)'; g.lineWidth = 3; g.strokeRect(6, 6, w - 12, h - 12); }),
+  kraft: () => canvasTex((g, w, h) => { g.fillStyle = '#b08a5a'; g.fillRect(0, 0, w, h); noise(g, w, h, .15);
+    g.strokeStyle = 'rgba(60,40,20,.35)'; g.lineWidth = 2; for (let y = -h; y < h * 2; y += 22) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y + 60); g.stroke(); } }),
+  wood: () => canvasTex((g, w, h) => { g.fillStyle = '#c9a26b'; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 40; i++) { g.strokeStyle = `rgba(110,70,30,${Math.random() * .35})`; g.beginPath(); const y = Math.random() * h; g.moveTo(0, y); g.bezierCurveTo(w / 3, y + 10, w * 2 / 3, y - 10, w, y); g.stroke(); } }),
+  metal: () => canvasTex((g, w, h) => { const gr = g.createLinearGradient(0, 0, w, 0); gr.addColorStop(0, '#6e7681'); gr.addColorStop(.5, '#c9d1d9'); gr.addColorStop(1, '#6e7681');
+    g.fillStyle = gr; g.fillRect(0, 0, w, h); for (let y = 0; y < h; y += 3) { g.fillStyle = `rgba(0,0,0,${Math.random() * .08})`; g.fillRect(0, y, w, 1); } }),
+  propellant: () => canvasTex((g, w, h) => { g.fillStyle = '#7a4a2a'; g.fillRect(0, 0, w, h); noise(g, w, h, .3);
+    for (let i = 0; i < 300; i++) { g.fillStyle = `rgba(255,200,140,${Math.random() * .25})`; g.fillRect(Math.random() * w, Math.random() * h, 2, 2); } }),
+  nylon: col => canvasTex((g, w, h) => { g.fillStyle = col; g.fillRect(0, 0, w, h);
+    g.strokeStyle = 'rgba(0,0,0,.18)'; g.lineWidth = 1; for (let i = 0; i < w; i += 8) { g.beginPath(); g.moveTo(i, 0); g.lineTo(i, h); g.stroke(); g.beginPath(); g.moveTo(0, i); g.lineTo(w, i); g.stroke(); }
+    g.fillStyle = 'rgba(255,255,255,.9)'; for (let x = 0; x < w; x += w / 4) g.fillRect(x, 0, w / 8, h); }),
+};
+const PALETTE = ['#e8e8e8', '#ff7a1a', '#2f81f7', '#d1242f', '#3fb950', '#a371f7'];
+const mat = (opts) => new THREE.MeshStandardMaterial({ roughness: .55, metalness: .15, side: THREE.DoubleSide, ...opts });
+const shellMats = []; // outer skin materials that go see-through in X-ray mode
+let xray = true;
+function shellMat(tex) { const m = mat({ map: tex, transparent: true, opacity: xray ? .22 : 1, depthWrite: !xray }); shellMats.push(m); return m; }
+function applyXray() { shellMats.forEach(m => { m.opacity = xray ? .22 : 1; m.depthWrite = !xray; m.needsUpdate = true; }); }
+
+/* ================= ORK reading ================= */
+async function readOrk(buf) {
+  const b = new Uint8Array(buf);
+  if (b[0] === 0x50 && b[1] === 0x4b) {
+    const zip = await JSZip.loadAsync(buf);
+    const f = Object.values(zip.files).find(f => /\.(ork|xml)$/i.test(f.name) && !f.dir) || Object.values(zip.files).find(f => !f.dir);
+    return f.async('string');
+  }
+  if (b[0] === 0x1f && b[1] === 0x8b) return new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+  return new TextDecoder().decode(b);
+}
+const kid = (el, tag) => el && [...el.children].find(c => c.tagName.toLowerCase() === tag);
+const txt = (el, tag) => kid(el, tag)?.textContent?.trim() ?? '';
+const isAuto = (el, tag) => /auto/i.test(txt(el, tag));
+const num = (el, tag, def = 0) => { const v = parseFloat(txt(el, tag)); return isNaN(v) ? def : v; };
+
+/* Where a child component starts along the axis, relative to its parent. */
+function placeChild(el, x0, pL, L) {
+  const ax = kid(el, 'axialoffset'), pos = kid(el, 'position');
+  const ref = (ax?.getAttribute('method') || pos?.getAttribute('type') || 'top').toLowerCase();
+  const off = parseFloat((ax || pos)?.textContent) || 0;
+  if (ref === 'bottom') return x0 + pL - L + off;
+  if (ref === 'middle') return x0 + (pL - L) / 2 + off;
+  if (ref === 'absolute') return off;
+  return x0 + off;
+}
+
+function parseModel(xml) {
+  const doc = new DOMParser().parseFromString(xml, 'application/xml');
+  if (doc.querySelector('parsererror')) throw new Error('Not valid OpenRocket XML');
+  const root = doc.querySelector('rocket');
+  if (!root) throw new Error('No <rocket> found in file');
+  const sim = parseSim(doc);
+  const name = txt(root, 'name') || 'Rocket';
+  const parts = []; let x = 0, lastR = 0.02;
+  for (const stageEl of root.querySelectorAll(':scope > subcomponents > stage')) {
+    const stageId = txt(stageEl, 'id');
+    const comps = [...(kid(stageEl, 'subcomponents')?.children || [])];
+    const radiusOf = c => { const t = c.tagName.toLowerCase();
+      if (t === 'bodytube') return isAuto(c, 'radius') ? null : num(c, 'radius', null);
+      if (t === 'nosecone') return isAuto(c, 'aftradius') ? null : num(c, 'aftradius', null);
+      if (t === 'transition') return isAuto(c, 'foreradius') ? null : num(c, 'foreradius', null);
+      return null; };
+    comps.forEach((c, i) => {
+      const t = c.tagName.toLowerCase(), L = num(c, 'length');
+      const next = () => { for (let j = i + 1; j < comps.length; j++) { const r = radiusOf(comps[j]); if (r) return r; } return lastR; };
+      const base = { stageId, id: txt(c, 'id'), name: txt(c, 'name'), x, L };
+      let r0, r1;
+      if (t === 'nosecone') { r0 = 0; r1 = isAuto(c, 'aftradius') ? next() : num(c, 'aftradius', lastR); parts.push({ ...base, type: 'nose', r0, r1, shape: txt(c, 'shape') || 'ogive' }); }
+      else if (t === 'bodytube') { r0 = r1 = isAuto(c, 'radius') ? lastR || next() : num(c, 'radius', lastR); parts.push({ ...base, type: 'body', r0, r1 }); }
+      else if (t === 'transition') { r0 = isAuto(c, 'foreradius') ? lastR : num(c, 'foreradius', lastR); r1 = isAuto(c, 'aftradius') ? next() : num(c, 'aftradius', r0); parts.push({ ...base, type: 'transition', r0, r1, shape: txt(c, 'shape') || 'conical' }); }
+      else return;
+      const wall = num(c, 'thickness', 0.0015) || 0.0015;
+      walkInternals(c, x, L, Math.max(Math.min(r0 || r1, r1) - wall, r1 * .5), r1, parts, stageId, sim);
+      x += L; lastR = r1;
+    });
+  }
+  return { name, parts, length: x, sim };
+}
+
+/* Everything nested inside a body part: fins, motor mounts, motors, rings, chutes... */
+function walkInternals(el, x0, pL, innerR, outerR, parts, stageId, sim, hostTubeR) {
+  const subs = kid(el, 'subcomponents'); if (!subs) return;
+  const kids = [...subs.children];
+  const tubeRadii = hostTubeR ? [hostTubeR] : kids.filter(k => k.tagName.toLowerCase() === 'innertube').map(k => num(k, 'outerradius'));
+  for (const c of kids) {
+    const t = c.tagName.toLowerCase();
+    const base = { stageId, id: txt(c, 'id'), name: txt(c, 'name') };
+    if (/finset$/.test(t)) { addFins(c, t, x0, pL, outerR, parts, base); continue; }
+    if (t === 'innertube' || t === 'tubecoupler') {
+      const L = num(c, 'length'), xs = placeChild(c, x0, pL, L);
+      const ro = isAuto(c, 'outerradius') ? innerR : num(c, 'outerradius', innerR), ri = ro - (num(c, 'thickness', .001) || .001);
+      parts.push({ ...base, type: t, x: xs, L, ro, ri });
+      const mm = kid(c, 'motormount');
+      if (mm) addMotor(mm, c, xs, L, parts, base, sim);
+      // rings nested in a motor tube span from that tube out to the airframe wall
+      if (t === 'innertube') walkInternals(c, xs, L, innerR, outerR, parts, stageId, sim, ro);
+      else walkInternals(c, xs, L, ri, ro, parts, stageId, sim);
+    } else if (t === 'centeringring' || t === 'bulkhead' || t === 'engineblock') {
+      const L = num(c, 'length', .003) || .003, xs = placeChild(c, x0, pL, L);
+      const ro = isAuto(c, 'outerradius') ? innerR : num(c, 'outerradius', innerR);
+      let ri = t === 'bulkhead' ? 0 : isAuto(c, 'innerradius') ? (tubeRadii.length ? Math.max(...tubeRadii) : ro * .6) : num(c, 'innerradius', 0);
+      if (t === 'engineblock' && !ri) ri = ro * .55;
+      parts.push({ ...base, type: 'ring', kind: t, x: xs, L, ro, ri, count: num(c, 'instancecount', 1) || 1, sep: num(c, 'instanceseparation', 0) });
+    } else if (t === 'parachute' || t === 'streamer' || t === 'shockcord' || t === 'masscomponent') {
+      const L = num(c, 'packedlength', .03) || .03, xs = placeChild(c, x0, pL, L);
+      const r = Math.min(num(c, 'packedradius', innerR * .8) || innerR * .8, innerR);
+      parts.push({ ...base, type: t, x: xs, L, r, diameter: num(c, 'diameter', innerR * 16), mass: num(c, 'mass', 0) });
+    } else if (t === 'launchlug' || t === 'railbutton') {
+      const L = num(c, 'length', .03) || .02, xs = placeChild(c, x0, pL, L);
+      parts.push({ ...base, type: 'lug', x: xs, L, r: num(c, 'outerradius', .004) || .004, at: outerR });
+    }
+  }
+}
+
+function addMotor(mm, tubeEl, tubeX, tubeL, parts, base, sim) {
+  const motors = [...mm.querySelectorAll(':scope > motor')];
+  if (!motors.length) return;
+  const m = motors.find(m => m.getAttribute('configid') === sim?.configId) || motors[0];
+  const ml = num(m, 'length', tubeL), md = num(m, 'diameter', .018);
+  const overhang = num(mm, 'overhang', 0);
+  parts.push({ ...base, type: 'motor', mountId: txt(tubeEl, 'id'), name: `${txt(m, 'manufacturer')} ${txt(m, 'designation')}`.trim() || 'Motor',
+    designation: txt(m, 'designation'), x: tubeX + tubeL + overhang - ml, L: ml, r: md / 2 });
+}
+
+function addFins(f, t, px, pL, r, parts, base) {
+  const count = Math.round(num(f, 'fincount', 3)) || 3;
+  let root = num(f, 'rootchord'), tip = num(f, 'tipchord'), h = num(f, 'height'), sweep = num(f, 'sweeplength');
+  let pts;
+  if (t === 'freeformfinset') { pts = [...f.querySelectorAll('finpoints > point')].map(p => [parseFloat(p.getAttribute('x')), parseFloat(p.getAttribute('y'))]); root = Math.max(...pts.map(p => p[0])); h = Math.max(...pts.map(p => p[1])); }
+  if (!pts) pts = [[0, 0], [sweep, h], [sweep + tip, h], [root, 0]];
+  parts.push({ ...base, type: 'fins', x: placeChild(f, px, pL, root), count, pts, r, thick: num(f, 'thickness', .003) || .003, ellip: t === 'ellipticalfinset', root, h });
+}
+
+/* ================= simulation data stored in the .ork ================= */
+function parseSim(doc) {
+  for (const s of doc.querySelectorAll('simulations > simulation')) {
+    const br = s.querySelector('flightdata > databranch');
+    if (!br) continue;
+    const cols = br.getAttribute('types').split(',');
+    const rows = [...br.querySelectorAll(':scope > datapoint')].map(d => d.textContent.split(',').map(Number));
+    if (rows.length < 3) continue;
+    const col = n => { const i = cols.indexOf(n); return i < 0 ? null : rows.map(r => r[i]); };
+    const events = [...br.querySelectorAll(':scope > event')].map(e => ({ t: +e.getAttribute('time'), type: e.getAttribute('type'), source: e.getAttribute('source') }));
+    return { name: txt(s, 'name'), configId: s.querySelector('conditions > configid')?.textContent?.trim(), synthetic: false,
+      time: col('time'), alt: col('altitude'), vel: col('velocity_total'), thrust: col('thrust_force'), motorMass: col('motor_mass'),
+      pa: col('air_pressure'), mach: col('mach_number'), events };
+  }
+  return null;
+}
+
+/* No simulation saved in the file → a simple illustrative burn so the systems still animate. */
+function syntheticSim(model) {
+  const time = [], alt = [], vel = [], thrust = [], pa = [], mach = [];
+  const burn = 1.6, peak = 60; let a = 0, v = 0;
+  for (let t = 0; t <= 14; t += .02) {
+    const F = t < burn ? peak * (t < .15 ? t / .15 : 1 - .45 * (t - .15) / (burn - .15)) : 0;
+    const acc = F / 0.4 - 9.81 - .002 * v * Math.abs(v); if (t > .05) { v += acc * .02; a = Math.max(0, a + v * .02); }
+    time.push(t); alt.push(a); vel.push(Math.abs(v)); thrust.push(F); pa.push(101325 * Math.exp(-a / 8400)); mach.push(Math.abs(v) / 340);
+  }
+  const apo = time[alt.indexOf(Math.max(...alt))];
+  const chute = model.parts.find(p => p.type === 'parachute' || p.type === 'streamer');
+  const mount = model.parts.find(p => p.type === 'motor')?.mountId;
+  return { name: 'illustrative', synthetic: true, time, alt, vel, thrust, pa, mach, motorMass: null,
+    events: [{ t: 0, type: 'ignition', source: mount }, { t: burn, type: 'burnout', source: mount }, { t: apo, type: 'apogee' },
+      ...(chute ? [{ t: apo + .3, type: 'recoverydevicedeployment', source: chute.id }] : [])] };
+}
+
+/* ================= geometry ================= */
+function noseProfile(shape, L, R, n = 32) {
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const s = i / n; let r;
+    switch (shape) {
+      case 'conical': r = R * s; break;
+      case 'ellipsoid': r = R * Math.sqrt(Math.max(0, 1 - (1 - s) ** 2)); break;
+      case 'parabolic': r = R * (2 * s - s * s); break;
+      case 'power': r = R * Math.sqrt(s); break;
+      case 'haack': { const th = Math.acos(1 - 2 * s); r = R / Math.sqrt(Math.PI) * Math.sqrt(th - Math.sin(2 * th) / 2); break; }
+      default: { const rho = (R * R + L * L) / (2 * R), y = L * (1 - s); r = Math.sqrt(Math.max(0, rho * rho - y * y)) + R - rho; }
+    }
+    pts.push(new THREE.Vector2(Math.max(r, 0), s * L));
+  }
+  return pts;
+}
+// hollow cylinder (tube or ring) from y=0 to y=L
+const tubeGeo = (ri, ro, L, seg = 40) => new THREE.LatheGeometry([new THREE.Vector2(ri, 0), new THREE.Vector2(ro, 0), new THREE.Vector2(ro, L), new THREE.Vector2(ri, L), new THREE.Vector2(ri, 0)], seg);
+const at = (mesh, x, L) => { mesh.position.y = -(x + L); return mesh; }; // place a y=0..L mesh at axial station x
+
+let live = null; // animated pieces of the current rocket
+
+function buildRocket(model) {
+  scene.remove(rocket); rocket = new THREE.Group(); shellMats.length = 0;
+  const stageGroups = {}; const grp = id => stageGroups[id] ||= (() => { const g = new THREE.Group(); rocket.add(g); return g; })();
+  const list = document.getElementById('parts'); list.innerHTML = `<b>${model.name}</b><br>`;
+  live = { motors: [], chutes: [], stageGroups, model };
+  const legend = (col, label) => list.innerHTML += `<span style="color:${col}">■</span> ${label}<br>`;
+  let ci = 0;
+  for (const p of model.parts) {
+    const g = grp(p.stageId);
+    if (p.type === 'nose') {
+      const col = PALETTE[ci++ % PALETTE.length], tex = TEX.nose(col); tex.repeat.set(2, 1);
+      const m = new THREE.Mesh(new THREE.LatheGeometry(noseProfile(p.shape.toLowerCase(), p.L, p.r1), 48), shellMat(tex));
+      m.rotation.x = Math.PI; m.position.y = -p.x; g.add(m); legend(col, p.name || 'Nose cone');
+    } else if (p.type === 'body' || p.type === 'transition') {
+      const col = PALETTE[ci++ % PALETTE.length], tex = TEX.body(col); tex.repeat.set(1, Math.max(1, p.L / (p.r0 * 6 || 1)));
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(p.r0, p.r1, p.L, 48, 1, true), shellMat(tex));
+      m.position.y = -(p.x + p.L / 2); g.add(m); legend(col, p.name || p.type);
+    } else if (p.type === 'fins') {
+      const col = PALETTE[ci++ % PALETTE.length];
+      const shape = new THREE.Shape();
+      if (p.ellip) { shape.moveTo(0, 0); shape.absellipse(p.root / 2, 0, p.root / 2, p.h, 0, Math.PI, false); }
+      else { shape.moveTo(p.pts[0][0], p.pts[0][1]); p.pts.slice(1).forEach(([a, b]) => shape.lineTo(a, b)); }
+      const geo = new THREE.ExtrudeGeometry(shape, { depth: p.thick, bevelEnabled: false }); geo.translate(0, 0, -p.thick / 2);
+      geo.computeBoundingBox(); const bb = geo.boundingBox, uv = geo.attributes.uv, pos = geo.attributes.position;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, (pos.getX(i) - bb.min.x) / (bb.max.x - bb.min.x || 1), (pos.getY(i) - bb.min.y) / (bb.max.y - bb.min.y || 1));
+      const m = mat({ map: TEX.fin(col) }), fins = new THREE.Group();
+      for (let k = 0; k < p.count; k++) { const fin = new THREE.Mesh(geo, m); fin.rotation.z = -Math.PI / 2; fin.position.set(p.r, 0, 0);
+        const h = new THREE.Group(); h.add(fin); h.rotation.y = k / p.count * Math.PI * 2; fins.add(h); }
+      fins.position.y = -p.x; g.add(fins); legend(col, p.name || 'Fins');
+    } else if (p.type === 'innertube' || p.type === 'tubecoupler') {
+      g.add(at(new THREE.Mesh(tubeGeo(p.ri, p.ro, p.L), mat({ map: TEX.kraft(), color: p.type === 'tubecoupler' ? 0xd8c8a8 : 0xffffff })), p.x, p.L));
+    } else if (p.type === 'ring') {
+      const m = mat({ map: TEX.wood(), color: p.kind === 'bulkhead' ? 0xe0c090 : 0xffffff });
+      for (let k = 0; k < p.count; k++) g.add(at(new THREE.Mesh(tubeGeo(p.ri, p.ro, p.L), m), p.x + k * (p.sep + p.L), p.L));
+    } else if (p.type === 'motor') buildMotor(p, g);
+    else if (p.type === 'parachute' || p.type === 'streamer') buildChute(p, g, model);
+    else if (p.type === 'shockcord') {
+      const m = new THREE.Mesh(new THREE.TorusKnotGeometry(p.r * .55, p.r * .18, 48, 6, 2, 5), mat({ color: 0xe3b341, roughness: .9 }));
+      m.scale.y = p.L / (p.r * 1.6); m.position.y = -(p.x + p.L / 2); g.add(m);
+    } else if (p.type === 'masscomponent') {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(p.r, p.r, p.L, 24), mat({ color: 0x8957e5, metalness: .4 }));
+      m.position.y = -(p.x + p.L / 2); g.add(m);
+    } else if (p.type === 'lug') {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(p.r, p.r, p.L, 16), mat({ color: 0x8b949e }));
+      m.position.set(p.at + p.r, -(p.x + p.L / 2), 0); g.add(m);
+    }
+  }
+  const counts = {};
+  model.parts.forEach(p => { const k = { motor: 'Motor', parachute: 'Parachute', streamer: 'Streamer', ring: p.kind === 'bulkhead' ? 'Bulkhead' : 'Centering ring', innertube: 'Motor mount tube', tubecoupler: 'Coupler', shockcord: 'Shock cord', masscomponent: 'Payload mass' }[p.type]; if (k) counts[k] = (counts[k] || 0) + 1; });
+  if (Object.keys(counts).length) list.innerHTML += `<div style="margin-top:6px;color:var(--muted)">Inside:</div>` + Object.entries(counts).map(([k, n]) => `${n}× ${k}`).join('<br>');
+
+  rocket.position.y = model.length; scene.add(rocket);
+  const L = model.length || 1;
+  grid.scale.setScalar(Math.max(L, .5) / 2);
+  controls.target.set(0, L / 2, 0);
+  camera.position.set(L * 1.1, L * .7, L * 1.1);
+  camera.near = L / 1000; camera.far = L * 100; camera.updateProjectionMatrix();
+}
+
+/* Motor: metal casing, propellant grain with burning core, nozzle, exhaust flame. */
+function buildMotor(p, g) {
+  const R = p.r, wall = R * .08, grainL = p.L * .82, nozL = p.L * .12;
+  const casingMat = mat({ map: TEX.metal(), metalness: .7, roughness: .35, emissive: new THREE.Color(0xff2000), emissiveIntensity: 0 });
+  g.add(at(new THREE.Mesh(tubeGeo(R - wall, R, p.L), casingMat), p.x, p.L));
+  const grainMat = mat({ map: TEX.propellant(), emissive: new THREE.Color(0xff6a00), emissiveIntensity: 0 });
+  const grain = at(new THREE.Mesh(tubeGeo(R * .25, R - wall, grainL), grainMat), p.x + p.L * .04, grainL);
+  g.add(grain);
+  const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(R * .35, R * .8, nozL, 24, 1, true), mat({ color: 0x30363d, metalness: .5 }));
+  nozzle.position.y = -(p.x + p.L - nozL / 2); g.add(nozzle);
+  const flameGeo = new THREE.ConeGeometry(R * .7, 1, 24, 1, true); flameGeo.rotateX(Math.PI); flameGeo.translate(0, -.5, 0);
+  const flame = new THREE.Mesh(flameGeo, new THREE.MeshBasicMaterial({ color: 0xffa040, transparent: true, opacity: .85, blending: THREE.AdditiveBlending, depthWrite: false }));
+  const core = new THREE.Mesh(flameGeo, new THREE.MeshBasicMaterial({ color: 0xfff2c0, transparent: true, opacity: .9, blending: THREE.AdditiveBlending, depthWrite: false }));
+  core.scale.set(.5, 1, .5); flame.add(core);
+  flame.position.y = -(p.x + p.L); flame.visible = false; g.add(flame);
+  const light = new THREE.PointLight(0xff8a30, 0, p.L * 6); light.position.y = -(p.x + p.L * 1.3); g.add(light);
+  live.motors.push({ p, grain, grainMat, casingMat, flame, light, R, wall, grainL, burnedR: R * .25 });
+}
+
+/* Parachute: packed bundle inside the tube, canopy that blooms out when deployed. */
+function buildChute(p, g, model) {
+  const col = p.type === 'streamer' ? '#f2cc60' : '#f85149';
+  const pack = new THREE.Mesh(new THREE.CylinderGeometry(p.r, p.r, p.L, 20), mat({ map: TEX.nylon(col), roughness: .9 }));
+  pack.position.y = -(p.x + p.L / 2); g.add(pack);
+  const D = Math.min(p.diameter || .3, model.length * .9);
+  const canopy = new THREE.Group();
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(D / 2, 32, 12, 0, Math.PI * 2, 0, Math.PI / 2.4), mat({ map: TEX.nylon(col), roughness: .9 }));
+  dome.scale.y = .6; canopy.add(dome);
+  const lineH = D * .9, pts = [];
+  for (let k = 0; k < 12; k++) { const a = k / 12 * Math.PI * 2, rr = D / 2 * Math.sin(Math.PI / 2.4); pts.push(new THREE.Vector3(Math.cos(a) * rr, D / 2 * Math.cos(Math.PI / 2.4) * .6, Math.sin(a) * rr), new THREE.Vector3(0, -lineH, 0)); }
+  canopy.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0xc9d1d9 })));
+  const idx = live.chutes.length;
+  canopy.position.set((idx % 2 ? -1 : 1) * D * .3 * idx, lineH + D * .1 + idx * D * .5, 0); // above the nose
+  canopy.visible = false; g.parent.add(canopy);
+  live.chutes.push({ p, pack, canopy });
+}
+
+/* ================= playback ================= */
+const $ = id => document.getElementById(id);
+let simT = 0, playing = false, last = performance.now(), thrustMax = 1, pcMax = 1;
+const lerpAt = (arr, t, time) => { if (!arr) return NaN; let lo = 0, hi = time.length - 1;
+  if (t <= time[0]) return arr[0]; if (t >= time[hi]) return arr[hi];
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; time[m] <= t ? lo = m : hi = m; }
+  const f = (t - time[lo]) / (time[hi] - time[lo] || 1); return arr[lo] + (arr[hi] - arr[lo]) * f; };
+const EVENT_LABEL = { launch: 'Launch', ignition: 'Motor ignition', liftoff: 'Lift-off', launchrod: 'Cleared launch rail', burnout: 'Motor burnout', ejectioncharge: 'Ejection charge fired',
+  stageseparation: 'Stage separation', apogee: 'Apogee', recoverydevicedeployment: 'Recovery deployed', groundhit: 'Touchdown', simulationend: 'End' };
+
+function setupSim(model) {
+  const sim = model.sim || syntheticSim(model); model.sim = sim;
+  const motors = live.motors;
+  // burn window per motor from ignition/burnout events tied to its mount
+  for (const m of motors) {
+    const ig = sim.events.find(e => e.type === 'ignition' && e.source === m.p.mountId);
+    const bo = sim.events.find(e => e.type === 'burnout' && e.source === m.p.mountId);
+    m.start = ig ? ig.t : sim.events.find(e => e.type === 'ignition')?.t ?? 0;
+    m.end = bo ? bo.t : sim.events.find(e => e.type === 'burnout')?.t ?? m.start + 2;
+    if (!ig && motors.length > 1) m.unused = true; // mount without a motor in this flight
+  }
+  thrustMax = Math.max(1, ...sim.thrust.filter(isFinite));
+  // chamber pressure estimate: Pc ≈ F / (Cf · At), Cf ≈ 1.5, throat ≈ 30% of motor diameter
+  const mainR = Math.max(.005, ...motors.map(m => m.R));
+  sim.throat = Math.PI * (mainR * 2 * .3 / 2) ** 2;
+  pcMax = thrustMax / (1.5 * sim.throat);
+  $('hud').classList.remove('hidden');
+  $('simname').textContent = sim.synthetic ? '(illustrative burn)' : `· ${sim.name}`;
+  $('note').textContent = (sim.synthetic ? 'No saved simulation in this file, so the burn is illustrative. ' : 'Altitude, velocity, thrust, propellant and air pressure come from the simulation saved in the .ork. ')
+    + 'Chamber pressure is estimated from thrust (nozzle throat assumed 30% of motor diameter).';
+  simT = 0; playing = false; $('play').textContent = '▶ Launch'; drawChart(); update(0);
+}
+
+function drawChart() {
+  const c = $('chart'), sim = live?.model.sim; if (!sim) return;
+  const w = c.width = c.clientWidth * devicePixelRatio, h = c.height = c.clientHeight * devicePixelRatio, g = c.getContext('2d');
+  const T = sim.time.at(-1), aMax = Math.max(1, ...sim.alt);
+  const plot = (arr, max, col) => { g.strokeStyle = col; g.lineWidth = 1.5 * devicePixelRatio; g.beginPath();
+    sim.time.forEach((t, i) => { const x = t / T * w, y = h - (arr[i] / max) * (h - 6) - 3; i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.stroke(); };
+  g.clearRect(0, 0, w, h); plot(sim.alt, aMax, '#58a6ff'); plot(sim.thrust, thrustMax, '#ff7a1a');
+  const x = simT / T * w; g.strokeStyle = '#e6edf3'; g.lineWidth = devicePixelRatio; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
+  g.fillStyle = '#58a6ff'; g.font = `${10 * devicePixelRatio}px system-ui`; g.fillText('altitude', 4, 12 * devicePixelRatio);
+  g.fillStyle = '#ff7a1a'; g.fillText('thrust', 60 * devicePixelRatio, 12 * devicePixelRatio);
+}
+
+function update(dt) {
+  if (!live?.model.sim) return;
+  const sim = live.model.sim, T = sim.time.at(-1);
+  if (playing) { simT += dt * +$('speed').value; if (simT >= T) { simT = T; playing = false; $('play').textContent = '↺ Replay'; } }
+  const t = simT, F = Math.max(0, lerpAt(sim.thrust, t, sim.time)), alt = lerpAt(sim.alt, t, sim.time);
+  const pa = lerpAt(sim.pa, t, sim.time), pc = F > .5 ? F / (1.5 * sim.throat) + (pa || 101325) : (pa || 101325);
+  const thrFrac = F / thrustMax;
+
+  // propellant: from motor_mass when available, else time through the burn window
+  let fuelSum = 0, fuelN = 0;
+  for (const m of live.motors) {
+    if (m.unused) continue;
+    const burning = t >= m.start && t < m.end && F > .5;
+    const frac = t < m.start ? 1 : t >= m.end ? 0 : 1 - (t - m.start) / (m.end - m.start);
+    fuelSum += frac; fuelN++;
+    // burning core grows outward as the grain is consumed
+    const rin = m.R * .25 + (m.R - m.wall - m.R * .25) * (1 - frac) * .97;
+    if (Math.abs(rin - m.burnedR) > m.R * .005) { m.grain.geometry.dispose(); m.grain.geometry = tubeGeo(rin, m.R - m.wall, m.grainL); m.burnedR = rin; }
+    m.grain.visible = frac > .01;
+    m.grainMat.emissiveIntensity = burning ? .6 + thrFrac * 1.6 : 0;
+    m.casingMat.emissiveIntensity = burning ? .35 * (pc / pcMax) : 0;
+    m.flame.visible = burning;
+    if (burning) { const len = m.p.L * (1 + 3 * thrFrac) * (0.9 + Math.random() * .2); m.flame.scale.set(1 + thrFrac * .4, len, 1 + thrFrac * .4); }
+    m.light.intensity = burning ? 2 + 6 * thrFrac : 0;
+  }
+  let fuel = fuelN ? fuelSum / fuelN : 0;
+  if (sim.motorMass && live.motors.length === 1) { const m0 = sim.motorMass[0], m1 = Math.min(...sim.motorMass.filter(isFinite)); if (m0 > m1) fuel = (lerpAt(sim.motorMass, t, sim.time) - m1) / (m0 - m1); }
+
+  // events: stage drops, chute deployment
+  const passed = sim.events.filter(e => e.t <= t);
+  for (const [id, gr] of Object.entries(live.stageGroups)) gr.visible = !passed.some(e => e.type === 'stageseparation' && e.source === id);
+  for (const c of live.chutes) {
+    const dep = passed.find(e => e.type === 'recoverydevicedeployment' && e.source === c.p.id);
+    c.canopy.visible = !!dep && c.canopy.parent.visible !== false; c.pack.visible = !dep;
+    if (dep) { const s = Math.min(1, (t - dep.t) / .8); c.canopy.scale.setScalar(.15 + .85 * s); c.canopy.rotation.y += dt * .3; }
+  }
+  rocket.position.x = F > .5 ? (Math.random() - .5) * .004 * live.model.length * thrFrac : 0;
+
+  const phase = !passed.some(e => e.type === 'liftoff' || e.type === 'ignition') ? 'On pad'
+    : passed.some(e => e.type === 'groundhit') ? 'Landed' : passed.some(e => e.type === 'recoverydevicedeployment') ? 'Under canopy'
+    : passed.some(e => e.type === 'apogee') ? 'Descent' : F > .5 ? 'Powered ascent' : 'Coasting';
+  $('h-t').textContent = `${t.toFixed(2)} s`; $('h-phase').textContent = phase;
+  $('h-alt').textContent = `${alt.toFixed(0)} m`; $('h-vel').textContent = `${lerpAt(sim.vel, t, sim.time).toFixed(0)} m/s`;
+  $('h-thr').textContent = `${F.toFixed(0)} N`; $('h-mach').textContent = (lerpAt(sim.mach, t, sim.time) || 0).toFixed(2);
+  $('h-fuel').style.width = `${fuel * 100}%`; $('h-fuelv').textContent = `${(fuel * 100).toFixed(0)}%`;
+  $('h-pc').style.width = `${Math.min(100, pc / (pcMax + 101325) * 100)}%`; $('h-pcv').textContent = `${(pc / 1e6).toFixed(2)} MPa · ${(pc / 6895).toFixed(0)} psi`;
+  $('h-pa').style.width = `${(pa || 0) / 101325 * 100}%`; $('h-pav').textContent = `${((pa || 0) / 1000).toFixed(1)} kPa`;
+  $('scrub').value = t / T * 1000;
+  $('events').innerHTML = passed.filter(e => EVENT_LABEL[e.type] && e.type !== 'simulationend').map(e => `<b>${e.t.toFixed(2)}s</b> ${EVENT_LABEL[e.type]}${e.source && e.type === 'recoverydevicedeployment' ? ' – ' + (live.model.parts.find(p => p.id === e.source)?.name || '') : ''}`).reverse().join('<br>');
+  drawChart();
+}
+
+renderer.setAnimationLoop(now => { const dt = Math.min(.1, (now - last) / 1000); last = now; if (playing) update(dt); controls.update(); renderer.render(scene, camera); });
+
+/* ================= UI ================= */
+const status = $('status');
+async function load(buf, label) {
+  try {
+    const model = parseModel(await readOrk(buf));
+    if (!model.parts.length) throw new Error('No nose cone / body tubes found');
+    buildRocket(model); setupSim(model);
+    const inside = model.parts.filter(p => !['nose', 'body', 'transition', 'fins'].includes(p.type)).length;
+    status.textContent = `${label}: ${(model.length * 100).toFixed(1)} cm, ${inside} internal parts`;
+    $('drop').style.display = 'none';
+  } catch (e) { status.textContent = `Could not read ${label}: ${e.message}`; console.error(e); }
+}
+$('file').onchange = e => { const f = e.target.files[0]; if (f) f.arrayBuffer().then(b => load(b, f.name)); };
+addEventListener('dragover', e => { e.preventDefault(); $('drop').classList.add('hover'); });
+addEventListener('dragleave', () => $('drop').classList.remove('hover'));
+addEventListener('drop', e => { e.preventDefault(); $('drop').classList.remove('hover'); const f = e.dataTransfer.files[0]; if (f) f.arrayBuffer().then(b => load(b, f.name)); });
+$('xray').onclick = () => { xray = !xray; applyXray(); $('xray').textContent = `X-ray: ${xray ? 'on' : 'off'}`; $('xray').classList.toggle('on', xray); };
+$('play').onclick = () => { const T = live?.model.sim?.time.at(-1); if (!T) return; if (simT >= T) simT = 0; playing = !playing; $('play').textContent = playing ? '❚❚ Pause' : '▶ Resume'; };
+$('scrub').oninput = e => { const T = live?.model.sim?.time.at(-1); if (!T) return; playing = false; $('play').textContent = '▶ Resume'; simT = e.target.value / 1000 * T; update(0); };
+
+const DEMO = `<?xml version="1.0" encoding="utf-8"?><openrocket version="1.9"><rocket><name>Demo Rocket</name><subcomponents><stage><name>Sustainer</name><id>s1</id><subcomponents>
+<nosecone><name>Nose cone</name><length>0.15</length><shape>ogive</shape><aftradius>auto</aftradius></nosecone>
+<bodytube><name>Payload tube</name><length>0.2</length><radius>0.025</radius><thickness>0.001</thickness><subcomponents>
+<masscomponent><name>Altimeter</name><id>alt1</id><position type="middle">0</position><packedlength>0.06</packedlength><packedradius>0.018</packedradius></masscomponent>
+<bulkhead><name>Bulkhead</name><position type="bottom">0</position><length>0.006</length><outerradius>auto</outerradius></bulkhead>
+</subcomponents></bodytube>
+<transition><name>Shoulder</name><length>0.04</length><foreradius>auto</foreradius><aftradius>0.032</aftradius></transition>
+<bodytube><name>Main body</name><id>b2</id><length>0.45</length><radius>auto</radius><thickness>0.0012</thickness><subcomponents>
+<trapezoidfinset><name>Fins</name><position type="bottom">0</position><fincount>4</fincount><rootchord>0.1</rootchord><tipchord>0.04</tipchord><height>0.07</height><sweeplength>0.05</sweeplength><thickness>0.004</thickness></trapezoidfinset>
+<parachute><name>Main chute</name><id>chute1</id><position type="top">0.03</position><packedlength>0.06</packedlength><packedradius>0.024</packedradius><diameter>0.6</diameter></parachute>
+<shockcord><name>Shock cord</name><position type="top">0.1</position><packedlength>0.04</packedlength><packedradius>0.02</packedradius></shockcord>
+<innertube><name>Motor mount</name><id>mm1</id><position type="bottom">0</position><length>0.16</length><outerradius>0.0145</outerradius><thickness>0.001</thickness>
+<motormount><overhang>0.005</overhang><motor configid="c1"><manufacturer>Demo</manufacturer><designation>F40</designation><diameter>0.029</diameter><length>0.124</length></motor></motormount>
+<subcomponents><centeringring><name>Ring</name><position type="top">0.01</position><length>0.005</length><outerradius>auto</outerradius><innerradius>auto</innerradius></centeringring>
+<centeringring><name>Ring</name><position type="bottom">-0.01</position><length>0.005</length><outerradius>auto</outerradius><innerradius>auto</innerradius></centeringring></subcomponents></innertube>
+</subcomponents></bodytube></subcomponents></stage></subcomponents></rocket></openrocket>`;
+$('demo').onclick = () => load(new TextEncoder().encode(DEMO).buffer, 'Demo');
+</script>
+</body>
+</html>
