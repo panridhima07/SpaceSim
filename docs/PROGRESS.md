@@ -36,3 +36,15 @@
 - `Simulation.missionTime` is NaN before liftoff, so `toSample` falls back to pad time `sim.t`. `FlightSample.stage` has no direct field; it is the lowest attached core stage.
 - `docs/SYSTEM_DESIGN.md` also gives the adapter the job of turning engine events into `FlightMarker`s. Round 1 did not ask for that, so it is left for a later round.
 - The untracked `src/render/launcherMesh.ts` and `src/render/launcherMesh.test.ts` noted in Step 3 are no longer in the working tree; the app test count is 218 without them.
+
+## Round 2
+
+- Baseline: `npm run typecheck` passed and `npm test` passed 218 tests in 22 files.
+- Step 1: extended `FlightSample` with optional `stageThrottle` and `FlightRecord` with optional `vehicleName`, `stageSeparation`, `fairingSeparation`, `earth` and `reachedTarget`; updated the contract block in `docs/SYSTEM_DESIGN.md` to match.
+- Step 1 check: `npm run typecheck` passed.
+- Step 2: added an adapter test that checks app body +Z and +X against library body +Z and -Y for the same three quaternions, pinning all three axes.
+- Step 2 check: `npm test` passed 219 tests in 22 files.
+- Step 3: added `ReferenceEvent` and `toMarkers` to `src/mission/adapter.ts`, mapping event times to liftoff-relative markers, severities, and one-use reference times; added three tests.
+- Step 3 check: `npm run typecheck` passed and `npm test` passed 222 tests in 22 files.
+- Step 4: added `AscentAutopilot`, `OMEGA_EARTH` and the `AscentOptions` type to `src/mission/engine.ts`; created `src/mission/vehicles.ts` with the `lvm3-m4` definition copied from `rocket-physics/examples/lvm3-gto.ts`, plus `vehicles.test.ts`.
+- Step 4 check: `npm run typecheck` passed and `npm test` passed 226 tests in 23 files.
