@@ -5,12 +5,14 @@ import type {
   BodyTube,
   Component,
   FinSet,
+  Flaw,
   InnerTube,
   MassComponent,
   NoseCone,
   Parachute,
   Ring,
   RocketModel,
+  StageBoundary,
   Transition,
 } from '../types';
 import type { AnchorMode } from './parts';
@@ -324,11 +326,16 @@ function resolveChildX(parentX: number, parentLen: number, childLen: number, anc
 /** Convert an editable Design into the canonical RocketModel consumed by physics, mesh and flaws. */
 export function toRocketModel(design: Design): RocketModel {
   const components: Component[] = [];
+  const stageStarts: number[] = [0];
   let cursor = 0;
   let maxRadius = 0;
   let length = 0;
 
   for (const node of design.stack) {
+    if (node.part.kind === 'bodytube' && node.part.isDecoupler && components.length > 0) {
+      stageStarts.push(components.length);
+    }
+
     const ext = cloneComponent(node.part);
     ext.id = node.id;
     ext.x = cursor;
@@ -356,6 +363,8 @@ export function toRocketModel(design: Design): RocketModel {
       if (child.kind === 'finset') {
         child.length = child.rootChord;
         child.bodyRadius = parentOuter;
+      } else if (child.kind === 'innertube' && child.radialCount && child.radialCount >= 2) {
+        child.radialOffset = parentOuter + child.outerRadius;
       }
       child.x = resolveChildX(ext.x, ext.length, child.length, ch.anchor, ch.offset);
       components.push(child);
@@ -365,12 +374,28 @@ export function toRocketModel(design: Design): RocketModel {
     }
   }
 
+  let stages: StageBoundary[] | undefined;
+  if (stageStarts.length > 1) {
+    stages = stageStarts.map((startComponent, idx) => {
+      const end = idx + 1 < stageStarts.length ? stageStarts[idx + 1] : components.length;
+      const slice = components.slice(startComponent, end);
+      const mount = slice.find((c): c is InnerTube => c.kind === 'innertube' && c.isMotorMount);
+      return {
+        name: idx === 0 ? 'Sustainer' : `Booster ${idx}`,
+        startComponent,
+        componentCount: end - startComponent,
+        ...(mount?.motor?.designation ? { motorDesignation: mount.motor.designation } : {}),
+      };
+    });
+  }
+
   return {
     name: design.name || 'Untitled Rocket',
     components,
     length,
     maxRadius,
-    stageCount: 1,
+    stageCount: stages ? stages.length : 1,
+    ...(stages ? { stages } : {}),
     warnings: [],
   };
 }
@@ -449,4 +474,66 @@ export function fromRocketModel(rocket: RocketModel): Design {
     stack,
     nextId,
   };
+}
+
+/**
+ * Associate pre-flight or post-flight flaws with the part IDs in `design` that caused them,
+ * so the builder can display flaw indicators right beside the relevant parts.
+ */
+export function mapFlawsToParts(flaws: Flaw[], design: Design): Map<string, Flaw[]> {
+  const byPart = new Map<string, Flaw[]>();
+  const add = (id: string, flaw: Flaw): void => {
+    const list = byPart.get(id);
+    if (list) list.push(flaw);
+    else byPart.set(id, [flaw]);
+  };
+
+  const allParts: Component[] = [];
+  for (const node of design.stack) {
+    allParts.push(node.part);
+    for (const ch of node.children) allParts.push(ch.part);
+  }
+  const finIds = allParts.filter((c) => c.kind === 'finset').map((c) => c.id);
+  const chuteIds = allParts.filter((c) => c.kind === 'parachute').map((c) => c.id);
+  const mountIds = allParts
+    .filter((c): c is InnerTube => c.kind === 'innertube' && c.isMotorMount)
+    .map((c) => c.id);
+  const noseIds = allParts.filter((c) => c.kind === 'nosecone').map((c) => c.id);
+
+  for (const flaw of flaws) {
+    if (flaw.id.startsWith('fin-flutter:')) {
+      const targetId = flaw.id.slice('fin-flutter:'.length);
+      if (allParts.some((c) => c.id === targetId)) {
+        add(targetId, flaw);
+        continue;
+      }
+    }
+    if (
+      flaw.id === 'unstable' ||
+      flaw.id === 'overstable' ||
+      flaw.id === 'static-stability' ||
+      flaw.id === 'high-aoa'
+    ) {
+      const targets = finIds.length > 0 ? finIds : noseIds;
+      for (const id of targets) add(id, flaw);
+      continue;
+    }
+    if (flaw.id === 'no-deploy' || flaw.id === 'hard-landing' || flaw.id === 'deploy-speed') {
+      for (const id of chuteIds) add(id, flaw);
+      continue;
+    }
+    if (
+      flaw.id === 'low-twr' ||
+      flaw.id === 'static-twr' ||
+      flaw.id === 'no-motor' ||
+      flaw.id === 'static-no-motor' ||
+      flaw.id === 'static-motor-fit' ||
+      flaw.id === 'static-motor-length' ||
+      flaw.id === 'rail-exit-slow'
+    ) {
+      for (const id of mountIds) add(id, flaw);
+      continue;
+    }
+  }
+  return byPart;
 }

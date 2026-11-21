@@ -33,6 +33,8 @@ interface BaseComponent {
   massOverride?: number;
   /** If set, CG station (absolute, m from nose tip) instead of computed. */
   cgOverride?: number;
+  /** Optional custom 24-bit RGB colour override for rendering (e.g. 0x4da3ff). */
+  color?: number;
 }
 
 export interface NoseCone extends BaseComponent {
@@ -48,6 +50,8 @@ export interface BodyTube extends BaseComponent {
   kind: 'bodytube';
   outerRadius: number;
   thickness: number;
+  /** True when this tube acts as an interstage decoupler separating upper & lower stages. */
+  isDecoupler?: boolean;
 }
 
 export interface Transition extends BaseComponent {
@@ -96,6 +100,10 @@ export interface InnerTube extends BaseComponent {
   /** How far the motor sticks out past the aft end of the tube. */
   overhang: number;
   motor?: MotorRef;
+  /** Optional radial symmetry count (>= 2) for side-mounted booster pods. */
+  radialCount?: number;
+  /** Radial centre-to-centre offset from rocket axis (m) for side-mounted pods. */
+  radialOffset?: number;
 }
 
 export interface Parachute extends BaseComponent {

@@ -1,0 +1,428 @@
+/* ASTRA SPACEFLIGHT reference skin. Loaded after style.css; overrides only.
+   Target: astra-spaceflight (1)/css/style.css. Flat glass panels, flat buttons, no tilt,
+   no slab edges. Phones (.sfb-mobile) keep their layout and sizes; only the skin changes.
+   Specificity: rules here use .sfb-root (or .sfb-root .x) so they beat style.css, whose
+   equivalent rules are one class lighter, and the :hover/:active states beat its
+   .sfb-btn:hover:not(:disabled) family. */
+
+/* ---------- Tokens ---------- */
+
+.sfb-root {
+  --sfb-panel: rgba(6, 11, 20, 0.68);
+  --sfb-line: rgba(150, 195, 255, 0.16);
+  --sfb-accent: #7fd7ff;
+  --sfb-muted: #7f93b2;
+  /* Flat: a soft cast shadow and a hairline top highlight. No edge, no underside. */
+  --sfb-slab:
+    0 14px 50px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* Build mode used a blue accent; the reference is cyan everywhere. */
+.sfb-root.sfb-builder {
+  --sfb-accent: #7fd7ff;
+}
+
+/* ---------- Panels: flat glass ---------- */
+
+.sfb-root .sfb-panel {
+  background: var(--sfb-panel);
+  border: 1px solid var(--sfb-line);
+  border-radius: 14px;
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow: var(--sfb-slab);
+}
+
+/* No 3D: the columns, dock and replay scrubber lose the perspective tilt. */
+.sfb-root .sfb-left,
+.sfb-root .sfb-right,
+.sfb-root .sfb-dock,
+.sfb-root .sfb-replay {
+  transform: none;
+}
+
+/* The column fade-mask would also clip the fixed top header (it is a descendant of
+   .sfb-left on desktop), so the columns drop it. Phones hide the columns anyway. */
+.sfb-root .sfb-left,
+.sfb-root .sfb-right {
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+.sfb-root .sfb-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.28em;
+  color: var(--sfb-accent);
+}
+
+.sfb-root .sfb-field-label {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--sfb-muted);
+}
+
+/* ---------- Side columns (desktop) ---------- */
+
+.sfb-root .sfb-left,
+.sfb-root .sfb-right {
+  top: 62px;
+  width: 300px;
+  max-height: calc(100vh - var(--sfb-dock-h, 72px) - 92px);
+}
+
+.sfb-root .sfb-left {
+  left: 14px;
+}
+
+.sfb-root .sfb-right {
+  right: 14px;
+}
+
+/* ---------- Top header (desktop): the brand panel becomes a full-width bar ---------- */
+
+.sfb-root:not(.sfb-mobile) .sfb-brand {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  width: auto;
+  height: 58px;
+  margin: 0;
+  padding: 12px 16px;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0));
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  /* The bar is decoration; only its buttons take pointer input. */
+  pointer-events: none;
+}
+
+.sfb-root:not(.sfb-mobile) .sfb-title {
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.28em;
+  color: var(--sfb-muted);
+}
+
+.sfb-root:not(.sfb-mobile) .sfb-title svg {
+  color: var(--sfb-accent);
+}
+
+.sfb-root:not(.sfb-mobile) .sfb-title b {
+  color: #fff;
+  font-weight: 700;
+}
+
+.sfb-root:not(.sfb-mobile) .sfb-title i {
+  font-size: 12px;
+  letter-spacing: 0.28em;
+  color: var(--sfb-muted);
+}
+
+.sfb-root:not(.sfb-mobile) .sfb-brand .sfb-row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  margin-left: auto;
+  grid-template-columns: none;
+  pointer-events: none;
+}
+
+.sfb-root:not(.sfb-mobile) .sfb-brand .sfb-btn-wide {
+  grid-column: auto;
+}
+
+.sfb-root:not(.sfb-mobile) .sfb-brand .sfb-btn {
+  flex: none;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+
+/* ---------- Bottom dock (desktop) ---------- */
+
+.sfb-root .sfb-dock {
+  bottom: 12px;
+  padding: 8px 10px;
+  gap: 8px;
+  border-radius: 14px;
+}
+
+/* ---------- Buttons: flat, no raised edge ---------- */
+
+.sfb-root .sfb-btn {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  background: rgba(18, 30, 52, 0.55);
+  border: 1px solid var(--sfb-line);
+  border-radius: 10px;
+  padding: 8px 12px;
+  box-shadow: none;
+}
+
+@media (hover: hover) {
+  .sfb-root .sfb-btn:hover:not(:disabled) {
+    background: rgba(40, 70, 120, 0.5);
+    border-color: rgba(127, 215, 255, 0.5);
+    transform: none;
+    box-shadow: none;
+    filter: none;
+  }
+
+  /* A latched button keeps its lit fill under the pointer. */
+  .sfb-root .sfb-btn.is-active:hover:not(:disabled) {
+    background: rgba(127, 215, 255, 0.16);
+    border-color: #7fd7ff;
+  }
+}
+
+/* Press: scale only, no travel down. */
+.sfb-root .sfb-btn:active:not(:disabled) {
+  transform: scale(0.97);
+  box-shadow: none;
+}
+
+/* Latched on: lit fill and bright border, no pressed-down offset. */
+.sfb-root .sfb-btn.is-active {
+  background: rgba(127, 215, 255, 0.16);
+  border-color: #7fd7ff;
+  transform: none;
+  box-shadow: none;
+}
+
+.sfb-root .sfb-btn-ghost {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* The one highlighted action on screen. */
+.sfb-root .sfb-btn-primary {
+  background: linear-gradient(180deg, rgba(127, 215, 255, 0.95), rgba(70, 160, 230, 0.95));
+  border-color: transparent;
+  color: #031018;
+  font-weight: 700;
+  box-shadow: 0 0 24px rgba(127, 215, 255, 0.35);
+}
+
+@media (hover: hover) {
+  .sfb-root .sfb-btn-primary:hover:not(:disabled) {
+    background: linear-gradient(180deg, rgba(127, 215, 255, 0.95), rgba(70, 160, 230, 0.95));
+    border-color: transparent;
+    filter: brightness(1.08);
+    box-shadow: 0 0 36px rgba(127, 215, 255, 0.6);
+  }
+}
+
+.sfb-root .sfb-btn-primary:active:not(:disabled) {
+  background: linear-gradient(180deg, rgba(127, 215, 255, 0.95), rgba(70, 160, 230, 0.95));
+  transform: scale(0.97);
+  box-shadow: 0 0 22px rgba(127, 215, 255, 0.5);
+}
+
+/* Variants restore the properties the generic rule above just reset. */
+
+.sfb-root .sfb-btn-icon {
+  padding: 6px 0;
+  font-size: 16px;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.sfb-root .sfb-btn-link {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+}
+
+.sfb-root .sfb-b-mini-btn {
+  padding: 3px 9px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+
+.sfb-root .sfb-b-pad-btn {
+  padding: 8px 18px;
+  font-weight: 700;
+}
+
+.sfb-root .sfb-b-warn-btn {
+  border-color: var(--sfb-warning, #ffb454);
+  color: var(--sfb-warning, #ffb454);
+}
+
+/* Desktop launch: a pill. Phones keep their round launch key (sizes unchanged). */
+.sfb-root:not(.sfb-mobile) .sfb-btn-launch {
+  padding: 10px 30px;
+  border-radius: 999px;
+  font-size: 14px;
+  letter-spacing: 0.3em;
+  text-indent: 0.3em;
+}
+
+/* ---------- Inputs: flat wells ---------- */
+
+.sfb-root .sfb-input,
+.sfb-root .sfb-select {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--sfb-line);
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+.sfb-root .sfb-input:focus,
+.sfb-root .sfb-select:focus {
+  border-color: #7fd7ff;
+  box-shadow: none;
+}
+
+/* ---------- Telemetry ---------- */
+
+.sfb-root .sfb-clock {
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  color: #fff;
+  text-shadow: 0 0 14px rgba(127, 215, 255, 0.6);
+}
+
+.sfb-root .sfb-phase {
+  padding: 5px 12px;
+  border: 1px solid var(--sfb-line);
+  border-radius: 999px;
+  background: rgba(10, 20, 36, 0.5);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  color: #7fd7ff;
+  box-shadow: none;
+}
+
+.sfb-root .sfb-tele dt {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: var(--sfb-muted);
+}
+
+.sfb-root .sfb-tele dd {
+  font-size: 19px;
+  font-weight: 500;
+  color: #fff;
+}
+
+/* Flaw cards lose their cast edge. */
+.sfb-root .sfb-flaw {
+  box-shadow: none;
+}
+
+/* ---------- Toasts ---------- */
+
+.sfb-root .sfb-toast {
+  background: var(--sfb-panel);
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 12px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: none;
+}
+
+/* ---------- Build mode ---------- */
+
+/* Save / Load and challenge modals: the reference dim with a light blur. */
+.sfb-root .sfb-b-modal-backdrop {
+  background: rgba(0, 3, 10, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+/* Category tabs: chips. */
+.sfb-root .sfb-b-cat {
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  color: var(--sfb-muted);
+  background: rgba(10, 20, 36, 0.5);
+  border: 1px solid var(--sfb-line);
+}
+
+.sfb-root .sfb-b-cat.is-active {
+  border-color: #7fd7ff;
+  color: #fff;
+  background: rgba(127, 215, 255, 0.16);
+}
+
+/* Part cards: left-aligned flat buttons with a dim second line. */
+.sfb-root .sfb-b-part-card {
+  background: rgba(18, 30, 52, 0.55);
+  border: 1px solid var(--sfb-line);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.sfb-root .sfb-b-part-card:hover {
+  background: rgba(40, 70, 120, 0.5);
+  border-color: rgba(127, 215, 255, 0.5);
+}
+
+/* Selected card. */
+.sfb-root .sfb-b-part-card.is-placing,
+.sfb-root .sfb-b-part-card.is-placing:hover {
+  background: rgba(127, 215, 255, 0.16);
+  border-color: #7fd7ff;
+  box-shadow: 0 0 0 1px rgba(127, 215, 255, 0.25) inset;
+}
+
+.sfb-root .sfb-b-stack-row {
+  background: rgba(18, 30, 52, 0.55);
+  border-radius: 10px;
+}
+
+.sfb-root .sfb-b-stack-row.is-selected {
+  background: rgba(127, 215, 255, 0.16);
+  border-color: #7fd7ff;
+}
+
+/* ---------- Motion ---------- */
+
+/* Entrances, the drag highlight and the reduced-motion block stay as style.css sets them.
+   This file only changes colour, shape and depth. */
+
+/* ---------- Builder top bar: keep the stats clear of the action buttons ---------- */
+
+.sfb-root:not(.sfb-mobile) .sfb-b-top {
+  gap: 10px;
+}
+
+.sfb-root:not(.sfb-mobile) .sfb-b-name {
+  flex: 0 1 150px;
+  min-width: 90px;
+  width: auto;
+}
+
+.sfb-root:not(.sfb-mobile) .sfb-b-stats {
+  gap: 12px;
+  overflow: hidden;
+}
+
+.sfb-root:not(.sfb-mobile) .sfb-b-top-actions {
+  gap: 6px;
+}
+
+.sfb-root:not(.sfb-mobile) .sfb-b-top-actions .sfb-btn {
+  padding: 7px 9px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.sfb-root:not(.sfb-mobile) .sfb-b-top-actions .sfb-b-pad-btn {
+  padding: 7px 14px;
+}

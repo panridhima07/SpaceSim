@@ -13,6 +13,7 @@ import type {
 const COLORS = {
   nose: 0xe2552f,
   tube: 0xf2f1ec,
+  decoupler: 0xd9a426,
   fin: 0x2b3440,
   transition: 0x8a9099,
   ring: 0xc9c5b8,
@@ -222,26 +223,27 @@ export function buildRocketMesh(rocket: RocketModel, opts: { cutaway?: boolean }
     switch (c.kind) {
       case 'nosecone': {
         const { geometry, transparent } = buildNose(c, cutaway);
-        addMesh(group, geometry, makeMaterial(COLORS.nose, transparent), c);
+        addMesh(group, geometry, makeMaterial(c.color ?? COLORS.nose, transparent), c);
         break;
       }
       case 'bodytube': {
         const c2 = c as BodyTube;
         const geometry = tubeGeometry(c2.outerRadius, c2.outerRadius, c2.x, c2.length);
-        addMesh(group, geometry, makeMaterial(COLORS.tube, cutaway), c2);
+        const col = c2.color ?? (c2.isDecoupler ? COLORS.decoupler : COLORS.tube);
+        addMesh(group, geometry, makeMaterial(col, cutaway), c2);
         break;
       }
       case 'transition': {
         const c2 = c as Transition;
         // Cylinder top is +Y, i.e. the fore end.
         const geometry = tubeGeometry(c2.foreRadius, c2.aftRadius, c2.x, c2.length);
-        addMesh(group, geometry, makeMaterial(COLORS.transition, cutaway), c2);
+        addMesh(group, geometry, makeMaterial(c2.color ?? COLORS.transition, cutaway), c2);
         break;
       }
       case 'finset': {
         const count = Math.max(1, Math.round(c.count));
         const geometry = buildFinGeometry(c);
-        const material = makeMaterial(COLORS.fin, false);
+        const material = makeMaterial(c.color ?? COLORS.fin, false);
         for (let i = 0; i < count; i++) {
           const mesh = addMesh(group, geometry, material, c);
           mesh.rotation.y = (2 * Math.PI * i) / count;
@@ -249,10 +251,29 @@ export function buildRocketMesh(rocket: RocketModel, opts: { cutaway?: boolean }
         break;
       }
       case 'innertube': {
-        if (!cutaway) break;
         const c2 = c as InnerTube;
+        if (c2.radialCount && c2.radialCount >= 2 && c2.radialOffset && c2.radialOffset > 0) {
+          // Side-mounted radial booster pods are external and always visible.
+          const podGeo = solidCylinderGeometry(c2.outerRadius, c2.x, c2.length);
+          const capGeo = new THREE.ConeGeometry(c2.outerRadius, c2.outerRadius * 2.4, 24);
+          capGeo.translate(0, -c2.x + c2.outerRadius * 1.2, 0);
+          const podMat = makeMaterial(c2.color ?? COLORS.tube, false);
+          const capMat = makeMaterial(COLORS.nose, false);
+          const count = Math.round(c2.radialCount);
+          for (let i = 0; i < count; i++) {
+            const ang = (2 * Math.PI * i) / count;
+            const px = Math.cos(ang) * c2.radialOffset;
+            const pz = Math.sin(ang) * c2.radialOffset;
+            const pod = addMesh(group, podGeo, podMat, c2);
+            pod.position.set(px, 0, pz);
+            const cap = addMesh(group, capGeo, capMat, c2);
+            cap.position.set(px, 0, pz);
+          }
+          break;
+        }
+        if (!cutaway) break;
         const geometry = tubeGeometry(c2.outerRadius, c2.outerRadius, c2.x, c2.length);
-        addMesh(group, geometry, makeMaterial(COLORS.tube, false), c2);
+        addMesh(group, geometry, makeMaterial(c2.color ?? COLORS.tube, false), c2);
         break;
       }
       case 'ring': {

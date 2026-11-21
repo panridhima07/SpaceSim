@@ -51,19 +51,45 @@ import { buildSolarSystem } from '../world/solarSystem';
 import { buildLaunchSite } from '../world/launchSite';
 import { SimClock } from '../world/clock';
 import { createUI } from './ui';
+import { mountHero } from './hero';
 import { createCameraRig, type CameraRig } from './cameras';
 import type { CameraMode, ToggleName, UI } from './uiTypes';
 import {
-  addExternalPart,
-  addInternalPart,
   createEmptyDesign,
+  duplicatePart,
   findPart,
   fromRocketModel,
-  isExternal,
+  moveExternalPart,
   removePart,
   toRocketModel,
+  updatePart,
   type Design,
 } from '../builder/design';
+import {
+  canRedo,
+  canUndo,
+  createHistory,
+  pushHistory,
+  redoHistory,
+  replacePresent,
+  undoHistory,
+  type History,
+} from '../builder/history';
+import type { PartPreset } from '../builder/parts';
+import { applySnap, computeSnapPoints, type SnapPoint } from '../builder/snap';
+import {
+  deleteSavedDesign,
+  exportDesignJson,
+  importDesignJson,
+  listSavedDesigns,
+  saveDesign,
+} from '../builder/storage';
+import { exportOrkZip } from '../builder/orkExport';
+import {
+  evaluateChallenges,
+  loadCompletedChallenges,
+  markChallengesCompleted,
+} from '../builder/challenges';
 import { createBuilderView } from '../builder/view';
 import { createBuilderUI, type BuilderStats } from './builderUi';
 
@@ -495,7 +521,12 @@ async function loadFile(file: File): Promise<void> {
     const { xml, files } = await readOrkZip(await file.arrayBuffer());
     const model = parseOrkXml(xml);
     adoptEmbeddedMotors(embeddedMotors(files));
+    // Sync imported .ork into the builder so it can be edited immediately.
+    builderHistory = createHistory(fromRocketModel(model));
+    builderSelectedId = null;
+    lastFlightFlaws = [];
     loadRocket(model);
+    if (appMode === 'builder') refreshBuilder(true, true);
   } catch (e) {
     ui.toast(`Could not load ${file.name}: ${errorMessage(e)}`);
   }
@@ -503,8 +534,25 @@ async function loadFile(file: File): Promise<void> {
 
 // ---------- Sim control ----------
 
+function resolveStageMotors(r: RocketModel): { motor: Motor; ignitionDelay?: number }[] | undefined {
+  if (!r.stages || r.stages.length <= 1) return undefined;
+  // Stages are ordered top (sustainer) -> bottom (booster); firing order is booster first.
+  const out: { motor: Motor; ignitionDelay?: number }[] = [];
+  for (let i = r.stages.length - 1; i >= 0; i--) {
+    const st = r.stages[i];
+    const slice = r.components.slice(st.startComponent, st.startComponent + st.componentCount);
+    const mount = slice.find((c): c is InnerTube => c.kind === 'innertube' && c.isMotorMount);
+    const resolved = mount?.motor ? findMotor(mount.motor, extraMotors) : null;
+    if (!resolved) return undefined;
+    out.push({ motor: resolved, ignitionDelay: i === r.stages.length - 1 ? 0 : 0.2 });
+  }
+  return out.length > 1 ? out : undefined;
+}
+
 function resetSim(): void {
-  activeConfig = ui.getConfig();
+  const baseCfg = ui.getConfig();
+  const stageMotors = rocket ? resolveStageMotors(rocket) : undefined;
+  activeConfig = stageMotors ? { ...baseCfg, stageMotors } : baseCfg;
   launched = false;
   finishHandled = false;
   flightDuration = 0;
@@ -575,6 +623,7 @@ function onFlightDone(): void {
   if (!sim || !rocket) return;
   flightDuration = sim.state.t;
   const flight = analyzeFlight(sim, rocket, motor, activeConfig);
+  lastFlightFlaws = flight;
   // Pre-flight checks join the flight flaws unless a flight flaw already says the same thing.
   const flightIds = new Set(flight.map((f) => f.id));
   const extra = staticFlaws
@@ -587,6 +636,23 @@ function onFlightDone(): void {
   for (const s of sim.log) apogee = Math.max(apogee, s.altitude);
   const outcome = sim.state.phase === 'crashed' ? 'Crashed' : 'Landed';
   ui.toast(`${outcome}. Apogee ${Math.round(apogee)} m, flight ${flightDuration.toFixed(1)} s.`);
+
+  // Evaluate engineering challenges on flight completion.
+  const prevDone = loadCompletedChallenges();
+  const passedNow = evaluateChallenges({
+    rocket,
+    motor,
+    log: sim.log,
+    events: sim.events,
+    flaws: flight,
+  })
+    .filter((r) => r.passed)
+    .map((r) => r.challenge);
+  const newlyCompleted = passedNow.filter((c) => !prevDone.has(c.id));
+  if (newlyCompleted.length > 0) {
+    markChallengesCompleted(newlyCompleted.map((c) => c.id));
+    ui.toast(`Challenge complete: ${newlyCompleted[0].title}!`);
+  }
 }
 
 function advanceSim(simDt: number): void {
@@ -857,16 +923,34 @@ const ui: UI = createUI(app, {
 // ---------- Build mode glue ----------
 
 let appMode: 'flight' | 'builder' = 'flight';
-let builderDesign: Design | null = null;
+let builderHistory: History<Design> | null = null;
 let builderSelectedId: string | null = null;
 let builderCutaway = false;
+let placingPreset: PartPreset | null = null;
+let placingSnaps: SnapPoint[] = [];
+let hoveredSnapId: string | null = null;
+let lastFlightFlaws: Flaw[] = [];
+
+function currentDesign(): Design | null {
+  return builderHistory ? builderHistory.present : null;
+}
+
+function setDesign(next: Design, commit = true): void {
+  if (!builderHistory) {
+    builderHistory = createHistory(next);
+  } else {
+    builderHistory = commit ? pushHistory(builderHistory, next) : replacePresent(builderHistory, next);
+  }
+  // Editing the design invalidates flaws from an earlier flight.
+  lastFlightFlaws = [];
+}
 
 const builderView = createBuilderView(renderer.domElement);
 
 function computeBuilderStats(model: RocketModel): { stats: BuilderStats; cgX: number; cpX: number } {
   if (model.components.length === 0 || model.length <= 0 || model.maxRadius <= 0) {
     return {
-      stats: { length: 0, mass: 0, stabilityCal: NaN, twr: null, motorLabel: null },
+      stats: { length: 0, mass: 0, stabilityCal: NaN, twr: null, motorLabel: null, flaws: [] },
       cgX: 0,
       cpX: 0,
     };
@@ -877,6 +961,13 @@ function computeBuilderStats(model: RocketModel): { stats: BuilderStats; cgX: nu
   const ap = aeroProps(model, 0.1, mp.cgX);
   const stabilityCal = (ap.cpX - mp.cgX) / (2 * model.maxRadius);
   const twr = m && mp.mass > 0 ? peakThrust(m) / (mp.mass * G0) : null;
+  const preFlaws = preflightFlaws(model, m, mp.mass, stabilityCal).map((s) => s.flaw);
+  const flightIds = new Set(lastFlightFlaws.map((f) => f.id));
+  const mergedFlaws = [
+    ...lastFlightFlaws,
+    ...preFlaws.filter((f) => !flightIds.has(f.id)),
+  ].sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
+
   return {
     stats: {
       length: model.length,
@@ -884,15 +975,17 @@ function computeBuilderStats(model: RocketModel): { stats: BuilderStats; cgX: nu
       stabilityCal,
       twr,
       motorLabel: m ? motorKey(m) : null,
+      flaws: mergedFlaws,
     },
     cgX: mp.cgX,
     cpX: ap.cpX,
   };
 }
 
-function refreshBuilder(refitCamera = false): void {
-  if (!builderDesign) return;
-  const model = toRocketModel(builderDesign);
+function refreshBuilder(refitCamera = false, forceInspectorRefresh = false): void {
+  const d = currentDesign();
+  if (!d || !builderHistory) return;
+  const model = toRocketModel(d);
   const { stats, cgX, cpX } = computeBuilderStats(model);
   builderView.updateRocket({
     rocket: model,
@@ -902,95 +995,267 @@ function refreshBuilder(refitCamera = false): void {
     selectedId: builderSelectedId,
     refitCamera,
   });
-  builderUi.render(builderDesign, builderSelectedId, stats);
+  builderUi.render({
+    design: d,
+    selectedId: builderSelectedId,
+    stats,
+    canUndo: canUndo(builderHistory),
+    canRedo: canRedo(builderHistory),
+    motors: [...motorChoices().values()],
+    savedDesigns: listSavedDesigns(),
+    completedChallenges: loadCompletedChallenges(),
+    forceInspectorRefresh,
+  });
 }
 
-function defaultInternalParentId(d: Design): string | null {
-  if (builderSelectedId) {
-    const found = findPart(d, builderSelectedId);
-    if (found) {
-      return found.parentId ?? found.part.id;
+function clearPlacement(): void {
+  placingPreset = null;
+  placingSnaps = [];
+  hoveredSnapId = null;
+  builderView.setSnapPoints([]);
+  builderUi.setPlacing(null, []);
+}
+
+function commitSnapPlacement(preset: PartPreset, snap: SnapPoint, addTransition?: boolean): void {
+  const base = currentDesign() ?? createEmptyDesign();
+  // If diameter mismatches and caller hasn't decided yet, ask whether to insert a transition.
+  if (addTransition === undefined && !snap.diameterMatch && snap.needsTransition) {
+    builderUi.setTransitionPrompt({ preset, snap });
+    return;
+  }
+  const part = preset.create();
+  const res = applySnap(base, part, snap, {
+    addTransition: Boolean(addTransition),
+    anchor: preset.defaultAnchor,
+    offset: preset.defaultOffset,
+  });
+  if (res) {
+    setDesign(res.design, true);
+    builderSelectedId = res.id;
+    if (preset.placement === 'internal' && part.kind !== 'finset' && !builderCutaway) {
+      builderCutaway = true;
+      builderUi.setCutaway(true);
     }
   }
-  for (let i = d.stack.length - 1; i >= 0; i--) {
-    if (d.stack[i].part.kind === 'bodytube') return d.stack[i].id;
+  clearPlacement();
+  refreshBuilder(false, true);
+}
+
+function beginPlacement(preset: PartPreset, immediateIfSingle: boolean): void {
+  if (!builderHistory) builderHistory = createHistory(createEmptyDesign());
+  const d = builderHistory.present;
+  const candidate = preset.create();
+  const snaps = computeSnapPoints(d, candidate);
+  if (snaps.length === 0) {
+    ui.toast(
+      preset.placement === 'internal'
+        ? 'Add a body tube first to place internal parts'
+        : `Cannot place ${preset.label} on this stack`,
+    );
+    clearPlacement();
+    return;
   }
-  return d.stack.length > 0 ? d.stack[d.stack.length - 1].id : null;
+  if (immediateIfSingle && snaps.length === 1 && snaps[0].diameterMatch) {
+    commitSnapPlacement(preset, snaps[0], false);
+    return;
+  }
+  placingPreset = preset;
+  placingSnaps = snaps;
+  hoveredSnapId = null;
+  builderView.setSnapPoints(snaps, null);
+  builderUi.setPlacing(preset, snaps);
 }
 
 const builderUi = createBuilderUI(app, {
-  onAddPreset: (preset) => {
-    if (!builderDesign) builderDesign = createEmptyDesign();
-    const part = preset.create();
-    if (isExternal(part)) {
-      const res = addExternalPart(builderDesign, part);
-      builderDesign = res.design;
-      builderSelectedId = res.id;
-    } else {
-      const parentId = defaultInternalParentId(builderDesign);
-      if (!parentId) {
-        ui.toast('Add a body tube first');
-        return;
-      }
-      const res = addInternalPart(builderDesign, parentId, part, preset.defaultAnchor, preset.defaultOffset);
-      if (res) {
-        builderDesign = res.design;
-        builderSelectedId = res.id;
-        if (part.kind !== 'finset' && !builderCutaway) {
-          builderCutaway = true;
-          builderUi.setCutaway(true);
-        }
-      }
-    }
-    refreshBuilder(false);
+  onStartPlace: (preset) => beginPlacement(preset, true),
+  onCancelPlace: () => clearPlacement(),
+  onChooseSnap: (snap, addTransition) => {
+    if (!placingPreset) return;
+    commitSnapPlacement(placingPreset, snap, addTransition);
+  },
+  onDragStartPreset: (preset) => beginPlacement(preset, false),
+  onDragEndPreset: () => {
+    if (placingPreset) clearPlacement();
   },
   onSelectPart: (partId) => {
     builderSelectedId = partId;
-    refreshBuilder(false);
+    refreshBuilder(false, true);
+  },
+  onUpdatePart: (partId, patch, commit) => {
+    const d = currentDesign();
+    if (!d) return;
+    const next = updatePart(d, partId, patch);
+    setDesign(next, commit);
+    refreshBuilder(false, false);
+  },
+  onMovePart: (partId, delta) => {
+    const d = currentDesign();
+    if (!d) return;
+    const found = findPart(d, partId);
+    if (!found || found.parentId !== null) return;
+    const next = moveExternalPart(d, partId, found.stackIndex + delta);
+    if (next !== d) {
+      setDesign(next, true);
+      refreshBuilder(false, true);
+    }
+  },
+  onDuplicatePart: (partId) => {
+    const d = currentDesign();
+    if (!d) return;
+    const res = duplicatePart(d, partId);
+    if (res) {
+      setDesign(res.design, true);
+      builderSelectedId = res.id;
+      refreshBuilder(false, true);
+    }
   },
   onDeletePart: (partId) => {
-    if (!builderDesign) return;
-    builderDesign = removePart(builderDesign, partId);
+    const d = currentDesign();
+    if (!d) return;
+    setDesign(removePart(d, partId), true);
     if (builderSelectedId === partId) builderSelectedId = null;
-    refreshBuilder(false);
+    clearPlacement();
+    refreshBuilder(false, true);
+  },
+  onUndo: () => {
+    if (!builderHistory || !canUndo(builderHistory)) return;
+    builderHistory = undoHistory(builderHistory);
+    lastFlightFlaws = [];
+    if (builderSelectedId && !findPart(builderHistory.present, builderSelectedId)) {
+      builderSelectedId = null;
+    }
+    clearPlacement();
+    refreshBuilder(false, true);
+  },
+  onRedo: () => {
+    if (!builderHistory || !canRedo(builderHistory)) return;
+    builderHistory = redoHistory(builderHistory);
+    lastFlightFlaws = [];
+    if (builderSelectedId && !findPart(builderHistory.present, builderSelectedId)) {
+      builderSelectedId = null;
+    }
+    clearPlacement();
+    refreshBuilder(false, true);
   },
   onRename: (name) => {
-    if (!builderDesign) return;
-    builderDesign = { ...builderDesign, name };
-    refreshBuilder(false);
+    const d = currentDesign();
+    if (!d) return;
+    setDesign({ ...d, name }, true);
+    refreshBuilder(false, false);
   },
   onClear: () => {
-    builderDesign = createEmptyDesign('New Rocket');
+    setDesign(createEmptyDesign('New Rocket'), true);
     builderSelectedId = null;
-    refreshBuilder(true);
+    clearPlacement();
+    refreshBuilder(true, true);
   },
   onToggleCutaway: (on) => {
     builderCutaway = on;
-    refreshBuilder(false);
+    refreshBuilder(false, false);
   },
   onFrameCamera: () => builderView.frameRocket(),
   onGoToPad: () => exitBuilderToPad(),
+  onSaveDesign: () => {
+    const d = currentDesign();
+    if (!d) return;
+    const thumb = builderView.captureThumbnail(renderer);
+    saveDesign(d, thumb);
+    ui.toast(`Saved "${d.name}"`);
+    refreshBuilder(false, false);
+  },
+  onLoadSavedDesign: (design) => {
+    builderHistory = createHistory(design);
+    builderSelectedId = null;
+    lastFlightFlaws = [];
+    clearPlacement();
+    refreshBuilder(true, true);
+    ui.toast(`Loaded "${design.name}"`);
+  },
+  onDeleteSavedDesign: (id) => {
+    deleteSavedDesign(id);
+    refreshBuilder(false, false);
+  },
+  onExportJson: () => {
+    const d = currentDesign();
+    if (!d) return;
+    const blob = new Blob([exportDesignJson(d)], { type: 'application/json' });
+    downloadBlob(blob, `${safeFilename(d.name)}.json`);
+  },
+  onExportOrk: () => {
+    const d = currentDesign();
+    if (!d) return;
+    void exportOrkZip(d).then((bytes) => {
+      const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      const blob = new Blob([ab], { type: 'application/zip' });
+      downloadBlob(blob, `${safeFilename(d.name)}.ork`);
+    });
+  },
+  onImportFile: (file) => {
+    void importBuilderFile(file);
+  },
 });
 
+function safeFilename(name: string): string {
+  return (name || 'rocket').replace(/[^a-z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'rocket';
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function importBuilderFile(file: File): Promise<void> {
+  try {
+    if (/\.json$/i.test(file.name)) {
+      const imported = importDesignJson(await file.text());
+      builderHistory = createHistory(imported);
+      builderSelectedId = null;
+      lastFlightFlaws = [];
+      clearPlacement();
+      refreshBuilder(true, true);
+      ui.toast(`Imported "${imported.name}"`);
+      return;
+    }
+    const { xml, files } = await readOrkZip(await file.arrayBuffer());
+    const model = parseOrkXml(xml);
+    adoptEmbeddedMotors(embeddedMotors(files));
+    builderHistory = createHistory(fromRocketModel(model));
+    builderSelectedId = null;
+    lastFlightFlaws = [];
+    clearPlacement();
+    refreshBuilder(true, true);
+    ui.toast(`Opened "${model.name}" in builder`);
+  } catch (e) {
+    ui.toast(`Import failed: ${errorMessage(e)}`);
+  }
+}
+
 function enterBuilder(): void {
-  if (!builderDesign) {
-    builderDesign = rocket ? fromRocketModel(rocket) : createEmptyDesign();
+  if (!builderHistory) {
+    const initial = rocket ? fromRocketModel(rocket) : createEmptyDesign();
+    builderHistory = createHistory(initial);
   }
   appMode = 'builder';
   cameraRig.setEnabled(false);
   builderView.setEnabled(true);
   ui.setVisible(false);
   builderUi.setVisible(true);
-  refreshBuilder(true);
+  refreshBuilder(true, true);
 }
 
 function exitBuilderToPad(): void {
-  if (!builderDesign || builderDesign.stack.length === 0) {
+  const d = currentDesign();
+  if (!d || d.stack.length === 0) {
     ui.toast('Add at least a nose cone and body tube first');
     return;
   }
-  const model = toRocketModel(builderDesign);
+  const model = toRocketModel(d);
   appMode = 'flight';
+  clearPlacement();
   builderView.setEnabled(false);
   cameraRig.setEnabled(true);
   builderUi.setVisible(false);
@@ -999,21 +1264,61 @@ function exitBuilderToPad(): void {
   loadRocket(model);
 }
 
-// Click on the 3D canvas in builder mode selects the clicked part.
+// Click on the 3D canvas in builder mode places on a snap point (if placing) or selects a part.
 let builderDownPos: { x: number; y: number } | null = null;
 renderer.domElement.addEventListener('pointerdown', (e) => {
   if (appMode !== 'builder') return;
   builderDownPos = { x: e.clientX, y: e.clientY };
 });
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (appMode !== 'builder' || !placingPreset || placingSnaps.length === 0) return;
+  const hit = builderView.pickSnapPoint(e.clientX, e.clientY);
+  const nextId = hit?.id ?? null;
+  if (nextId !== hoveredSnapId) {
+    hoveredSnapId = nextId;
+    builderView.setSnapPoints(placingSnaps, hoveredSnapId);
+  }
+});
 renderer.domElement.addEventListener('pointerup', (e) => {
   if (appMode !== 'builder' || !builderDownPos) return;
   const dist = Math.hypot(e.clientX - builderDownPos.x, e.clientY - builderDownPos.y);
   builderDownPos = null;
-  if (dist > 6) return;
+  if (dist > 8) return;
+  if (placingPreset && placingSnaps.length > 0) {
+    const snap = builderView.pickSnapPoint(e.clientX, e.clientY);
+    if (snap) {
+      commitSnapPlacement(placingPreset, snap);
+      return;
+    }
+  }
   const hit = builderView.pickPart(e.clientX, e.clientY);
   if (hit !== builderSelectedId) {
     builderSelectedId = hit;
     refreshBuilder(false);
+  }
+});
+
+// Desktop drag-from-palette onto 3D canvas snap points.
+renderer.domElement.addEventListener('dragover', (e) => {
+  if (appMode !== 'builder' || !placingPreset) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  const hit = builderView.pickSnapPoint(e.clientX, e.clientY);
+  const nextId = hit?.id ?? null;
+  if (nextId !== hoveredSnapId) {
+    hoveredSnapId = nextId;
+    builderView.setSnapPoints(placingSnaps, hoveredSnapId);
+  }
+});
+renderer.domElement.addEventListener('drop', (e) => {
+  if (appMode !== 'builder' || !placingPreset) return;
+  e.preventDefault();
+  const snap = builderView.pickSnapPoint(e.clientX, e.clientY) ?? placingSnaps[0] ?? null;
+  const preset = placingPreset;
+  if (snap && preset) {
+    commitSnapPlacement(preset, snap);
+  } else {
+    clearPlacement();
   }
 });
 
@@ -1051,6 +1356,13 @@ interface DebugHook {
 
 loadSample();
 requestAnimationFrame(frame);
+
+// Title screen, once per browser session (returning from the Moon page skips it).
+mountHero(app, {
+  onBuild: () => enterBuilder(),
+  onFly: () => {},
+  onMoon: () => window.location.assign('./landing.html'),
+});
 
 // Debug hook to fly a mission from the browser console.
 interface MissionDebugHook {

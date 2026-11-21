@@ -39,7 +39,7 @@ describe('builder/parts', () => {
   });
 
   it('includes 18, 24, 29, 38 and 54 mm motor classes that all resolve in motors.ts', () => {
-    const mounts = presetsByCategory('motor');
+    const mounts = presetsByCategory('motor').filter((p) => p.presetId.startsWith('mount-'));
     const diameters = new Set(mounts.map((p) => p.diameterMm));
     for (const d of [18, 24, 29, 38, 54]) {
       expect(diameters.has(d)).toBe(true);

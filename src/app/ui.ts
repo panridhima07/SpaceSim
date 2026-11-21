@@ -1,4 +1,5 @@
 import './style.css';
+import './astraTheme.css';
 import type {
   Flaw,
   FlawSeverity,
@@ -596,6 +597,14 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   sheet.append(sheetHead, sheetBody);
 
   root.append(left, right, brand, dock, replay, toasts, dropHint, topStrip, rail, sheet);
+
+  // The dock wraps to a second row on narrower windows. Publish its height so the side
+  // columns always end above it instead of sliding underneath.
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(() => {
+      root.style.setProperty('--sfb-dock-h', `${dock.offsetHeight}px`);
+    }).observe(dock);
+  }
   container.append(root);
   attachTilt([left, right, dock, replay]);
 
