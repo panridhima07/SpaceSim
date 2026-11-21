@@ -1,0 +1,120 @@
+import { describe, it, expect } from 'vitest';
+import { aeroProps, dragBreakdown } from './aero';
+import { massProps } from './massprops';
+import { FIXTURE_ROCKET, FIXTURE_MOTOR } from './fixture';
+
+describe('aeroProps (Barrowman)', () => {
+  const cg = massProps(FIXTURE_ROCKET, FIXTURE_MOTOR, 0).cgX;
+
+  it('reference area and length follow maxRadius', () => {
+    const a = aeroProps(FIXTURE_ROCKET, 0.3, cg);
+    expect(a.refArea).toBeCloseTo(Math.PI * 0.0125 ** 2, 12);
+    expect(a.refLength).toBeCloseTo(0.025, 12);
+  });
+
+  it('fixture normal force slope is between 6 and 20 per rad', () => {
+    const a = aeroProps(FIXTURE_ROCKET, 0.3, cg);
+    expect(a.cnAlpha).toBeGreaterThan(6);
+    expect(a.cnAlpha).toBeLessThan(20);
+  });
+
+  it('fin CNα matches the hand-computed Barrowman value', () => {
+    // Hand calculation for the fixture fin set at M=0 (no compressibility correction).
+    const N = 3;
+    const s = 0.04; // span
+    const Cr = 0.05;
+    const Ct = 0.025;
+    const m = 0.025; // sweep
+    const rb = 0.0125;
+    const d = 0.025; // reference diameter
+    const Kfb = 1 + rb / (s + rb);
+    const l = Math.sqrt(s * s + (m + Ct / 2 - Cr / 2) ** 2);
+    const denom = 1 + Math.sqrt(1 + (2 * l / (Cr + Ct)) ** 2);
+    const finCn = (Kfb * 4 * N * (s / d) ** 2) / denom;
+    const nose = 2; // ogive nose with base radius equal to maxRadius
+
+    const a = aeroProps(FIXTURE_ROCKET, 0, cg);
+    expect(a.cnAlpha).toBeCloseTo(nose + finCn, 6);
+  });
+
+  it('centre of pressure is aft of the CG with 1 to 3 calibres of stability at launch', () => {
+    const a = aeroProps(FIXTURE_ROCKET, 0.3, cg);
+    const margin = (a.cpX - cg) / a.refLength;
+    expect(a.cpX).toBeGreaterThan(cg);
+    expect(margin).toBeGreaterThan(1);
+    expect(margin).toBeLessThan(3);
+  });
+
+  it('dampSum is positive and finite', () => {
+    const a = aeroProps(FIXTURE_ROCKET, 0.3, cg);
+    expect(Number.isFinite(a.dampSum)).toBe(true);
+    expect(a.dampSum).toBeGreaterThan(0);
+  });
+
+  it('drag coefficient is finite and within 0.2 to 1.2 in the subsonic range', () => {
+    // The Niskanen rounded-edge fin formula is defined below M 0.9. Above that the
+    // fixture's large fin frontal area gives a transonic value outside this band (see
+    // the next test), so the band is only asserted subsonically.
+    for (const M of [0.05, 0.3]) {
+      const cd = aeroProps(FIXTURE_ROCKET, M, cg).cd;
+      expect(Number.isFinite(cd)).toBe(true);
+      expect(cd).toBeGreaterThan(0.2);
+      expect(cd).toBeLessThan(1.2);
+    }
+  });
+
+  it('drag coefficient stays finite and positive at transonic and supersonic Mach', () => {
+    for (const M of [0.9, 1.5]) {
+      const cd = aeroProps(FIXTURE_ROCKET, M, cg).cd;
+      expect(Number.isFinite(cd)).toBe(true);
+      expect(cd).toBeGreaterThan(0.2);
+    }
+  });
+});
+
+describe('external rings and fin cross-section drag', () => {
+  // Fixture with the fin set's cross-section replaced.
+  const withFins = (cs: 'square' | 'rounded' | 'airfoil') => ({
+    ...FIXTURE_ROCKET,
+    components: FIXTURE_ROCKET.components.map((c) => (c.kind === 'finset' ? { ...c, crossSection: cs } : c)),
+  });
+  const A = Math.PI * FIXTURE_ROCKET.maxRadius ** 2;
+
+  it('a launch lug adds its protrusion pressure drag and skin friction', () => {
+    const ro = 0.0035;
+    const ri = 0.0025;
+    const lug = { id: 'lug', name: 'Lug', kind: 'ring' as const, x: 0.2, length: 0.035, density: 680,
+      outerRadius: ro, innerRadius: ri, external: true };
+    const withLug = { ...FIXTURE_ROCKET, components: [...FIXTURE_ROCKET.components, lug] };
+    const M = 0.1;
+    const before = dragBreakdown(FIXTURE_ROCKET, M);
+    const after = dragBreakdown(withLug, M);
+    const pressure = 0.8 * (1 + (M * M) / 4 + M ** 4 / 40) * (Math.PI * (ro * ro - ri * ri)) / A;
+    expect(after.pressure - before.pressure).toBeCloseTo(pressure, 9);
+    expect(after.friction).toBeGreaterThan(before.friction);
+    // The calibration rocket's lug adds roughly 0.04 Cd at low Mach.
+    expect(after.total - before.total).toBeGreaterThan(0.03);
+    expect(after.total - before.total).toBeLessThan(0.05);
+  });
+
+  it('an internal ring adds no drag', () => {
+    const ring = { id: 'r', name: 'CR', kind: 'ring' as const, x: 0.2, length: 0.002, density: 680,
+      outerRadius: 0.0115, innerRadius: 0.0095 };
+    const withRing = { ...FIXTURE_ROCKET, components: [...FIXTURE_ROCKET.components, ring] };
+    expect(dragBreakdown(withRing, 0.3).total).toBeCloseTo(dragBreakdown(FIXTURE_ROCKET, 0.3).total, 12);
+  });
+
+  it('square fins have more pressure drag and base drag than rounded; airfoil has no fin base drag', () => {
+    const sq = dragBreakdown(withFins('square'), 0.3);
+    const rd = dragBreakdown(withFins('rounded'), 0.3);
+    const af = dragBreakdown(withFins('airfoil'), 0.3);
+    expect(sq.pressure).toBeGreaterThan(rd.pressure);
+    expect(sq.base).toBeGreaterThan(rd.base);
+    expect(af.base).toBeLessThan(rd.base);
+    expect(af.pressure).toBeCloseTo(rd.pressure, 12);
+  });
+
+  it('undefined cross-section behaves as rounded', () => {
+    expect(dragBreakdown(FIXTURE_ROCKET, 0.3).total).toBeCloseTo(dragBreakdown(withFins('rounded'), 0.3).total, 12);
+  });
+});

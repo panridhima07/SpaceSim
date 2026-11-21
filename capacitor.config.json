@@ -1,0 +1,8 @@
+{
+  "appId": "com.astra.spaceflightbuilder",
+  "appName": "Space Flight Builder",
+  "webDir": "dist",
+  "android": {
+    "backgroundColor": "#101c30"
+  }
+}

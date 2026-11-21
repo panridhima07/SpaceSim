@@ -1,0 +1,15 @@
+{
+  "name": "astra-rocket-physics",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Launch-to-orbit rocket flight physics: 6-DOF ascent, real atmosphere and gravity, guidance, orbital mechanics. No dependencies.",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "test": "node --test \"test/*.test.ts\"",
+    "launch": "node examples/launch-to-orbit.ts",
+    "lvm3": "node examples/lvm3-gto.ts",
+    "moon": "node examples/lunar-transfer.ts"
+  },
+  "engines": { "node": ">=23.6" }
+}
