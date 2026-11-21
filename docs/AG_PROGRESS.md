@@ -35,3 +35,12 @@ Checks: tsc ok, vitest 247/247
 Numbers: n/a
 Decisions: Umbilical tower is `vehicleHeight + 6` m, lightning towers are `vehicleHeight + 12` m, all non-tower geometry sits at `y <= 0`.
 Open issues: none
+
+## A5 Launcher from the real preset
+Status: done
+Commit: pending
+What changed: Added test 14 to `src/render/launcherMesh.test.ts` passing `lvm3()` and `twoStageKerolox()` from `rocket-physics/src/index.ts` directly into `buildLauncherMesh`.
+Checks: tsc ok, vitest 248/248
+Numbers: n/a
+Decisions: No changes to `launcherMesh.ts` or `rocket-physics` needed; `VehicleSpec` is directly assignable to `LauncherSpec`.
+Open issues: none

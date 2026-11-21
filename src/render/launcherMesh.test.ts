@@ -6,6 +6,7 @@ import {
   setLauncherState,
   type LauncherSpec,
 } from './launcherMesh';
+import { lvm3 as lvm3Preset, twoStageKerolox } from '../../rocket-physics/src/index.ts';
 
 const lvm3: LauncherSpec = {
   name: 'LVM3',
@@ -195,5 +196,20 @@ describe('buildLauncherMesh', () => {
       disposeLauncher(mesh);
       disposeLauncher(mesh);
     }).not.toThrow();
+  });
+
+  it('14. accepts real VehicleSpec presets (lvm3 and twoStageKerolox) without conversion', () => {
+    for (const preset of [lvm3Preset(), twoStageKerolox()]) {
+      const mesh = buildLauncherMesh(preset);
+      const coreLength = preset.stages
+        .filter((s) => !s.parallel)
+        .reduce((sum, s) => sum + s.length, 0);
+      const expectedTotal = coreLength + (preset.fairing ? preset.fairing.length : preset.payload.length);
+
+      expect(mesh.stageGroups).toHaveLength(preset.stages.length);
+      expect(mesh.totalLength).toBeGreaterThan(0);
+      expect(mesh.totalLength).toBeCloseTo(expectedTotal, 6);
+      disposeLauncher(mesh);
+    }
   });
 });
