@@ -383,9 +383,9 @@ export function dragBreakdown(rocket: RocketModel, mach: number): DragBreakdown 
 
 /**
  * Transonic and supersonic wave-drag increment (referenced to body frontal area).
- * Exact 0 below drag-divergence Mach 0.8 so subsonic results are unchanged;
- * smooth cubic rise across Mach 0.8..1.15 (Lock/Barrowman transonic rise),
- * followed by Prandtl-Glauert supersonic decay ~ 1 / sqrt(M^2 - 1).
+ * Uncalibrated placeholder with a typical magnitude (0.30 peak at Mach 1.15):
+ * exact 0 below drag-divergence Mach 0.8 so subsonic results are unchanged,
+ * smoothstep rise across Mach 0.8..1.15, and 1 / sqrt(M^2 - 1) decay above 1.15.
  */
 export function transonicWaveCd(M: number): number {
   if (!(M > 0.8)) return 0;
