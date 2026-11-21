@@ -35,6 +35,8 @@ interface BaseComponent {
   cgOverride?: number;
   /** Optional custom 24-bit RGB colour override for rendering (e.g. 0x4da3ff). */
   color?: number;
+  /** OpenRocket surface finish ('rough', 'unfinished', 'normal', 'smooth', 'polished', ...). */
+  finish?: string;
 }
 
 export interface NoseCone extends BaseComponent {
@@ -44,6 +46,8 @@ export interface NoseCone extends BaseComponent {
   baseRadius: number;
   /** Wall thickness; 0 means solid. */
   thickness: number;
+  /** True for a tail cone: wide end forward, tip aft. */
+  flipped?: boolean;
 }
 
 export interface BodyTube extends BaseComponent {
@@ -59,6 +63,11 @@ export interface Transition extends BaseComponent {
   foreRadius: number;
   aftRadius: number;
   thickness: number;
+  /** Curve of the outline; absent means a straight cone. */
+  shape?: NoseShape;
+  shapeParam?: number;
+  /** True when the curve is a nose shape with its front cut off (OpenRocket "clipped"). */
+  clipped?: boolean;
 }
 
 export interface FinSet extends BaseComponent {
@@ -81,6 +90,15 @@ export interface FinSet extends BaseComponent {
   crossSection?: 'square' | 'rounded' | 'airfoil';
   /** Freeform outline: [axial from root LE, radial from body surface] points, metres. */
   points?: [number, number][];
+  /** Angle of the first fin about the rocket axis, rad. Default 0. */
+  angleOffset?: number;
+  /** Root fillet radius, metres. */
+  filletRadius?: number;
+  /** Through-the-wall tab: radial depth into the body, length along the root, and
+   *  distance of its fore end aft of the root leading edge. Metres. */
+  tabHeight?: number;
+  tabLength?: number;
+  tabOffset?: number;
 }
 
 export interface MotorRef {
@@ -130,6 +148,15 @@ export interface Ring extends BaseComponent {
   innerRadius: number;
   /** True for a launch lug: it sits OUTSIDE the body and adds drag. */
   external?: boolean;
+  /** What the ring is in the source file. */
+  ringType?: 'centeringring' | 'bulkhead' | 'tubecoupler' | 'engineblock' | 'launchlug' | 'railbutton' | 'shoulder';
+  /** External parts only: radius of the body surface they sit on, metres. */
+  mountRadius?: number;
+  /** External parts only: angle about the rocket axis, rad. Default 0. */
+  angle?: number;
+  /** External parts only: how many copies along the axis (default 1) and their spacing, metres. */
+  instanceCount?: number;
+  instanceSeparation?: number;
 }
 
 export type Component =
