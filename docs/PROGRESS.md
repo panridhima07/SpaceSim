@@ -14,3 +14,25 @@
 - Step 5: added `src/mission/adapter.ts` with `eciToApp`, `appToEci`, `attitudeToApp` and `toSample`, plus `src/mission/adapter.test.ts`. Both quaternion types are `[x, y, z, w]` and rotate body vectors into the world; the library nose is body +X and the app nose is body +Y, so `qApp = Cq * q * Bq` with `Cq` a -90 degree X rotation and `Bq` a -90 degree Z rotation.
 - Step 5 check: `npm run typecheck` passed and `npm test` passed 218 tests in 22 files.
 - Step 5 note: every `FlightSample` field has a source, so none were set to 0. Before liftoff `sim.missionTime` is NaN, so `t` falls back to `sim.t` (pad time); `stage` is the lowest attached core stage. The library uses a WGS-84 ellipsoid, so at Sriharikota `|r|` is about 1.19 km below equatorial `RE` plus site altitude; the sample test therefore compares against the site's local geocentric radius, still within 1 km.
+- Step 6 checks: `npm run typecheck` passed; `npm test` passed 218 tests in 22 files; `npm run build` built 58 modules (`dist/assets/index-DIicZwBA.js`, 837.87 kB); `rocket-physics` `npm test` passed 200 tests with 0 failures.
+
+### Done
+
+- Consolidated the web app and `rocket-physics/` into the repository on branch `app`, with `space-flight-godot` and `.claude` ignored.
+- Fixed the bundled sample's motor mount so the 18 mm motor fits, with a regression test.
+- Wired the app to the physics library through `src/mission/engine.ts` and added the shared `FlightRecord` types.
+- Added `src/mission/adapter.ts` (frame conversion, attitude conversion, `toSample`) with tests, and documented the quaternion orders in the file.
+- All app and library checks pass from one tree.
+
+### Not done or failed
+
+- None of the six steps failed. Nothing was skipped.
+
+### Things I noticed
+
+- Both quaternion types are `[x, y, z, w]` and rotate body vectors into the world, so the adapter composes them without reordering; only the nose axis differs (library body +X, app body +Y).
+- The motor-fit rule lives in `src/app/main.ts` (`preflightFlaws`), not `src/physics/flaws.ts` as Step 2 suggested, and the old mount was 18 mm inside before floating-point rounding rather than 17 mm.
+- The library uses a WGS-84 ellipsoid (`RE` is the 6,378,137 m equatorial radius). At Sriharikota `|r|` is about 1.19 km below `RE` plus site altitude, so the Step 5 sample test compares against the site's local geocentric radius to keep the 1 km tolerance meaningful.
+- `Simulation.missionTime` is NaN before liftoff, so `toSample` falls back to pad time `sim.t`. `FlightSample.stage` has no direct field; it is the lowest attached core stage.
+- `docs/SYSTEM_DESIGN.md` also gives the adapter the job of turning engine events into `FlightMarker`s. Round 1 did not ask for that, so it is left for a later round.
+- The untracked `src/render/launcherMesh.ts` and `src/render/launcherMesh.test.ts` noted in Step 3 are no longer in the working tree; the app test count is 218 without them.
