@@ -116,3 +116,12 @@ Checks: tsc ok, vitest 263/263
 Numbers: n/a
 Decisions: Left `altitudeM` and `velocityMS` undefined rather than guessing.
 Open issues: none
+
+## E1 Planets in the right place in the sky
+Status: done
+Commit: pending
+What changed: Added `gmstFromJd` and `eclipticToSiteWorld` to `src/world/ephemeris.ts` and tested Sriharikota equinox solar noon (~76.28 deg elevation) and midnight (below horizon) in `src/world/ephemeris.test.ts`.
+Checks: tsc ok, vitest 264/264
+Numbers: Sriharikota equinox noon elevation 76.28 deg
+Decisions: Left `bodyPositionEarthCentred` unchanged to avoid breaking existing scene tests; `solarSystem.ts` can call `eclipticToSiteWorld` with `gmstFromJd(jd)` and site `(latDeg, lonDeg)`.
+Open issues: none

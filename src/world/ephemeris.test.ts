@@ -79,3 +79,25 @@ describe('bodyPositionEarthCentred', () => {
     expect(d).toBeLessThan(1.017);
   });
 });
+
+import { eclipticToSiteWorld } from './ephemeris';
+
+describe('eclipticToSiteWorld', () => {
+  it('places the Sun at ~76.3 deg elevation at Sriharikota local solar noon on an equinox, and below horizon at midnight', () => {
+    const sunEquinox: [number, number, number] = [1.496e11, 0, 0];
+    const lat = 13.72;
+    const lon = 80.23;
+
+    // Local solar noon: gmst + lon = 0 (mod 2pi)
+    const gmstNoon = (-lon * Math.PI) / 180;
+    const noonPos = eclipticToSiteWorld(sunEquinox, lat, lon, gmstNoon);
+    const rNoon = Math.hypot(noonPos[0], noonPos[1], noonPos[2]);
+    const elevNoonDeg = (Math.asin(noonPos[1] / rNoon) * 180) / Math.PI;
+    expect(elevNoonDeg).toBeCloseTo(90 - lat, 1);
+
+    // Local midnight: gmst + lon = pi
+    const gmstMidnight = gmstNoon + Math.PI;
+    const midPos = eclipticToSiteWorld(sunEquinox, lat, lon, gmstMidnight);
+    expect(midPos[1]).toBeLessThan(0);
+  });
+});

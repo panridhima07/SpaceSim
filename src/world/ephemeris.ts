@@ -249,3 +249,51 @@ export function bodyPositionEarthCentred(name: string, jd: number): Vec3 {
   const p = heliocentricPosition(name, jd);
   return eclipticToWorld([p[0] - earth[0], p[1] - earth[1], p[2] - earth[2]]);
 }
+
+const OBLIQUITY_RAD = 23.4392911 * DEG;
+
+/** Greenwich Mean Sidereal Time (rad) from Julian Date (IAU 1982). */
+export function gmstFromJd(jd: number): number {
+  const d = jd - J2000;
+  const gmstDeg = 280.46061837 + 360.98564736629 * d;
+  const rad = (gmstDeg % 360) * DEG;
+  return rad < 0 ? rad + 2 * Math.PI : rad;
+}
+
+/**
+ * Transform a J2000 ecliptic vector into the launch-site world frame
+ * (+X east, +Y zenith/up, +Z south) for a given latitude, longitude and GMST.
+ */
+export function eclipticToSiteWorld(
+  v: Vec3,
+  latDeg: number,
+  lonDeg: number,
+  gmstRad: number,
+): Vec3 {
+  // 1. Ecliptic -> Equatorial (rotate about +X by obliquity)
+  const ce = Math.cos(OBLIQUITY_RAD);
+  const se = Math.sin(OBLIQUITY_RAD);
+  const xEq = v[0];
+  const yEq = v[1] * ce - v[2] * se;
+  const zEq = v[1] * se + v[2] * ce;
+
+  // 2. Equatorial -> ECEF (rotate about +Z by -gmstRad)
+  const cg = Math.cos(gmstRad);
+  const sg = Math.sin(gmstRad);
+  const xEf = xEq * cg + yEq * sg;
+  const yEf = -xEq * sg + yEq * cg;
+  const zEf = zEq;
+
+  // 3. ECEF -> Site frame (+X east, +Y up, +Z south)
+  const lat = latDeg * DEG;
+  const lon = lonDeg * DEG;
+  const sLat = Math.sin(lat);
+  const cLat = Math.cos(lat);
+  const sLon = Math.sin(lon);
+  const cLon = Math.cos(lon);
+
+  const east = -sLon * xEf + cLon * yEf;
+  const up = cLat * cLon * xEf + cLat * sLon * yEf + sLat * zEf;
+  const south = sLat * cLon * xEf + sLat * sLon * yEf - cLat * zEf;
+  return [east, up, south];
+}
