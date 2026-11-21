@@ -136,3 +136,12 @@ Checks: parser.test.ts 24/24; tsc failed only on pre-existing `src/app/main.ts(1
 Numbers: n/a
 Decisions: none
 Open issues: `src/app/main.ts(100,28)` type error from `app` merge.
+
+## ITEM 2 Find the missing mass on Dual parachute deployment
+Status: done
+Commit: 8c45594
+What changed: Parsed `<overridemass>` and `<overridesubcomponentsmass>` on `<stage>` in `src/ork/parser.ts` into `StageBoundary` (`src/types.ts`), applied stage-level mass override scaling in `src/physics/massprops.ts`, added a unit test in `src/physics/massprops.test.ts`, and tightened validation bounds in `src/validate/openrocket.test.ts`.
+Checks: openrocket.test.ts 2/2, massprops.test.ts 7/7
+Numbers: Dual parachute deployment: rodV err +10.5%..+18.1% -> -3.1%..+0.6%; vmax err +11.2%..+40.4% -> -2.3%..-0.1%; alt err -9.5%..+55.4% -> -5.4%..-1.0%. Design 1 unchanged (-4.3%..-1.9% alt).
+Decisions: Scaled stage component masses by `massOverride / sum` to preserve CG and inertia distribution.
+Open issues: none
