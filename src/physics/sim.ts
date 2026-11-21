@@ -218,7 +218,22 @@ export function createSim(
     const altitude = r - R_EARTH - config.launchAltitude;
     const atm = deps.atmosphere(r - R_EARTH);
     const tBurn = ignited ? t - tIgnition : -1;
-    const mp: MassProps = deps.massProps(activeRocket, activeMotor, tBurn);
+    let mp: MassProps = deps.massProps(activeRocket, activeMotor, tBurn);
+    if (isMultiStage && stageMotors) {
+      for (let s = firingStageIdx + 1; s < stageMotors.length; s++) {
+        const um = stageMotors[s].motor;
+        const mExtra = um.totalMass;
+        const cgExtra = activeRocket.length * 0.5;
+        const totalM = mp.mass + mExtra;
+        if (totalM > 0) {
+          mp = {
+            ...mp,
+            mass: totalM,
+            cgX: (mp.mass * mp.cgX + mExtra * cgExtra) / totalM,
+          };
+        }
+      }
+    }
     const thrust =
       activeMotor && ignited && tBurn < activeMotor.burnTime ? deps.thrust(activeMotor, tBurn) : 0;
     const mass = mp.mass;
@@ -491,6 +506,10 @@ export function createSim(
           else if (c.kind === 'transition') newMaxR = Math.max(newMaxR, c.foreRadius, c.aftRadius);
         }
         activeRocket = { ...activeRocket, components: kept, length: newLen, maxRadius: newMaxR };
+        const keptSet = new Set<Component>(kept);
+        for (let ci = chutes.length - 1; ci >= 0; ci--) {
+          if (!keptSet.has(chutes[ci].chute)) chutes.splice(ci, 1);
+        }
         emit('stage separation', `Stage ${firingStageIdx + 1} separation at ${state.altitude.toFixed(1)} m`);
         firingStageIdx++;
         const nextStage = stageMotors[firingStageIdx];
