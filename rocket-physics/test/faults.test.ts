@@ -13,6 +13,15 @@ import {
   solidPressureFactor,
   ventStep,
 } from '../src/faults/pressure.ts';
+import {
+  arealHeatCapacity,
+  boilOffRate,
+  heatLeak,
+  radiativeEquilibriumTemp,
+  recoveryTemperature,
+  skinStep,
+  tankSurfaceArea,
+} from '../src/faults/thermal.ts';
 
 function close(actual: number, expected: number, tol: number, msg = ''): void {
   assert.ok(Math.abs(actual - expected) <= tol, `${msg} actual=${actual} expected=${expected} diff=${actual - expected} tol=${tol}`);
@@ -78,5 +87,27 @@ describe('pressure', () => {
     assert.ok(out > 50000 && out < 101325, `vent outflow expected in (50000, 101325), got ${out}`);
     const inflow = ventStep(50000, 101325, 0.1, 110, 0.08);
     assert.ok(inflow > 50000 && inflow < 101325, `vent inflow expected in (50000, 101325), got ${inflow}`);
+  });
+});
+
+describe('thermal', () => {
+  test('recoveryTemperature and radiativeEquilibriumTemp', () => {
+    relClose(recoveryTemperature(288.15, 2), 493.31, 0.0001, 'recoveryTemperature Mach 2');
+    assert.equal(recoveryTemperature(288.15, 0), 288.15);
+    relClose(radiativeEquilibriumTemp(28448, 0.8), 889.9, 0.001, 'radiativeEquilibriumTemp');
+    assert.equal(radiativeEquilibriumTemp(0, 0.8), 0);
+  });
+
+  test('arealHeatCapacity and skinStep', () => {
+    relClose(arealHeatCapacity(2840, 864, 0.006), 14722.56, 1e-9, 'arealHeatCapacity');
+    close(skinStep(300, 20000, 1000, 1, 14722.56, 0.8), 301.3455, 0.001, 'skinStep heating');
+    assert.ok(skinStep(300, 0, 300, 100, 14722.56, 0.8) < 300, 'skinStep radiates only');
+    assert.ok(skinStep(900, 20000, 600, 1, 14722.56, 0.8) < 900, 'skinStep hotter than recovery');
+  });
+
+  test('tankSurfaceArea, heatLeak, and boilOffRate', () => {
+    relClose(tankSurfaceArea(2, 8), 125.66, 0.0001, 'tankSurfaceArea');
+    relClose(heatLeak(0.8, 125.66, 303, 20.28), 28421, 0.001, 'heatLeak');
+    relClose(boilOffRate(28421, 446e3), 0.06372, 0.001, 'boilOffRate');
   });
 });
