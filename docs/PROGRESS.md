@@ -48,3 +48,5 @@
 - Step 3 check: `npm run typecheck` passed and `npm test` passed 222 tests in 22 files.
 - Step 4: added `AscentAutopilot`, `OMEGA_EARTH` and the `AscentOptions` type to `src/mission/engine.ts`; created `src/mission/vehicles.ts` with the `lvm3-m4` definition copied from `rocket-physics/examples/lvm3-gto.ts`, plus `vehicles.test.ts`.
 - Step 4 check: `npm run typecheck` passed and `npm test` passed 226 tests in 23 files.
+- Step 5: added `RE` to `src/mission/engine.ts`; created `src/mission/fly.ts` (0.5 s default sampling, stage and fairing separation times, orbit, markers, Earth angle at liftoff, pad-abort guard) and `src/mission/fly.test.ts` with orbit, sampling, marker, staging, throttle, JSON and coarse-interval checks.
+- Step 5 check: `npm run typecheck` passed and `npm test` passed 249 tests in 25 files.
