@@ -107,3 +107,12 @@ Checks: tsc ok, vitest 262/262
 Numbers: n/a
 Decisions: Used published RH-200 diameter (0.20 m) and length (~3.6 m); marked estimated nose/fin/wall thicknesses and approximate motor thrust curves clearly in comments.
 Open issues: none
+
+## D2 Real-flight reference data
+Status: done
+Commit: pending
+What changed: Added `src/data/lvm3Chandrayaan3.ts` and `src/data/lvm3Chandrayaan3.test.ts` with `LVM3_CHANDRAYAAN3_EVENTS` (S200 separation 127.0 s, Fairing separation 195.0 s, L110 separation 305.6 s) from `rocket-physics/README.md`.
+Checks: tsc ok, vitest 263/263
+Numbers: n/a
+Decisions: Left `altitudeM` and `velocityMS` undefined rather than guessing.
+Open issues: none
