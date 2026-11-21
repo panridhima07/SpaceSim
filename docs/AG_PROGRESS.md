@@ -98,3 +98,12 @@ Checks: tsc ok, vitest 253/253
 Numbers: n/a
 Decisions: Single-stage flights without `stageMotors` take the exact original code path for bit-identical results.
 Open issues: none
+
+## D1 RH-200 sounding rocket sample
+Status: done
+Commit: pending
+What changed: Added `src/ork/rh200.ts` (`RH200_ORK_XML` and `RH200_STAGE_MOTORS`) and `src/ork/rh200.test.ts` testing 2-stage parsing and flight simulation.
+Checks: tsc ok, vitest 262/262
+Numbers: n/a
+Decisions: Used published RH-200 diameter (0.20 m) and length (~3.6 m); marked estimated nose/fin/wall thicknesses and approximate motor thrust curves clearly in comments.
+Open issues: none
