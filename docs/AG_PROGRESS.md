@@ -125,3 +125,14 @@ Checks: tsc ok, vitest 264/264
 Numbers: Sriharikota equinox noon elevation 76.28 deg
 Decisions: Left `bodyPositionEarthCentred` unchanged to avoid breaking existing scene tests; `solarSystem.ts` can call `eclipticToSiteWorld` with `gmstFromJd(jd)` and site `(latDeg, lonDeg)`.
 Open issues: none
+
+# TASK-03
+
+## ITEM 1 Put the staging warning back
+Status: done
+Commit: 39f58b9
+What changed: Restored the multi-stage warning in `src/ork/parser.ts` for `stageCount > 1` ("Rocket has N stages. Stages separate only when stage motors are supplied; otherwise all stages fly as one stacked rocket.") and added an assertion in `src/ork/parser.test.ts`.
+Checks: parser.test.ts 24/24; tsc failed only on pre-existing `src/app/main.ts(100,28)` (`setConstellations` on `SolarSystem`, off-limits); vitest 275/276 (`series.test.ts` timed out at 5000 ms under parallel load).
+Numbers: n/a
+Decisions: none
+Open issues: `src/app/main.ts(100,28)` type error from `app` merge.
