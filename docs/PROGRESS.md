@@ -48,3 +48,17 @@
 - Step 3 check: `npm run typecheck` passed and `npm test` passed 222 tests in 22 files.
 - Step 4: added `AscentAutopilot`, `OMEGA_EARTH` and the `AscentOptions` type to `src/mission/engine.ts`; created `src/mission/vehicles.ts` with the `lvm3-m4` definition copied from `rocket-physics/examples/lvm3-gto.ts`, plus `vehicles.test.ts`.
 - Step 4 check: `npm run typecheck` passed and `npm test` passed 226 tests in 23 files.
+- Step 5: added `RE` to `src/mission/engine.ts`; created `src/mission/fly.ts` (0.5 s default sampling, stage and fairing separation times, orbit, markers, Earth angle at liftoff, pad-abort guard) and `src/mission/fly.test.ts` with orbit, sampling, marker, staging, throttle, JSON and coarse-interval checks.
+- Step 5 check: `npm run typecheck` passed and `npm test` passed 249 tests in 25 files.
+- Step 6: created `src/mission/worker.ts` (module worker, mission lookup, `ok`/`error` replies) and `src/mission/client.ts` (`runMission`, worker when available, in-thread fallback otherwise), plus `client.test.ts`; added the `window.astraRunMission` hook at the end of `src/app/main.ts`.
+- Step 6 note: `main.ts` already exposes its debug hook with a local interface and a window cast instead of a `declare global` block, so the mission hook follows that pattern.
+- Step 6 check: `npm run typecheck` passed, `npm test` passed 251 tests in 26 files, and `npm run build` emitted a worker chunk. `Get-ChildItem dist\assets | Select-Object Name, Length`:
+```
+Name              Length
+----              ------
+space
+client-Cr_nTx1U.js 45728
+index-BaiA4cDd.js  857972
+index-DsDxnDuL.css 15978
+worker-_eyFj4rI.js 45520
+```

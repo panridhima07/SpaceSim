@@ -1,6 +1,7 @@
 export {
   AscentAutopilot,
   OMEGA_EARTH,
+  RE,
   Simulation,
   SITES,
   flyAscent,
