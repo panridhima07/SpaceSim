@@ -44,3 +44,12 @@ Checks: tsc ok, vitest 248/248
 Numbers: n/a
 Decisions: No changes to `launcherMesh.ts` or `rocket-physics` needed; `VehicleSpec` is directly assignable to `LauncherSpec`.
 Open issues: none
+
+## B1 Find why fin lift is about 20 % low
+Status: done
+Commit: pending
+What changed: Checked `finCnAlphaIncompressible` in `src/physics/aero.ts` against the Barrowman equations: `Kfb = 1 + rb / (s + rb)`, reference diameter `d = 2 * maxR`, mid-chord length `l = sqrt(s^2 + (m + Ct/2 - Cr/2)^2)`, `finCountFactor(N)` (= 1 for N <= 4), subsonic compressibility factor `1 / sqrt(1 - M^2)`, and fin span `s` measured from body surface. All match Barrowman; no code changed.
+Checks: tsc ok, vitest 248/248
+Numbers: CNa OR 15.607 vs ours 11.918 (unchanged)
+Decisions: No bug found in Barrowman fin formula; left code untouched per B1 instructions.
+Open issues: none
