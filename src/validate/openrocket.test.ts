@@ -15,6 +15,11 @@ const FIXTURE = fileURLToPath(
 );
 const haveFixture = fs.existsSync(FIXTURE);
 
+const DUAL_FIXTURE = fileURLToPath(
+  new URL('../../fixtures/external/Dual_parachute_deployment.ork', import.meta.url),
+);
+const haveDualFixture = fs.existsSync(DUAL_FIXTURE);
+
 function pct(ours: number, ref: number): number {
   if (!Number.isFinite(ours) || !Number.isFinite(ref) || ref === 0) return NaN;
   return ((ours - ref) / ref) * 100;
@@ -62,6 +67,22 @@ describe.skipIf(!haveFixture)('our sim vs OpenRocket (A simple model rocket)', (
       expect(r.ours!.maxAltitude).toBeGreaterThan(0);
       // Every motor in this design is embedded in the .ork, so the designer's exact motor is flown.
       expect(r.note ?? '').toContain('motor from embedded');
+    }
+  }, 120_000);
+});
+
+describe.skipIf(!haveDualFixture)('our sim vs OpenRocket (Dual parachute deployment)', () => {
+  it('measures each simulation against OpenRocket and reports the table', async () => {
+    const rows = await compareWithOpenRocket(DUAL_FIXTURE);
+    const table = rows.map(toRow);
+    console.table(table);
+
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    for (const r of rows) {
+      if (!r.sim.motor || r.note === 'motor not in database') continue;
+      expect(r.ours, r.note).not.toBeNull();
+      expect(Number.isFinite(r.ours!.maxAltitude)).toBe(true);
+      expect(r.ours!.maxAltitude).toBeGreaterThan(0);
     }
   }, 120_000);
 });

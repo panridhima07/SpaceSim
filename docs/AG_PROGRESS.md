@@ -62,3 +62,12 @@ Checks: tsc ok, vitest 248/248
 Numbers: dry mass 0.049807 kg vs 0.048159 kg (+3.4 %)
 Decisions: Kept existing massprops implementation unchanged.
 Open issues: none
+
+## B3 Validate on two more designs
+Status: done
+Commit: pending
+What changed: Added `Dual_parachute_deployment.ork` comparison to `src/validate/openrocket.test.ts` (the only other single-stage `.ork` in `fixtures/external/`).
+Checks: tsc ok, vitest 249/249
+Numbers: `Dual_parachute_deployment.ork` (6 sims): alt err -2.5% to +55.4%, vmax err +17.3% to +40.4%, tApo err -8.0% to +17.4%, rodV err +10.5% to +18.1%.
+Decisions: Asserted finite positive apogee rather than tight tolerances, as instructed.
+Open issues: Only one additional single-stage `.ork` file was present in `fixtures/external/`.
