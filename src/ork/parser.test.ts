@@ -267,6 +267,7 @@ describe.skipIf(!fsMod.existsSync(TWO_STAGE) || !fsMod.existsSync(THREE_STAGE))(
       const twoModel = await parseOrkFile(twoBytes);
       expect(twoModel.stageCount).toBe(2);
       expect(twoModel.stages).toHaveLength(2);
+      expect(twoModel.warnings.some((w) => w.includes('2 stages'))).toBe(true);
       expect(twoModel.stages![0].startComponent).toBe(0);
       expect(twoModel.stages![0].componentCount).toBeGreaterThan(0);
       expect(twoModel.stages![1].startComponent).toBe(twoModel.stages![0].componentCount);
