@@ -363,14 +363,15 @@
     display: none;
   }
 
-  /* Timeline + health become a slide-up sheet on phone, keeping the middle third clear. */
+  /* Timeline + health both appear inside the slide-up sheet on phone, keeping the middle third clear. */
   .msn-col-right {
     display: none;
     position: fixed;
     left: 8px;
     right: 8px;
-    bottom: 76px;
-    max-height: 48vh;
+    bottom: 108px;
+    max-height: 44vh;
+    overflow-y: auto;
     z-index: 25;
   }
 
@@ -380,6 +381,17 @@
 
   .msn-timeline-panel {
     display: none;
+  }
+
+  .msn-root.msn-sheet-open .msn-timeline-panel {
+    display: block;
+    position: fixed;
+    left: 8px;
+    right: 8px;
+    top: 128px;
+    max-height: 28vh;
+    overflow-y: auto;
+    z-index: 25;
   }
 
   .msn-outcome {

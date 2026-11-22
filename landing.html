@@ -430,10 +430,11 @@
           min-width: 44px;
           touch-action: manipulation;
         }
-        /* Keep the account chip clear of the bottom dock and >= 44x44px on mobile. */
+        /* Keep the account chip in the clear top-left zone below #brand and >= 44x44px on mobile. */
         .auth-chip {
           left: calc(10px + env(safe-area-inset-left, 0px));
-          bottom: calc(82px + env(safe-area-inset-bottom, 0px));
+          top: calc(68px + env(safe-area-inset-top, 0px));
+          bottom: auto;
         }
         .auth-chip-toggle {
           width: 44px;
