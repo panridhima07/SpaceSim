@@ -17,6 +17,7 @@ export interface MissionUiCallbacks {
 export interface MissionUi {
   setVisible(on: boolean): void;
   setBusy(text: string | null): void;
+  setError(msg: string | null): void;
   setRecord(record: FlightRecord, def: MissionDef): void;
   update(snapshot: FlightSnapshot, playing: boolean, warp: number): void;
 }
@@ -209,7 +210,9 @@ export function createMissionUI(container: HTMLElement, callbacks: MissionUiCall
   const busyCard = el('div', 'sfb-panel msn-busy-card', 'Computing flight…');
   busyOverlay.append(busyCard);
 
-  root.append(header, colLeft, outcomeBanner, colRight, transport, busyOverlay);
+  const errorBanner = el('div', 'sfb-panel msn-error sfb-hidden');
+
+  root.append(header, colLeft, outcomeBanner, colRight, transport, errorBanner, busyOverlay);
   container.append(root);
 
   // ---------- State per record ----------
@@ -452,6 +455,14 @@ export function createMissionUI(container: HTMLElement, callbacks: MissionUiCall
       } else {
         busyCard.textContent = text;
         busyOverlay.classList.remove('sfb-hidden');
+      }
+    },
+    setError(msg: string | null) {
+      if (msg === null) {
+        errorBanner.classList.add('sfb-hidden');
+      } else {
+        errorBanner.textContent = msg;
+        errorBanner.classList.remove('sfb-hidden');
       }
     },
     setRecord,

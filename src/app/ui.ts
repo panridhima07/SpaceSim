@@ -268,6 +268,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   const brandRow = h('div', 'sfb-row');
   brandRow.append(
     buildBtn,
+    button('Fly LVM3 mission', 'sfb-btn-ghost sfb-btn-wide', () => cb.onMission?.(), 'Fly the LVM3-M4 mission'),
     button('Open .ork', '', () => fileInput.click(), 'Open an OpenRocket file'),
     button('Load sample', '', () => cb.onLoadSample(), 'Load the built-in sample rocket'),
     button('Moon landing', 'sfb-btn-ghost sfb-btn-wide', () => window.location.assign('./landing.html'), 'Fly a lunar landing'),
@@ -544,8 +545,10 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   menuBtn.append(badge);
   const buildRailBtn = button('B', 'sfb-hud-btn sfb-hud-build', () => cb.onBuild?.(), 'Build Rocket');
   buildRailBtn.setAttribute('aria-label', 'Build rocket');
+  const missionRailBtn = button('LVM3', 'sfb-hud-btn', () => cb.onMission?.(), 'Fly LVM3 mission');
+  missionRailBtn.setAttribute('aria-label', 'Fly LVM3 mission');
   const rail = h('div', 'sfb-hud sfb-hud-rail');
-  rail.append(buildRailBtn, cycleBtn, menuBtn);
+  rail.append(buildRailBtn, missionRailBtn, cycleBtn, menuBtn);
 
   const tabPages = new Map<TabName, HTMLElement>();
   const tabButtons = new Map<TabName, HTMLButtonElement>();

@@ -7,6 +7,8 @@ export interface HeroOptions {
   onFly: () => void;
   /** Third button: go to the Moon landing page. */
   onMoon: () => void;
+  /** Fourth button: open LVM3-M4 mission mode. */
+  onMission?: () => void;
 }
 
 export interface Hero {
@@ -146,6 +148,10 @@ export function mountHero(container: HTMLElement, opts: HeroOptions): Hero | nul
       }),
       makeButton('astra-hero-btn--ghost', 'MOON LANDING', () => {
         opts.onMoon();
+      }),
+      makeButton('astra-hero-btn--ghost', 'FLY LVM3 MISSION', () => {
+        dismiss();
+        opts.onMission?.();
       }),
     );
 

@@ -302,6 +302,17 @@
   text-transform: uppercase;
 }
 
+.msn-error {
+  position: fixed;
+  top: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 28;
+  border-color: var(--sfb-critical);
+  color: var(--sfb-critical);
+  max-width: 90vw;
+}
+
 .msn-sheet-toggle {
   display: none;
 }

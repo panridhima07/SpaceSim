@@ -94,6 +94,14 @@ import {
 } from '../builder/challenges';
 import { createBuilderView } from '../builder/view';
 import { createBuilderUI, type BuilderStats } from './builderUi';
+import { createMissionView } from './missionView';
+import { createMissionUI } from './missionUi';
+import { runMission } from '../mission/client';
+import { getMission } from '../mission/vehicles';
+import { snapshotAt } from '../mission/snapshot';
+import type { FlightRecord } from '../mission/record';
+import type { FlyOptions } from '../mission/fly';
+import type { ScenarioId } from '../mission/engine';
 
 type Markers = ReturnType<typeof buildCgCpMarkers>;
 type Exhaust = ReturnType<typeof buildExhaust>;
@@ -868,6 +876,26 @@ function frame(now: number): void {
     return;
   }
 
+  if (appMode === 'mission') {
+    if (missionRecord && missionRecord.samples.length > 0) {
+      const firstT = missionRecord.samples[0].t;
+      const lastT = missionRecord.samples[missionRecord.samples.length - 1].t;
+      if (missionPlaying) {
+        missionT = Math.min(lastT, missionT + realDt * missionWarp);
+        if (missionT >= lastT) missionPlaying = false;
+      }
+      missionT = Math.max(firstT, Math.min(lastT, missionT));
+      missionView.setTime(missionT);
+      if (now - lastMissionUiMs >= 100) {
+        lastMissionUiMs = now;
+        missionUi.update(snapshotAt(missionRecord, missionT), missionPlaying, missionWarp);
+      }
+    }
+    missionView.render(renderer);
+    requestAnimationFrame(frame);
+    return;
+  }
+
   const simDt = clock.tick(realDt);
   clock.setMaxWarp(maxWarpFor(sim));
   advanceSim(simDt);
@@ -925,11 +953,12 @@ const ui: UI = createUI(app, {
     replayT = t;
   },
   onBuild: () => enterBuilder(),
+  onMission: () => enterMission(),
 });
 
 // ---------- Build mode glue ----------
 
-let appMode: 'flight' | 'builder' = 'flight';
+let appMode: 'flight' | 'builder' | 'mission' = 'flight';
 let builderHistory: History<Design> | null = null;
 let builderSelectedId: string | null = null;
 let builderCutaway = false;
@@ -1335,8 +1364,109 @@ window.addEventListener('resize', () => {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   builderView.resize(w, h);
+  missionView.resize(w, h);
   renderer.setSize(w, h);
 });
+
+// ---------- Mission mode glue ----------
+
+const missionDef = getMission('lvm3-m4')!;
+const missionView = createMissionView(renderer.domElement);
+const missionCache = new Map<string, FlightRecord>();
+const SCENARIO_IDS = new Set<string>(['blocked-vent', 'regulator-low', 'hot-grain']);
+let missionRecord: FlightRecord | null = null;
+let missionT = 0;
+let missionPlaying = true;
+let missionWarp = 1;
+let lastMissionUiMs = -Infinity;
+
+function applyMissionRecord(record: FlightRecord): void {
+  missionRecord = record;
+  missionT = record.samples[0]?.t ?? 0;
+  missionPlaying = true;
+  missionView.setRecord(record, missionDef);
+  missionUi.setRecord(record, missionDef);
+  missionUi.setError(null);
+  if (record.samples.length > 0) {
+    lastMissionUiMs = performance.now();
+    missionUi.update(snapshotAt(record, missionT), missionPlaying, missionWarp);
+  }
+}
+
+async function loadMissionCase(caseId: string): Promise<void> {
+  const cached = missionCache.get(caseId);
+  if (cached) {
+    applyMissionRecord(cached);
+    return;
+  }
+  missionUi.setError(null);
+  missionUi.setBusy('Computing flight…');
+  const opts: FlyOptions =
+    caseId === 'nominal'
+      ? {}
+      : SCENARIO_IDS.has(caseId)
+        ? { scenario: caseId as ScenarioId, destructive: true }
+        : { failureCase: caseId, destructive: true };
+  try {
+    const rec = await runMission(missionDef.id, opts);
+    missionCache.set(caseId, rec);
+    if (appMode === 'mission') {
+      applyMissionRecord(rec);
+    }
+  } catch (e) {
+    missionUi.setError(`Mission failed: ${errorMessage(e)}`);
+  } finally {
+    missionUi.setBusy(null);
+  }
+}
+
+const missionUi = createMissionUI(app, {
+  onExit: () => exitMission(),
+  onFly: (caseId) => {
+    void loadMissionCase(caseId);
+  },
+  onPlayPause: () => {
+    missionPlaying = !missionPlaying;
+    if (missionRecord && missionRecord.samples.length > 0) {
+      missionUi.update(snapshotAt(missionRecord, missionT), missionPlaying, missionWarp);
+    }
+  },
+  onWarp: (warp) => {
+    missionWarp = warp;
+    if (missionRecord && missionRecord.samples.length > 0) {
+      missionUi.update(snapshotAt(missionRecord, missionT), missionPlaying, missionWarp);
+    }
+  },
+  onScrub: (t) => {
+    if (!missionRecord || missionRecord.samples.length === 0) return;
+    missionT = t;
+    missionPlaying = false;
+    missionView.setTime(missionT);
+    missionUi.update(snapshotAt(missionRecord, missionT), missionPlaying, missionWarp);
+  },
+  onCamera: (mode) => missionView.setCamera(mode),
+});
+
+function enterMission(): void {
+  appMode = 'mission';
+  cameraRig.setEnabled(false);
+  builderView.setEnabled(false);
+  ui.setVisible(false);
+  builderUi.setVisible(false);
+  missionUi.setVisible(true);
+  missionView.setEnabled(true);
+  if (!missionRecord) {
+    void loadMissionCase('nominal');
+  }
+}
+
+function exitMission(): void {
+  appMode = 'flight';
+  missionView.setEnabled(false);
+  missionUi.setVisible(false);
+  ui.setVisible(true);
+  cameraRig.setEnabled(true);
+}
 
 // Debug hook for the browser console.
 interface DebugHook {
@@ -1372,6 +1502,7 @@ if (takeEnterBuildFlag()) {
     onBuild: () => enterBuilder(),
     onFly: () => {},
     onMoon: () => window.location.assign('./landing.html'),
+    onMission: () => enterMission(),
   });
 }
 

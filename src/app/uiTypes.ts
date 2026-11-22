@@ -24,6 +24,8 @@ export interface UICallbacks {
   onStressTest(): void;
   /** Switch to rocket build mode. */
   onBuild?(): void;
+  /** Switch to LVM3 mission mode. */
+  onMission?(): void;
 }
 
 /** One component's build-quality grade, as listed in the UI. */
