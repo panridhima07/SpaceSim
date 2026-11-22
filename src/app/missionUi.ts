@@ -181,7 +181,7 @@ export function createMissionUI(container: HTMLElement, callbacks: MissionUiCall
   scrubber.type = 'range';
   scrubber.min = '0';
   scrubber.max = '100';
-  scrubber.step = '0.1';
+  scrubber.step = 'any';
   scrubber.value = '0';
   scrubber.setAttribute('aria-label', 'Mission time');
   scrubber.addEventListener('input', () => callbacks.onScrub(Number(scrubber.value)));

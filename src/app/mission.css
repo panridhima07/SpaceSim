@@ -43,6 +43,7 @@
   gap: 8px;
 }
 
+.msn-root .msn-select,
 .msn-select {
   background: rgba(8, 15, 28, 0.9);
   color: var(--sfb-text);
