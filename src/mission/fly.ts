@@ -3,13 +3,16 @@
 import { toMarkers, toSample } from './adapter';
 import {
   AscentAutopilot,
+  FailureInjector,
   FaultMonitor,
   OMEGA_EARTH,
   RE,
   Simulation,
   applyScenario,
-  monitored,
+  classifyOutcome,
   propagateToImpact,
+  supervised,
+  type Failure,
   type ScenarioId,
 } from './engine';
 import type { FlightFault, FlightRecord, FlightSample } from './record';
@@ -18,13 +21,29 @@ import type { MissionDef } from './vehicles';
 export interface FlyOptions {
   sampleInterval?: number;   // s, default 0.5
   scenario?: ScenarioId;
+  failures?: Failure[];
+  failureCase?: string;
+  destructive?: boolean;
 }
 
 /** Fly a mission under its ascent autopilot and return the recorded flight. */
 export function flyMission(def: MissionDef, opts: FlyOptions = {}): FlightRecord {
   const sampleInterval = opts.sampleInterval ?? 0.5;
   const vehicle = def.vehicle();
-  const autopilot = new AscentAutopilot(def.ascent);
+
+  let combinedFailures: Failure[] = [];
+  if (opts.failureCase) {
+    const fc = def.failureCases?.find((c) => c.id === opts.failureCase);
+    if (!fc) throw new Error(`Unknown failure case: ${opts.failureCase}`);
+    combinedFailures = combinedFailures.concat(fc.failures);
+  }
+  if (opts.failures && opts.failures.length > 0) {
+    combinedFailures = combinedFailures.concat(opts.failures);
+  }
+
+  const injector = combinedFailures.length > 0 ? new FailureInjector(combinedFailures) : undefined;
+  const ascentOpts = injector ? { ...def.ascent, ...injector.ascentOverrides() } : def.ascent;
+  const autopilot = new AscentAutopilot(ascentOpts);
 
   let monitor: FaultMonitor | undefined;
   if (def.faults) {
@@ -33,12 +52,15 @@ export function flyMission(def: MissionDef, opts: FlyOptions = {}): FlightRecord
     monitor = new FaultMonitor(vehicle, spec);
   }
 
-  const computer = monitor ? monitored(autopilot, monitor) : autopilot;
+  const computer =
+    monitor || injector || opts.destructive
+      ? supervised(autopilot, { monitor, injector, destructive: opts.destructive })
+      : autopilot;
   const sim = new Simulation(vehicle, def.config, computer);
 
   const samples: FlightSample[] = [];
   const iipTrack: { t: number; latDeg: number; lonDeg: number }[] = [];
-  let nextIipT = 0;
+  let nextIipT = 10;
 
   const stageSeparation: (number | null)[] = sim.rt.stages.map(() => null);
   let fairingSeparation: number | null = null;
@@ -69,6 +91,7 @@ export function flyMission(def: MissionDef, opts: FlyOptions = {}): FlightRecord
         sample.fairingDeltaP = monitor.channels.fairingDeltaP;
         sample.heatFlux = sim.diag.heatFlux;
         sample.ambientPressure = sim.diag.pressure;
+        sample.health = { ...monitor.health };
       }
       samples.push(sample);
 
@@ -130,10 +153,15 @@ export function flyMission(def: MissionDef, opts: FlyOptions = {}): FlightRecord
     epochJD: sim.epochJD,
     liftoffSimTime: liftoffTime,
     iipTrack,
+    outcome: classifyOutcome(sim, autopilot),
   };
 
-  if (faults) record.faults = faults;
+  if (monitor) {
+    record.faults = faults;
+    record.healthPeaks = monitor.peaks();
+  }
   if (opts.scenario) record.scenario = opts.scenario;
+  if (opts.failureCase) record.failureCase = opts.failureCase;
 
   return record;
 }

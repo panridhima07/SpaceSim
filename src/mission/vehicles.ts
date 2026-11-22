@@ -7,10 +7,17 @@ import {
   lvm3FaultSpec,
   SITES,
   type AscentOptions,
+  type Failure,
   type FaultSpec,
   type SimConfig,
   type VehicleSpec,
 } from './engine';
+
+export interface FailureCase {
+  id: string;
+  failures: Failure[];
+  note: string;
+}
 
 export interface MissionDef {
   id: string;
@@ -18,6 +25,7 @@ export interface MissionDef {
   description: string;
   vehicle: () => VehicleSpec;
   faults?: () => FaultSpec;
+  failureCases?: FailureCase[];
   config: SimConfig;
   ascent: AscentOptions;
   tMax: number;                         // s, safety limit
@@ -32,6 +40,38 @@ export const MISSIONS: MissionDef[] = [
     description: 'LVM3-M4 launched Chandrayaan-3 from Sriharikota on 14 July 2023 into a 170 x 36 500 km transfer orbit.',
     vehicle: () => lvm3(),
     faults: () => lvm3FaultSpec(),
+    failureCases: [
+      {
+        id: 'vikas-out',
+        failures: [{ kind: 'engine-out', stage: 0, at: 200, engines: 1 }],
+        note: 'One of the two Vikas engines shuts down in flight.',
+      },
+      {
+        id: 'l110-shutdown',
+        failures: [{ kind: 'stage-shutdown', stage: 0, at: 200 }],
+        note: 'The liquid core stage shuts down early.',
+      },
+      {
+        id: 'c25-shutdown',
+        failures: [{ kind: 'stage-shutdown', stage: 2, at: 600 }],
+        note: 'The cryogenic stage shuts down early. Comparable in kind to GSLV-F10 (2021), where the cryogenic stage failed.',
+      },
+      {
+        id: 'fairing-stuck',
+        failures: [{ kind: 'fairing-stuck' }],
+        note: 'The payload fairing does not separate. Comparable in kind to PSLV-C39 (2017).',
+      },
+      {
+        id: 'gimbal-lock',
+        failures: [{ kind: 'gimbal-lock', at: 40 }],
+        note: 'Thrust-vector control freezes just before max-Q.',
+      },
+      {
+        id: 'lh2-leak',
+        failures: [{ kind: 'leak', stage: 2, tank: 1, at: 320, rate: 2 }],
+        note: 'The hydrogen tank leaks 2 kg/s.',
+      },
+    ],
     config: { site: SITES.sriharikota, epoch: new Date('2023-07-14T09:05:17Z') },
     ascent: { target: { perigeeAltitude: 170e3, apogeeAltitude: 36500e3 }, pitchKickDeg: 8 },
     tMax: 3000,

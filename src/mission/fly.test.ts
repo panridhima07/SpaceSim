@@ -154,5 +154,86 @@ describe('flyMission lvm3-m4', () => {
     const flawMarker = thinNoseRecord.markers.find((m) => m.kind === 'flaw' && m.severity === 'critical');
     expect(flawMarker).toBeDefined();
     expect(JSON.parse(JSON.stringify(thinNoseRecord))).toEqual(thinNoseRecord);
+
+    const skinPeak = thinNoseRecord.healthPeaks!.find((p) => p.key === 'skin')!;
+    expect(skinPeak.value).toBeGreaterThan(1);
+    const firstOver = thinNoseRecord.samples.find((s) => (s.health?.skin ?? 0) > 1);
+    const firstCritTemp = thinNoseRecord.samples.find((s) => (s.skinTemp ?? 0) > 450);
+    expect(firstOver).toBeDefined();
+    expect(firstCritTemp).toBeDefined();
+    expect(Math.abs(firstOver!.t - firstCritTemp!.t)).toBeLessThanOrEqual(1);
   });
+
+  it('records continuous health in [0, 1) and expected peaks on nominal flight', () => {
+    for (const s of record.samples) {
+      expect(s.health).toBeDefined();
+      for (const [k, v] of Object.entries(s.health!)) {
+        expectFinite(v, `health.${k}`);
+        expect(v).toBeGreaterThanOrEqual(0);
+        expect(v).toBeLessThan(1);
+      }
+    }
+
+    const peak = (key: string) => {
+      const p = record.healthPeaks!.find((h) => h.key === key);
+      expect(p, `missing healthPeak ${key}`).toBeDefined();
+      return p!;
+    };
+
+    const maxQ = peak('maxQ');
+    expect(maxQ.value).toBeGreaterThanOrEqual(0.69);
+    expect(maxQ.value).toBeLessThanOrEqual(0.82);
+    expect(maxQ.t).toBeGreaterThanOrEqual(50);
+    expect(maxQ.t).toBeLessThanOrEqual(65);
+
+    expect(peak('axialG').value).toBeGreaterThanOrEqual(0.62);
+    expect(peak('axialG').value).toBeLessThanOrEqual(0.75);
+
+    expect(peak('skin').value).toBeGreaterThanOrEqual(0.55);
+    expect(peak('skin').value).toBeLessThanOrEqual(0.87);
+
+    expect(peak('fairingDp').value).toBeGreaterThanOrEqual(0.14);
+    expect(peak('fairingDp').value).toBeLessThanOrEqual(0.32);
+
+    expect(peak('tankBurst').value).toBeGreaterThanOrEqual(0.60);
+    expect(peak('tankBurst').value).toBeLessThanOrEqual(0.74);
+
+    expect(peak('cavitation').value).toBeGreaterThanOrEqual(0.42);
+    expect(peak('cavitation').value).toBeLessThanOrEqual(0.62);
+
+    for (const rec of [record, thinNoseRecord]) {
+      for (const f of rec.faults ?? []) {
+        expect(f.tFirst).toBeDefined();
+        expect(f.tLast).toBeDefined();
+        expect(f.tFirst!).toBeLessThanOrEqual(f.t);
+        expect(f.t).toBeLessThanOrEqual(f.tLast!);
+      }
+    }
+  });
+
+  it('classifies nominal outcome and exposes all six failure cases', () => {
+    expect(record.outcome).toBeDefined();
+    expect(record.outcome!.outcome).toBe('nominal');
+    expect(record.outcome!.summary.length).toBeGreaterThan(0);
+
+    const ids = (mission.failureCases ?? []).map((c) => c.id);
+    expect(ids).toEqual([
+      'vikas-out',
+      'l110-shutdown',
+      'c25-shutdown',
+      'fairing-stuck',
+      'gimbal-lock',
+      'lh2-leak',
+    ]);
+  });
+
+  it('handles failureCase gimbal-lock with destructive breakup', () => {
+    const failed = flyMission(mission, { failureCase: 'gimbal-lock', destructive: true });
+    expect(failed.failureCase).toBe('gimbal-lock');
+    expect(failed.outcome).toBeDefined();
+    expect(failed.outcome!.outcome).toBe('breakup');
+    expect(failed.outcome!.summary.length).toBeGreaterThan(0);
+    expect(failed.samples[failed.samples.length - 1].t).toBeLessThan(120);
+    expect(JSON.parse(JSON.stringify(failed))).toEqual(failed);
+  }, 60_000);
 });

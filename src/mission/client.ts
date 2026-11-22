@@ -43,6 +43,6 @@ export function runMission(id: string, opts: FlyOptions = {}): Promise<FlightRec
     worker.onerror = (event) => {
       finish(() => reject(new Error(event.message || `Mission ${id} failed`)));
     };
-    worker.postMessage({ id, sampleInterval: opts.sampleInterval });
+    worker.postMessage({ id, ...opts });
   });
 }

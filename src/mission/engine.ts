@@ -1,5 +1,6 @@
 export {
   AscentAutopilot,
+  FailureInjector,
   FaultMonitor,
   OMEGA_EARTH,
   RE,
@@ -7,6 +8,7 @@ export {
   Simulation,
   SITES,
   applyScenario,
+  classifyOutcome,
   flyAscent,
   lvm3,
   lvm3FaultSpec,
@@ -14,15 +16,20 @@ export {
   noseDirection,
   propagate,
   propagateToImpact,
+  supervised,
   toGeodetic,
   twoStageKerolox,
 } from '../../rocket-physics/src/index.ts';
 
 export type {
   AscentOptions,
+  Failure,
   Fault,
   FaultSpec,
   FlightResult,
+  HealthPeak,
+  Outcome,
+  OutcomeReport,
   ScenarioId,
   SimConfig,
   Telemetry,
