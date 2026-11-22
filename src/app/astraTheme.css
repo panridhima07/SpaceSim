@@ -426,3 +426,55 @@
 .sfb-root:not(.sfb-mobile) .sfb-b-top-actions .sfb-b-pad-btn {
   padding: 7px 14px;
 }
+
+/* ---------- Unified Part E Builder & Phone HUD overrides ---------- */
+
+.sfb-root .sfb-field-label,
+.sfb-root .sfb-b-ctrl-label,
+.sfb-root .sfb-b-stat-k {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--sfb-muted);
+}
+
+.sfb-root .sfb-b-part-list,
+.sfb-root .sfb-b-right {
+  scrollbar-color: rgba(127, 215, 255, 0.3) transparent;
+}
+
+.sfb-root .sfb-b-sublist {
+  border-left-color: var(--sfb-line);
+}
+
+.sfb-root .sfb-b-saved-card,
+.sfb-root .sfb-b-chal-item {
+  background: rgba(18, 30, 52, 0.55);
+  border: 1px solid var(--sfb-line);
+  border-radius: 10px;
+}
+
+.sfb-root.sfb-mobile .sfb-dock .sfb-btn-launch {
+  box-shadow:
+    0 0 0 5px rgba(127, 215, 255, 0.16),
+    0 0 26px rgba(127, 215, 255, 0.4);
+}
+
+.sfb-root.sfb-mobile .sfb-btn {
+  min-height: 44px;
+}
+
+.sfb-root.sfb-mobile .sfb-b-swatch {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.sfb-root.sfb-mobile .sfb-b-slider {
+  min-height: 44px;
+}
+
+.sfb-root.sfb-mobile .sfb-hud-build {
+  border-color: var(--sfb-accent);
+  color: var(--sfb-accent);
+}

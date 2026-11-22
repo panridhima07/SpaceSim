@@ -281,9 +281,10 @@ const PHASE_NAME: Record<string, string> = {
   TERMINAL: 'Terminal descent', LANDED: 'Landed', CRASHED: 'Crashed',
 };
 const HAZARD = ['Safe', 'Caution', 'Hazard'];
+const HAZARD_CLS = ['ok', 'am', 'bad'];
 
-function row(label: string, value: string): string {
-  return `<tr><td>${label}</td><td>${value}</td></tr>`;
+function row(label: string, value: string, cls = ''): string {
+  return `<tr><td>${label}</td><td${cls ? ` class="${cls}"` : ''}>${value}</td></tr>`;
 }
 
 function updateHud(): void {
@@ -294,7 +295,7 @@ function updateHud(): void {
     row('Ground speed', `${fmt(t.vh, 1)} m/s`),
     t.toPDI !== null ? row('Powered descent in', `${fmt(t.toPDI / 60, 1)} min`) : row('Range to target', t.range === null ? '—' : dist(t.range)),
     row('Tilt', `${fmt(Math.hypot(t.tiltF, t.tiltR), 1)}°`),
-    row('Ground below', t.hazard === null ? '—' : HAZARD[t.hazard]),
+    row('Ground below', t.hazard === null ? '—' : HAZARD[t.hazard], t.hazard === null ? '' : HAZARD_CLS[t.hazard]),
     row('Delta-v left', `${fmt(t.dv)} m/s`),
   ].join('');
   hud.innerHTML =
@@ -322,9 +323,11 @@ function updateHud(): void {
       : (sim.reason ?? 'The lander was lost.');
     resultEl.innerHTML = `<h2>${ok ? (g?.rating ?? 'Landed') : 'Lander lost'}</h2><p>${detail}</p>`;
     const again = document.createElement('button');
+    again.className = 'sfb-btn sfb-btn-primary';
     again.textContent = 'Fly again';
     again.onclick = () => boot();
     const look = document.createElement('button');
+    look.className = 'sfb-btn';
     look.textContent = 'Look around';
     look.style.marginLeft = '6px';
     look.onclick = () => { resultEl.style.display = 'none'; };
@@ -345,14 +348,18 @@ function effectiveWarp(): number {
 }
 
 function refreshDock(): void {
+  // Rebuilding the dock drops any steering button that is being held down.
+  touchHeld.clear();
+  if (sim) applyKeys();
   dock.textContent = '';
   const over = sim.phase === 'LANDED' || sim.phase === 'CRASHED';
   const add = (label: string, on: boolean, fn: () => void, title = '', disabled = false) => {
     const b = document.createElement('button');
+    b.className = 'sfb-btn';
     b.textContent = label;
     b.title = title;
     b.disabled = disabled;
-    if (on) b.classList.add('on');
+    if (on) b.classList.add('on', 'is-active');
     b.onclick = () => { fn(); b.blur(); refreshDock(); };
     dock.appendChild(b);
     return b;
@@ -365,6 +372,30 @@ function refreshDock(): void {
     add('Thrust +', false, () => sim.setThrottle(Math.max(sim.level, 0.2) + 0.1), 'E');
     add('Hold up', sim.hold === 'UP', () => sim.setHold(sim.hold === 'UP' ? null : 'UP'), 'F');
     add('Hold retro', sim.hold === 'RETRO', () => sim.setHold(sim.hold === 'RETRO' ? null : 'RETRO'), 'R');
+    // Steering for touch screens: press and hold, the same as holding W/S/A/D.
+    const steer = (label: string, key: string, title: string) => {
+      const b = document.createElement('button');
+      b.className = 'sfb-btn';
+      b.textContent = label;
+      b.title = title;
+      b.style.touchAction = 'none';
+      const set = (on: boolean) => {
+        if (on) touchHeld.add(key);
+        else touchHeld.delete(key);
+        b.classList.toggle('on', on);
+        b.classList.toggle('is-active', on);
+        applyKeys();
+      };
+      b.onpointerdown = (e) => { e.preventDefault(); b.setPointerCapture(e.pointerId); set(true); };
+      b.onpointerup = () => set(false);
+      b.onpointercancel = () => set(false);
+      b.oncontextmenu = (e) => e.preventDefault();
+      dock.appendChild(b);
+    };
+    steer('Pitch ▲', 'w', 'W');
+    steer('Pitch ▼', 's', 'S');
+    steer('Roll ◀', 'a', 'A');
+    steer('Roll ▶', 'd', 'D');
   }
   for (const w of WARPS) add(`×${w}`, warp === w && !autoWarp, () => { warp = w; autoWarp = false; }, 'Time warp (limited near the ground)', over);
   add('Restart', false, () => boot());
@@ -372,13 +403,16 @@ function refreshDock(): void {
   help.id = 'help';
   help.style.flexBasis = '100%';
   help.style.textAlign = 'center';
-  help.textContent = 'Drag to look, scroll to zoom. Manual: W/S pitch · A/D roll · E/Q throttle · Z full · X cut · F hold up · R hold retrograde · T autopilot';
+  help.textContent = window.matchMedia('(pointer: coarse)').matches
+    ? 'Drag to look, pinch to zoom. Manual: hold the Pitch and Roll keys to steer.'
+    : 'Drag to look, scroll to zoom. Manual: W/S pitch · A/D roll · E/Q throttle · Z full · X cut · F hold up · R hold retrograde · T autopilot';
   dock.appendChild(help);
 }
 
 const held = new Set<string>();
+const touchHeld = new Set<string>(); // on-screen steering buttons being pressed
 function applyKeys(): void {
-  const k = (a: string, b: string) => (held.has(a) || held.has(b) ? 1 : 0);
+  const k = (a: string, b: string) => (held.has(a) || held.has(b) || touchHeld.has(a) ? 1 : 0);
   sim.setInput({
     pitch: k('w', 'arrowup') - k('s', 'arrowdown'),
     roll: k('d', 'arrowright') - k('a', 'arrowleft'),

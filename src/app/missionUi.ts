@@ -88,7 +88,7 @@ export function createMissionUI(container: HTMLElement, callbacks: MissionUiCall
   headerLeft.append(backBtn, vehicleTitle);
 
   const headerRight = el('div', 'msn-header-right');
-  const caseSelect = el('select', 'msn-select');
+  const caseSelect = el('select', 'sfb-select msn-select');
   caseSelect.setAttribute('aria-label', 'Flight case');
   const caseNote = el('span', 'msn-case-note', '');
   const flyBtn = el('button', 'sfb-btn sfb-btn-primary', 'Fly');
