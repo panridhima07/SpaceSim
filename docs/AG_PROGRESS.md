@@ -188,3 +188,119 @@ Open issues: none
 | two-stage example apogee error | not simulated | multi-stage sim + `buildStageMotors` added |
 | three-stage example apogee error | not simulated | multi-stage sim + `buildStageMotors` added |
 | total tests passing | 264 | 277 |
+
+# TASK-04
+
+## Baseline
+- `npm run typecheck`: clean (0 errors)
+- `npm test`: 51 files, 786 passed (0 failed)
+- `npm run build`: clean (built in 5.14 s)
+
+## Part A — mission mode, the 3D view
+- Status: done
+- Commit: `53138ee`
+- What changed: Created `src/app/missionView.ts` (`createMissionView`, `latLonToApp`, `vehicleToLauncherSpec`, `separationAges`) and `src/app/missionView.test.ts` (3 tests). Implemented floating-origin `worldGroup`, rotating `earthGroup` with oblate WGS-84 sphere, 80 km faded ground disc with `buildLaunchComplex` anchored to the first sample, sky-to-space fade + star field, staged launcher + plumes + breakup fireball, and `chase` / `pad` / `map` cameras.
+- Notes: `latLonToApp` uses WGS-84 geodetic coordinates matching `geodeticToEcef`. `lvm3()` defines 3 stages (L110 core, S200 parallel count 2, C25 core) and a fairing.
+- Tests: `npm run typecheck` clean, `npm test` 52 files, 789 passed (0 failed).
+- Open issues: none
+
+## Part B — trajectory
+- Status: done
+- Commit: `c9a2c80`
+- What changed:
+  - B1: Added `buildFlownPathPoints` and `elementsFromAppState` to `src/app/missionView.ts`; wired Earth-fixed flown path (relative to first sample, `setDrawRange` by `t`), dashed Earth-fixed predicted coast path (`coastPath`, throttled <= 2 Hz, hidden above 100 km periapsis), impact ring (`snapshot.iip`), and inertial final orbit (`orbitPoints`/`buildOrbitLine` when perigee > 80 km). Added 2 tests in `src/app/missionView.test.ts`.
+  - B2: Confirmed model-rocket trajectory defects in `src/render/effects.ts` + `src/app/main.ts` (`points.shift()` after 5000 points at 20 Hz = 250 s drops launch; only pushed when `replayT === null` so scrubbing doesn't shorten; skipped when `toggles.trail` is off leaving holes). Added `setFromLog(log, maxT)` to `buildTrajectoryLine` with even decimation preserving first & last points, updated `updateSmokeAndTrail` in `src/app/main.ts` (keeping existing uncommitted `boot.ts` edits intact), and added 2 tests in `src/render/effects.test.ts`.
+- Tests: `npm run typecheck` clean, `npm test` 52 files, 793 passed (0 failed).
+- Open issues: none
+
+## Part C — mission mode, the screen
+- Status: done
+- Commit: `fa0eaa2`
+- What changed: Created `src/app/mission.css`, `src/app/missionUi.ts` (`createMissionUI`), and `src/app/missionUi.test.ts` (4 tests). Implemented header with vehicle name, Back button, case/scenario picker + note, and Fly button; telemetry + propellant bars; clickable timeline with reference time delta and flaws; health bars (good < 0.8, warning 0.8..1.0, critical > 1.0) + active faults; transport (play/pause, 1x/5x/20x/100x warp, scrubber, chase/pad/map cameras, IIP readout); outcome banner at end; busy overlay; and responsive phone layout with 44 px touch targets and slide-up sheet.
+- Tests: `npm run typecheck` clean, `npm test` 53 files, 797 passed (0 failed).
+- Open issues: none
+
+## Part D — wire it into the app
+- Status: done
+- Commit: `7e08b68`
+- What changed: Added `'mission'` to `appMode` in `src/app/main.ts` with playback advancement (`realDt * warp`), 10 Hz throttled UI updates, Web Worker `runMission('lvm3-m4', opts)` execution with busy overlay, per-case `missionCache`, `destructive: true` for failure cases and scenarios, error banner preserving previous record on failure, and `missionView.resize` hook. Added `"Fly LVM3 mission"` button to `src/app/ui.ts` brand row, `"LVM3"` button to phone rail, `"FLY LVM3 MISSION"` button to `src/app/hero.ts` title screen, and `onMission?()` to `src/app/uiTypes.ts`. Left `window.astraRunMission` intact.
+- Visual checks (1–8):
+  1. Mission button opens mission mode and computes in Web Worker with `"Computing flight…"` overlay without freezing the page.
+  2. At T+0 vehicle stands upright on the Sriharikota pad (`groundDisc` at `y = -2.02`, pedestal top and launcher core base at `y = 0`), not buried or floating.
+  3. S200 separates at T+126.7 s (ref 127.0 s), fairing at T+153.2 s (ref 195.0 s shown in timeline), L110 at T+307.1 s (ref 305.6 s); plumes switch with active engines and expand with altitude.
+  4. Flown path starts at the pad (`offsets[0..2] = 0`) and follows the vehicle cleanly in the rotating Earth group with no jump, gap, or chord.
+  5. Map camera shows the `170.0 x 36 501.0 km` Keplerian ellipse passing through the cutoff position.
+  6. `gimbal-lock` (`destructive: true`) ends in breakup at T+41.5 s with fireball and Bay of Bengal IIP/impact at `13.72°N, 80.29°E`; `c25-shutdown` ends suborbital at T+630.0 s with IIP/impact at `10.71°N, 115.42°E`.
+  7. Scrubbing backwards re-attaches separated stages/fairing and shortens the flown path via `setDrawRange`.
+  8. Back returns to the flight screen with the model rocket and sim state preserved.
+- Tests: `npm run typecheck` clean, `npm test` 53 files, 797 passed (0 failed), `npm run build` clean.
+- Open issues: none
+
+## Part E — UI mismatch audit (listed before editing)
+1. **Builder (`src/app/style.css`, `src/app/astraTheme.css`)**:
+   - `.sfb-builder` in `style.css` sets `--sfb-accent: #4da3ff` and hardcodes `rgba(77, 163, 255, ...)` on `.sfb-b-cat.is-active`, `.sfb-b-part-list`, `.sfb-b-right`, `.sfb-b-sublist`, `.sfb-b-part-card`, `.sfb-b-stack-row.is-selected`, and `.sfb-hud-build` instead of using `--sfb-accent` (`#7fd7ff`) and `--sfb-line`.
+   - `.sfb-b-ctrl-label` omits the `.sfb-field-label` `0.2em` letter-spacing from `astraTheme.css`.
+   - `.sfb-b-saved-card` and `.sfb-b-chal-item` use `rgba(14, 24, 42, 0.72)` instead of the reference flat card surface `rgba(18, 30, 52, 0.55)` and `var(--sfb-line)`.
+   - On phone (`390x844`), `.sfb-builder.sfb-mobile .sfb-b-swatch` is `36x36px` (< 44 px minimum), `.sfb-b-slider` lacks `min-height: 44px`, and modal `.sfb-b-file-actions .sfb-btn` buttons inherit desktop `34px` height (< 44 px).
+2. **Moon landing (`landing.html`, `src/landing/main.ts`)**:
+   - `landing.html` defines custom `--ink`, `--dim`, `--line`, `--glass`, `--acc` variables instead of `.sfb-root` `--sfb-panel`, `--sfb-line`, `--sfb-text`, `--sfb-muted`, `--sfb-accent`, `--sfb-good`, `--sfb-warning`, `--sfb-critical`, `--sfb-mono`, `--sfb-slab`, and lacks `class="sfb-root"` on `<body>` and `.sfb-panel` / `.sfb-btn` classes.
+   - `#brand` top bar lacks `height: 58px` and `pointer-events: none` (with `pointer-events: auto` on children), and `#brand b` colors the entire title cyan instead of `--sfb-muted` with white `strong` and cyan icon.
+   - `#hud` `"Ground below"` (`Safe` / `Caution` / `Hazard`) lacks semantic status coloring (`--sfb-good`, `--sfb-warning`, `--sfb-critical`).
+   - Mobile media query uses `max-width: 640px` instead of `760px`, dock buttons (`×1`, `×2`, `×5`, `×10`) lack `min-width: 44px`, and `.auth-chip` at `bottom: 12px; left: 12px` (`36x36px`) overlaps `#dock` on `390x844`.
+3. **Parts page (`parts.html`) and Title screen (`src/app/hero.css`)**:
+   - `parts.html` uses custom `--ink`/`--dim` variables, lacks `"Inter"` in the font stack, hardcodes `#3ddc97` / `#f2b84b` / `#ef5350` on `th.best` / `th.ok` / `th.bad` instead of `--sfb-good` / `--sfb-warning` / `--sfb-critical`, and hardcodes `#0d1522` on `.cell img` instead of `--sfb-panel` and `--sfb-line`.
+   - `src/app/hero.css` hardcodes `#dbe9ff`, `#7fd7ff`, `#7f93b2`, `#cfe3ff` instead of `--sfb-*` tokens; `.astra-hero-btn` uses `border-radius: 999px` and `rgba(255, 255, 255, 0.04)` with no hover fill change instead of `.sfb-btn` (`border-radius: 10px`, `rgba(18, 30, 52, 0.55)`, hover `rgba(40, 70, 120, 0.5)`); and on `390x844` the 4 stacked CTA buttons take excessive vertical height instead of a compact 2-column grid with `min-height: 44px`.
+4. **Flight simulation HUD & Mission HUD (`src/app/style.css`, `src/app/astraTheme.css`, `src/app/mission.css`, `src/app/missionUi.ts`)**:
+   - Desktop `.sfb-brand` top bar ghost buttons (`rgba(255, 255, 255, 0.04)`) and mobile panels (`0.68` opacity without backdrop blur) lose contrast over a bright daytime sky.
+   - `.sfb-stress-table` (6 nowrap columns, ~330 px wide) overflows the 300 px desktop `.sfb-right` panel without `overflow-x: auto` on `.sfb-stress-block`.
+   - On `390x844` phone, `.sfb-hud-btn` (`46x46px` circle) clips 4-letter `"LVM3"` at `15px` uppercase; `.sfb-root.sfb-mobile .sfb-tele` uses 4 columns (`~67px` each) causing 13–19 px mono values to collide; `.sfb-tabpage .sfb-btn-link` (`36px`), `.sfb-scrub`, and `.sfb-warnings summary` are under 44 px tall; and landscape phone HUD elements miss `env(safe-area-inset-left/right/top/bottom)`.
+   - In `src/app/mission.css`, `.msn-btn-active` `(0,1,0)` is overridden by `.sfb-root .sfb-btn` `(0,2,0)` in `astraTheme.css`, and `.msn-select` lacks `.sfb-select`.
+
+## Part E — one UI everywhere
+- Status: done
+- Commit: `e08e773`
+- What changed:
+  - Fixed all listed mismatches across `src/app/style.css`, `src/app/astraTheme.css`, `src/app/mission.css`, `src/app/missionUi.ts`, `src/app/hero.css`, `landing.html`, `src/landing/main.ts`, and `parts.html`.
+  - Preserved pre-existing uncommitted changes in `src/app/main.ts`, `src/app/style.css`, `landing.html` (`/src/landing/boot.ts`), and `src/landing/main.ts` (`touchHeld` touch-steering buttons) intact alongside our edits.
+  - All existing tests in `src/app/ui.test.ts` (20 passed) and `src/app/builderUi.test.ts` (3 passed) pass unchanged.
+- Tests: `npm run typecheck` clean, `npm test` 53 files, 797 passed (0 failed), `npm run build` clean.
+- Open issues: none
+
+## TASK-04 summary
+- **Final test counts (`npm test`)**: 53 test files, 797 tests passed (0 failed); baseline was 51 test files, 786 tests passed (+2 files, +11 tests).
+- **Part D eight visual checks**:
+  1. **Mission button & non-blocking worker**: Clicking `"Fly LVM3 mission"` (brand row), `"LVM3"` (phone rail), or `"FLY LVM3 MISSION"` (title screen) enters mission mode, displays `"Computing flight…"` while `runMission('lvm3-m4')` executes in a Web Worker, and caches records by case id.
+  2. **Pad placement at T+0**: Launcher stands upright at Sriharikota (`13.72°N, 80.23°E`) on `buildLaunchComplex` and the 80 km faded ground disc (`y = -2.02` in `padGroup`, pedestal top and core stage base at `y = 0`), neither buried nor floating.
+  3. **Staging & plumes**: S200 boosters separate at `T+126.7 s` (ref `127.0 s`), fairing at `T+153.2 s` (ref `195.0 s`), and L110 core at `T+307.1 s` (ref `305.6 s`); `updateLauncherStaging` animates detachment and `updatePlumes` switches active nozzles and expands plume width with vacuum.
+  4. **Flown path**: Earth-fixed path starts at the pad (`offsets[0..2] = 0`) and tracks the vehicle continuously with no jump, gap, or chord across the Earth.
+  5. **Map camera orbit ellipse**: `elementsFromAppState` computes the `170.0 x 36 501.0 km` transfer orbit from the cutoff state vector and draws the closed ellipse through the cutoff position.
+  6. **Failure cases**: `gimbal-lock` (`destructive: true`) ends in breakup at `T+41.5 s` with an expanding fireball and impact marker in the Bay of Bengal at `13.72°N, 80.29°E`; `c25-shutdown` (`destructive: true`) ends suborbital at `T+630.0 s` with impact marker at `10.71°N, 115.42°E`.
+  7. **Scrubbing backwards**: Moving the scrubber or clicking an earlier timeline row re-attaches separated stages/fairing and shortens the flown path draw range.
+  8. **Back button**: Returns to the flight screen with the model rocket and simulation intact.
+- **Part E UI mismatches fixed**:
+  - **Builder**: Unified `.sfb-builder` accent token (`#7fd7ff`), control labels (`.sfb-b-ctrl-label`), scrollbars, cards (`.sfb-b-saved-card`, `.sfb-b-chal-item`), and 44 px phone touch targets (`.sfb-b-swatch` `44x44px`, `.sfb-b-slider`, `.sfb-b-ctrl-num`, modal `.sfb-btn`).
+  - **Moon landing**: Applied `.sfb-root` variables, `.sfb-panel`, `.sfb-btn` / `.sfb-btn-primary` / `.is-active`, 58 px top bar with `pointer-events: none` container, semantic hazard coloring (`Safe`/`Caution`/`Hazard`), 760 px mobile breakpoint, `44x44px` minimum button targets, and shifted `.auth-chip` above `#dock` on mobile.
+  - **Title screen & Parts page**: Replaced hardcoded colors/fonts in `src/app/hero.css` and `parts.html` with `--sfb-*` tokens, matched `.astra-hero-btn` to `.sfb-btn` (`10px` radius, `rgba(18, 30, 52, 0.55)` surface, hover fill, slab shadow), and arranged the 4 mobile hero CTAs in a balanced 2-column grid with `min-height: 44px`.
+  - **Flight & Mission HUD**: Boosted daytime sky contrast on desktop `.sfb-brand` ghost buttons and mobile `.sfb-panel`, added `overflow-x: auto` to `.sfb-stress-block`, sized phone rail `"LVM3"` label to fit the 46 px circle, switched phone expanded `.sfb-tele` from 4 columns to 2 columns, enforced 44 px min-height on `.sfb-btn-link`, `.sfb-scrub`, and `.sfb-warnings summary`, added landscape `env(safe-area-inset-*)` padding, and raised `.sfb-root .sfb-btn.msn-btn-active` specificity.
+- **Built JS chunks (`dist/assets`)**:
+  - `dist/assets/landing-BlS_dQJL.js`: `0.31 kB` (gzip `0.22 kB`)
+  - `dist/assets/esm-BWUpQ3hM.js`: `0.33 kB` (gzip `0.23 kB`)
+  - `dist/assets/esm-BeZOJ9bL.js`: `0.34 kB` (gzip `0.24 kB`)
+  - `dist/assets/main-EAgFOH7v.js`: `0.36 kB` (gzip `0.25 kB`)
+  - `dist/assets/web-CEazzrDS.js`: `0.38 kB` (gzip `0.25 kB`)
+  - `dist/assets/web-BaE22RWt.js`: `0.84 kB` (gzip `0.40 kB`)
+  - `dist/assets/OrbitControls-H8F2Ggha.js`: `19.59 kB` (gzip `4.63 kB`)
+  - `dist/assets/main-BTnhIBct.js`: `41.49 kB` (gzip `17.16 kB`)
+  - `dist/assets/worker-BtcpxO9e.js`: `71.07 kB`
+  - `dist/assets/main-BYz33l9z.js`: `548.70 kB` (gzip `191.52 kB`)
+  - `dist/assets/gate-BhJvj7sV.js`: `820.23 kB` (gzip `217.85 kB`)
+- **Prompt vs code differences**:
+  - `lvm3()` in `rocket-physics` defines 3 stage entries (`[L110 (core), S200 (parallel: count 2), C25 (core)]`) plus `fairing` and `payload` (rather than two entries), which `vehicleToLauncherSpec` maps directly.
+  - `geodeticToEcef` in `rocket-physics` uses the WGS-84 ellipsoid (`E2 = 0.006694`), so `latLonToApp` uses WGS-84 geodetic coordinates rather than a sphere to place Sriharikota within 5 km of `samples[0].pos`.
+  - Simulated fairing separation in `flyMission(getMission('lvm3-m4')!)` occurs at `T+153.2 s` while the real LVM3-M4 reference time is `194.96 s` (`~195 s`), both shown in the timeline.
+- **Not done**: None.
+
+
+
+
+
