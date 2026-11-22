@@ -108,6 +108,36 @@ describe('buildTrajectoryLine', () => {
     tr.update([0, 0, 0]);
     expect(tr.line.geometry.drawRange.count).toBe(2);
   });
+
+  it('setFromLog keeps first and last points when log exceeds capacity', () => {
+    const tr = buildTrajectoryLine(4);
+    const log = Array.from({ length: 10 }, (_, i) => ({
+      t: i,
+      pos: [i * 10, i * 20, 0] as [number, number, number],
+    }));
+    tr.setFromLog(log);
+    tr.update([0, 0, 0]);
+    expect(tr.line.geometry.drawRange.count).toBe(4);
+    const arr = tr.line.geometry.getAttribute('position').array as Float32Array;
+    expect(arr[0]).toBeCloseTo(0, 5);
+    expect(arr[1]).toBeCloseTo(0, 5);
+    expect(arr[9]).toBeCloseTo(90, 5);
+    expect(arr[10]).toBeCloseTo(180, 5);
+  });
+
+  it('setFromLog with maxT shows no point later than t', () => {
+    const tr = buildTrajectoryLine(20);
+    const log = Array.from({ length: 6 }, (_, i) => ({
+      t: i * 2,
+      pos: [i * 5, 0, 0] as [number, number, number],
+    }));
+    tr.setFromLog(log, 5);
+    tr.update([0, 0, 0]);
+    // Samples at t = 0, 2, 4 are <= 5 (3 points); t = 6, 8, 10 are excluded.
+    expect(tr.line.geometry.drawRange.count).toBe(3);
+    const arr = tr.line.geometry.getAttribute('position').array as Float32Array;
+    expect(arr[6]).toBeCloseTo(10, 5);
+  });
 });
 
 describe('buildParachute', () => {

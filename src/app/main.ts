@@ -739,12 +739,7 @@ function placeRocket(state: SimState | null, origin: Vec3, now: number): void {
 
 function updateSmokeAndTrail(state: SimState | null, origin: Vec3, simDt: number, realDt: number): void {
   const live = replayT === null && launched && !!rocket && !!state;
-  if (live && state && rocket && toggles.trail && simDt > 0) {
-    trailAcc += simDt;
-    if (trailAcc >= TRAIL_INTERVAL_S) {
-      trailAcc = 0;
-      trail.push(state.pos);
-    }
+  if (live && state && rocket && simDt > 0) {
     if (state.thrust > 0 && state.altitude < SMOKE_ALT_LIMIT) {
       emitAcc += simDt * SMOKE_PUFFS_PER_SIM_S;
       while (emitAcc >= 1) {
@@ -752,6 +747,9 @@ function updateSmokeAndTrail(state: SimState | null, origin: Vec3, simDt: number
         smoke.emit(nozzlePhysical(state, rocket), rocket.maxRadius * 3);
       }
     }
+  }
+  if (toggles.trail && sim && launched) {
+    trail.setFromLog(sim.log, replayT ?? undefined);
   }
   smoke.update(realDt, origin);
   trail.update(origin);
@@ -1364,12 +1362,29 @@ interface DebugHook {
 loadSample();
 requestAnimationFrame(frame);
 
-// Title screen, once per browser session (returning from the Moon page skips it).
-mountHero(app, {
-  onBuild: () => enterBuilder(),
-  onFly: () => {},
-  onMoon: () => window.location.assign('./landing.html'),
-});
+// Someone who just signed up or signed in on the landing page goes straight to build mode.
+// Everyone else gets the title screen, once per browser session (returning from the Moon
+// page skips it).
+if (takeEnterBuildFlag()) {
+  enterBuilder();
+} else {
+  mountHero(app, {
+    onBuild: () => enterBuilder(),
+    onFly: () => {},
+    onMoon: () => window.location.assign('./landing.html'),
+  });
+}
+
+/** True once after a sign-in through the landing page (the flag is set in src/app/boot.ts). */
+function takeEnterBuildFlag(): boolean {
+  try {
+    const set = window.sessionStorage.getItem('astra-enter-build') !== null;
+    window.sessionStorage.removeItem('astra-enter-build');
+    return set;
+  } catch {
+    return false;
+  }
+}
 
 // Debug hook to fly a mission from the browser console.
 interface MissionDebugHook {

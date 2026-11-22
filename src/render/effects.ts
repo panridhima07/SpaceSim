@@ -200,6 +200,7 @@ export function buildTrajectoryLine(maxPoints = 5000): {
   line: THREE.Line;
   push(worldPos: Vec3): void;
   setAll(points: Vec3[]): void;
+  setFromLog(log: ReadonlyArray<{ t: number; pos: Vec3 }>, maxT?: number): void;
   update(origin: Vec3): void;
   clear(): void;
 } {
@@ -218,6 +219,30 @@ export function buildTrajectoryLine(maxPoints = 5000): {
 
   let points: Vec3[] = [];
 
+  function decimate<T>(
+    items: ReadonlyArray<T>,
+    endIdx: number,
+    pick: (item: T) => Vec3,
+  ): Vec3[] {
+    const count = endIdx + 1;
+    if (count <= 0) return [];
+    if (count <= capacity) {
+      const out: Vec3[] = new Array(count);
+      for (let i = 0; i < count; i++) {
+        const p = pick(items[i]);
+        out[i] = [p[0], p[1], p[2]];
+      }
+      return out;
+    }
+    const out: Vec3[] = new Array(capacity);
+    for (let i = 0; i < capacity; i++) {
+      const idx = Math.round((i * (count - 1)) / (capacity - 1));
+      const p = pick(items[idx]);
+      out[i] = [p[0], p[1], p[2]];
+    }
+    return out;
+  }
+
   return {
     line,
 
@@ -227,8 +252,30 @@ export function buildTrajectoryLine(maxPoints = 5000): {
     },
 
     setAll(all) {
-      const src = all.length > capacity ? all.slice(all.length - capacity) : all;
-      points = src.map((p) => [p[0], p[1], p[2]] as Vec3);
+      points = decimate(all, all.length - 1, (p) => p);
+    },
+
+    setFromLog(log, maxT) {
+      if (log.length === 0) {
+        points = [];
+        return;
+      }
+      let endIdx = log.length - 1;
+      if (maxT !== undefined && maxT < log[endIdx].t) {
+        if (maxT < log[0].t) {
+          points = [];
+          return;
+        }
+        let lo = 0;
+        let hi = endIdx;
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1;
+          if (log[mid].t <= maxT) lo = mid;
+          else hi = mid - 1;
+        }
+        endIdx = lo;
+      }
+      points = decimate(log, endIdx, (s) => s.pos);
     },
 
     update(origin) {

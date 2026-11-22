@@ -4,7 +4,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Vec3 } from '../types';
+import { appToEci } from '../mission/adapter';
 import type { VehicleSpec } from '../mission/engine';
+import { coastPath } from '../mission/predict';
 import type { FlightRecord } from '../mission/record';
 import { snapshotAt } from '../mission/snapshot';
 import type { MissionDef } from '../mission/vehicles';
@@ -22,6 +24,7 @@ import {
   type LauncherPlumes,
 } from '../render/launcherPlume';
 import { updateLauncherStaging, type SeparationState } from '../render/launcherStaging';
+import { buildOrbitLine, orbitPoints, type OrbitElementsInput } from '../render/orbitLine';
 
 export type MissionCameraMode = 'chase' | 'pad' | 'map';
 
@@ -103,6 +106,111 @@ export function separationAges(record: FlightRecord, t: number): SeparationState
   const fSep = record.fairingSeparation;
   const fairing = fSep !== null && fSep !== undefined && t >= fSep ? t - fSep : null;
   return { stages, fairing };
+}
+
+/**
+ * Build Earth-fixed flown-path vertices relative to the first sample so 32-bit floats
+ * retain centimetre precision. Each sample is rotated about Y by -earthAngle(s.t).
+ */
+export function buildFlownPathPoints(record: FlightRecord): {
+  origin: Vec3;
+  offsets: Float32Array;
+  times: Float64Array;
+} {
+  const n = record.samples.length;
+  if (n === 0) {
+    return { origin: [0, 0, 0], offsets: new Float32Array(0), times: new Float64Array(0) };
+  }
+  const a0 = record.earth?.angleAtLiftoff ?? 0;
+  const rate = record.earth?.rate ?? 0;
+
+  const toFixed = (pos: Vec3, t: number): Vec3 => {
+    const angle = -(a0 + rate * t);
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    return [pos[0] * c + pos[2] * s, pos[1], -pos[0] * s + pos[2] * c];
+  };
+
+  const origin = toFixed(record.samples[0].pos, record.samples[0].t);
+  const offsets = new Float32Array(n * 3);
+  const times = new Float64Array(n);
+
+  for (let i = 0; i < n; i++) {
+    const sample = record.samples[i];
+    const p = toFixed(sample.pos, sample.t);
+    offsets[i * 3] = p[0] - origin[0];
+    offsets[i * 3 + 1] = p[1] - origin[1];
+    offsets[i * 3 + 2] = p[2] - origin[2];
+    times[i] = sample.t;
+  }
+
+  return { origin, offsets, times };
+}
+
+/**
+ * Compute classical Keplerian elements (in Z-up ECI, matching orbitPoints) from an
+ * app-frame position and velocity.
+ */
+export function elementsFromAppState(
+  pos: Vec3,
+  vel: Vec3,
+  mu = 3.986004418e14,
+): OrbitElementsInput & { perigeeAltitude: number; apogeeAltitude: number } {
+  const r = appToEci(pos);
+  const v = appToEci(vel);
+  const rMag = Math.hypot(r[0], r[1], r[2]);
+  const vMagSq = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+  const rDotV = r[0] * v[0] + r[1] * v[1] + r[2] * v[2];
+
+  // Specific angular momentum h = r x v
+  const hx = r[1] * v[2] - r[2] * v[1];
+  const hy = r[2] * v[0] - r[0] * v[2];
+  const hz = r[0] * v[1] - r[1] * v[0];
+  const hMag = Math.hypot(hx, hy, hz);
+
+  // Node vector n = k x h = [-hy, hx, 0]
+  const nx = -hy;
+  const ny = hx;
+  const nMag = Math.hypot(nx, ny);
+
+  // Eccentricity vector
+  const c1 = vMagSq - mu / rMag;
+  const ex = (c1 * r[0] - rDotV * v[0]) / mu;
+  const ey = (c1 * r[1] - rDotV * v[1]) / mu;
+  const ez = (c1 * r[2] - rDotV * v[2]) / mu;
+  const e = Math.hypot(ex, ey, ez);
+
+  const eps = 0.5 * vMagSq - mu / rMag;
+  const a = -mu / (2 * eps);
+  const inc = hMag > 0 ? Math.acos(Math.max(-1, Math.min(1, hz / hMag))) : 0;
+
+  let raan = 0;
+  if (nMag > 1e-12) {
+    raan = Math.atan2(ny, nx);
+    if (raan < 0) raan += 2 * Math.PI;
+  }
+
+  let argp = 0;
+  if (nMag > 1e-12 && e > 1e-12) {
+    const cosW = (nx * ex + ny * ey) / (nMag * e);
+    argp = Math.acos(Math.max(-1, Math.min(1, cosW)));
+    if (ez < 0) argp = 2 * Math.PI - argp;
+  } else if (e > 1e-12) {
+    argp = Math.atan2(ey, ex);
+    if (argp < 0) argp += 2 * Math.PI;
+  }
+
+  const rp = a * (1 - e);
+  const ra = a * (1 + e);
+  return {
+    a,
+    e,
+    i: inc,
+    raan,
+    argp,
+    perigeeAltitude: rp - RE_EQ,
+    apogeeAltitude: ra - RE_EQ,
+  };
 }
 
 // ---------- Asset & geometry helpers ----------
@@ -275,6 +383,27 @@ export function createMissionView(domElement: HTMLElement): MissionView {
   let launcherPlumes: LauncherPlumes | null = null;
   let launchComplex: THREE.Group | null = null;
 
+  let flownLine: THREE.Line | null = null;
+  let flownTimes: Float64Array = new Float64Array(0);
+  let coastLine: THREE.Line | null = null;
+  let lastCoastT = NaN;
+  let lastCoastMs = -Infinity;
+  let orbitLine: THREE.Line | null = null;
+
+  // Impact point ring in earthGroup (sized for map camera visibility).
+  const iipGeo = new THREE.RingGeometry(60_000, 120_000, 32);
+  iipGeo.rotateX(-Math.PI / 2);
+  const iipMat = new THREE.MeshBasicMaterial({
+    color: 0xff5d6c,
+    side: THREE.DoubleSide,
+    depthTest: false,
+  });
+  const iipRing = new THREE.Mesh(iipGeo, iipMat);
+  iipRing.name = 'impact-marker';
+  iipRing.renderOrder = 5;
+  iipRing.visible = false;
+  earthGroup.add(iipRing);
+
   let cameraMode: MissionCameraMode = 'chase';
   let enabled = false;
   let currentT = 0;
@@ -301,6 +430,28 @@ export function createMissionView(domElement: HTMLElement): MissionView {
       disposeLaunchComplex(launchComplex);
       launchComplex = null;
     }
+    if (flownLine) {
+      earthGroup.remove(flownLine);
+      flownLine.geometry.dispose();
+      (flownLine.material as THREE.Material).dispose();
+      flownLine = null;
+      flownTimes = new Float64Array(0);
+    }
+    if (coastLine) {
+      earthGroup.remove(coastLine);
+      coastLine.geometry.dispose();
+      (coastLine.material as THREE.Material).dispose();
+      coastLine = null;
+    }
+    if (orbitLine) {
+      worldGroup.remove(orbitLine);
+      orbitLine.geometry.dispose();
+      (orbitLine.material as THREE.Material).dispose();
+      orbitLine = null;
+    }
+    lastCoastT = NaN;
+    lastCoastMs = -Infinity;
+    iipRing.visible = false;
   }
 
   function applyControlsEnabled(): void {
@@ -391,6 +542,44 @@ export function createMissionView(domElement: HTMLElement): MissionView {
         .add(new THREE.Vector3(0, 0.4, 0))
         .normalize()
         .multiplyScalar(1e7);
+
+      // Build flown path in earthGroup, stored relative to first sample.
+      const flown = buildFlownPathPoints(nextRecord);
+      flownTimes = flown.times;
+      const flownGeo = new THREE.BufferGeometry();
+      flownGeo.setAttribute('position', new THREE.BufferAttribute(flown.offsets, 3));
+      flownGeo.setDrawRange(0, 0);
+      const flownMat = new THREE.LineBasicMaterial({ color: 0x4da3ff });
+      flownLine = new THREE.Line(flownGeo, flownMat);
+      flownLine.name = 'mission-flown-path';
+      flownLine.frustumCulled = false;
+      flownLine.position.set(flown.origin[0], flown.origin[1], flown.origin[2]);
+      earthGroup.add(flownLine);
+
+      // Build predicted coast line shell in earthGroup (recomputed at most 2 Hz in setTime).
+      const coastGeo = new THREE.BufferGeometry();
+      const coastMat = new THREE.LineDashedMaterial({
+        color: 0xffb454,
+        dashSize: 20_000,
+        gapSize: 12_000,
+      });
+      coastLine = new THREE.Line(coastGeo, coastMat);
+      coastLine.name = 'mission-coast-path';
+      coastLine.frustumCulled = false;
+      coastLine.visible = false;
+      earthGroup.add(coastLine);
+
+      // Build final orbit in inertial worldGroup when perigee > 80 km.
+      const perigeeAlt = nextRecord.outcome?.perigeeAltitude ?? nextRecord.orbit?.periapsis ?? -Infinity;
+      if (perigeeAlt > 80_000) {
+        const last = nextRecord.samples[nextRecord.samples.length - 1];
+        const el = elementsFromAppState(last.pos, last.vel);
+        if (Number.isFinite(el.a) && el.a > 0 && el.e < 1) {
+          orbitLine = buildOrbitLine(orbitPoints(el, 256), 0x7fd7ff);
+          orbitLine.frustumCulled = false;
+          worldGroup.add(orbitLine);
+        }
+      }
     }
 
     setTime(nextRecord.samples[0]?.t ?? 0);
@@ -435,6 +624,65 @@ export function createMissionView(domElement: HTMLElement): MissionView {
           });
         }
       }
+    }
+
+    // Update flown path draw range up to t.
+    if (flownLine && flownTimes.length > 0) {
+      let count = 0;
+      if (t >= flownTimes[0]) {
+        let lo = 0;
+        let hi = flownTimes.length - 1;
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1;
+          if (flownTimes[mid] <= t) lo = mid;
+          else hi = mid - 1;
+        }
+        count = lo + 1;
+      }
+      flownLine.geometry.setDrawRange(0, count);
+    }
+
+    // Update predicted coast line (recompute at most 2 Hz and only when t changes).
+    if (coastLine) {
+      if (snap.periapsis !== undefined && snap.periapsis > 100_000) {
+        coastLine.visible = false;
+      } else {
+        const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (Math.abs(t - lastCoastT) > 1e-4 && nowMs - lastCoastMs >= 500) {
+          lastCoastT = t;
+          lastCoastMs = nowMs;
+          const pts = coastPath(record, t, 1800, 30);
+          if (pts.length >= 2) {
+            const a0 = record.earth?.angleAtLiftoff ?? 0;
+            const rate = record.earth?.rate ?? 0;
+            const firstFixed = rotateYVec(pts[0].pos, -(a0 + rate * pts[0].t));
+            const arr = new Float32Array(pts.length * 3);
+            for (let i = 0; i < pts.length; i++) {
+              const pFixed = rotateYVec(pts[i].pos, -(a0 + rate * pts[i].t));
+              arr[i * 3] = pFixed.x - firstFixed.x;
+              arr[i * 3 + 1] = pFixed.y - firstFixed.y;
+              arr[i * 3 + 2] = pFixed.z - firstFixed.z;
+            }
+            coastLine.geometry.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+            coastLine.geometry.computeBoundingSphere();
+            coastLine.position.copy(firstFixed);
+            coastLine.computeLineDistances();
+            coastLine.visible = true;
+          } else {
+            coastLine.visible = false;
+          }
+        }
+      }
+    }
+
+    // Update impact marker in earthGroup.
+    if (snap.iip) {
+      const p = latLonToApp(snap.iip.latDeg, snap.iip.lonDeg, 0, RE_EQ + 500);
+      iipRing.position.set(p[0], p[1], p[2]);
+      iipRing.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), iipRing.position.clone().normalize());
+      iipRing.visible = true;
+    } else {
+      iipRing.visible = false;
     }
 
     // Update sky and stars using the higher of vehicle altitude and camera altitude.
@@ -505,6 +753,8 @@ export function createMissionView(domElement: HTMLElement): MissionView {
     discGeo.dispose();
     discMat.dispose();
     discAlpha.dispose();
+    iipGeo.dispose();
+    iipMat.dispose();
     stars.geometry.dispose();
     starMat.dispose();
     fireballGeo.dispose();
