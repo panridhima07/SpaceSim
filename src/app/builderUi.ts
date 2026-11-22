@@ -57,7 +57,7 @@ export interface BuilderUICallbacks {
   onDragEndPreset(): void;
   onSelectPart(partId: string | null): void;
   onUpdatePart(partId: string, patch: PartPatch, commit: boolean): void;
-  onMovePart(partId: string, delta: -1 | 1): void;
+  onMovePart(partId: string, delta: number): void;
   onDuplicatePart(partId: string): void;
   onDeletePart(partId: string): void;
   onUndo(): void;
@@ -67,6 +67,7 @@ export interface BuilderUICallbacks {
   onToggleCutaway(on: boolean): void;
   onFrameCamera(): void;
   onGoToPad(): void;
+  onMission?(): void;
   onSaveDesign(): void;
   onLoadSavedDesign(design: Design): void;
   onDeleteSavedDesign(id: string): void;
@@ -206,11 +207,16 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   chalBtn.type = 'button';
   chalBtn.addEventListener('click', () => chalModal.classList.toggle('sfb-hidden'));
 
+  const msnBtn = h('button', 'sfb-btn', 'LVM3 Mission');
+  msnBtn.type = 'button';
+  msnBtn.title = 'Fly the Chandrayaan-3 / LVM3-M4 mission';
+  msnBtn.addEventListener('click', () => cb.onMission?.());
+
   const padBtn = h('button', 'sfb-btn sfb-btn-primary sfb-b-pad-btn', 'Go to Pad');
   padBtn.type = 'button';
   padBtn.addEventListener('click', () => cb.onGoToPad());
 
-  topActions.append(undoBtn, redoBtn, cutawayBtn, fitBtn, filesBtn, chalBtn, padBtn);
+  topActions.append(undoBtn, redoBtn, cutawayBtn, fitBtn, filesBtn, chalBtn, msnBtn, padBtn);
   topBar.append(nameInput, statsEl, topActions);
 
   // ===== Left panel: Parts Palette =====
@@ -287,10 +293,14 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   const mFilesBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Save/Load');
   mFilesBtn.type = 'button';
   mFilesBtn.addEventListener('click', () => toggleFilesModal());
+  // The top bar's Challenges button is hidden on phones; this one sits in the Edit drawer.
+  const mChalBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Challenges');
+  mChalBtn.type = 'button';
+  mChalBtn.addEventListener('click', () => chalModal.classList.toggle('sfb-hidden'));
   const clearBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Clear');
   clearBtn.type = 'button';
   clearBtn.addEventListener('click', () => cb.onClear());
-  stackHeadBtns.append(mFilesBtn, clearBtn);
+  stackHeadBtns.append(mFilesBtn, mChalBtn, clearBtn);
   stackHead.append(stackHeadBtns);
 
   const stackList = h('ul', 'sfb-b-stack');
@@ -313,6 +323,9 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   const mUndoBtn = h('button', 'sfb-btn', '↶');
   mUndoBtn.type = 'button';
   mUndoBtn.setAttribute('aria-label', 'Undo');
+  const mRedoBtn = h('button', 'sfb-btn', '↷');
+  mRedoBtn.type = 'button';
+  mRedoBtn.setAttribute('aria-label', 'Redo');
   const mCutawayBtn = h('button', 'sfb-btn', 'X-Ray');
   mCutawayBtn.type = 'button';
   const mPadBtn = h('button', 'sfb-btn sfb-btn-primary', 'Pad');
@@ -329,6 +342,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   mPartsBtn.addEventListener('click', () => setMobileDrawer('parts'));
   mStackBtn.addEventListener('click', () => setMobileDrawer('stack'));
   mUndoBtn.addEventListener('click', () => cb.onUndo());
+  mRedoBtn.addEventListener('click', () => cb.onRedo());
   mCutawayBtn.addEventListener('click', () => {
     cutawayOn = !cutawayOn;
     cutawayBtn.classList.toggle('is-active', cutawayOn);
@@ -337,7 +351,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   });
   mPadBtn.addEventListener('click', () => cb.onGoToPad());
 
-  mobileBar.append(mPartsBtn, mStackBtn, mUndoBtn, mCutawayBtn, mPadBtn);
+  mobileBar.append(mPartsBtn, mStackBtn, mUndoBtn, mRedoBtn, mCutawayBtn, mPadBtn);
 
   // ===== Save / Load / Export modal =====
   const filesModal = h('div', 'sfb-b-modal-backdrop sfb-hidden');
@@ -351,7 +365,8 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
 
   const importInput = h('input', 'sfb-hidden');
   importInput.type = 'file';
-  importInput.accept = '.json,.ork,.xml,application/json,application/zip';
+  // Android's picker only lists .ork files when the generic MIME type is included too.
+  importInput.accept = '.json,.ork,.xml,application/json,application/zip,application/octet-stream';
   importInput.addEventListener('change', () => {
     const file = importInput.files?.[0];
     importInput.value = '';
@@ -712,18 +727,36 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
 
     const acts = h('div', 'sfb-b-insp-actions');
     if (found.parentId === null) {
-      const upBtn = h('button', 'sfb-btn sfb-b-mini-btn', '↑');
+      const upBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Move ▲');
       upBtn.type = 'button';
       upBtn.title = 'Move forward in stack';
       upBtn.disabled = found.stackIndex <= 0;
       upBtn.addEventListener('click', () => cb.onMovePart(part.id, -1));
 
-      const dnBtn = h('button', 'sfb-btn sfb-b-mini-btn', '↓');
+      const dnBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Move ▼');
       dnBtn.type = 'button';
       dnBtn.title = 'Move aft in stack';
       dnBtn.disabled = found.stackIndex >= design.stack.length - 1;
       dnBtn.addEventListener('click', () => cb.onMovePart(part.id, 1));
       acts.append(upBtn, dnBtn);
+    } else {
+      const curOffset = found.offset ?? 0;
+      const foreBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Move ▲');
+      foreBtn.type = 'button';
+      foreBtn.title = 'Nudge 2 cm forward along tube';
+      foreBtn.addEventListener('click', () => {
+        lastInspectorKey = '';
+        cb.onUpdatePart(part.id, { offset: Math.max(-0.3, Number((curOffset - 0.02).toFixed(4))) }, true);
+      });
+
+      const aftBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Move ▼');
+      aftBtn.type = 'button';
+      aftBtn.title = 'Nudge 2 cm aft along tube';
+      aftBtn.addEventListener('click', () => {
+        lastInspectorKey = '';
+        cb.onUpdatePart(part.id, { offset: Math.min(0.3, Number((curOffset + 0.02).toFixed(4))) }, true);
+      });
+      acts.append(foreBtn, aftBtn);
     }
 
     const dupBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Dup');
@@ -989,6 +1022,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
             value: motorOptions.some((o) => o.value === currentMotorKey) ? currentMotorKey : '',
             options: motorOptions,
             onChange: (val) => {
+              lastInspectorKey = '';
               const picked = motors.find((m) => motorKey(m) === val);
               if (!picked) {
                 patch({ motor: undefined, isMotorMount: true } as Partial<InnerTube>, true);
@@ -1219,6 +1253,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
     undoBtn.disabled = !state.canUndo;
     redoBtn.disabled = !state.canRedo;
     mUndoBtn.disabled = !state.canUndo;
+    mRedoBtn.disabled = !state.canRedo;
 
     sLen.val.textContent = stats.length > 0 ? `${(stats.length * 100).toFixed(1)} cm` : '—';
     sMass.val.textContent = stats.mass > 0 ? `${(stats.mass * 1000).toFixed(0)} g` : '—';
@@ -1250,12 +1285,79 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
       return tag;
     };
 
-    for (const node of design.stack) {
+    let draggedStackPart: { id: string; index: number } | null = null;
+
+    for (let stackIdx = 0; stackIdx < design.stack.length; stackIdx++) {
+      const node = design.stack[stackIdx];
       const li = h('li', 'sfb-b-stack-item');
       const row = h('div', `sfb-b-stack-row${node.id === selectedId ? ' is-selected' : ''}`);
+      row.dataset.partId = node.id;
+      row.dataset.stackIndex = String(stackIdx);
+
+      if (design.stack.length > 1) {
+        row.draggable = true;
+        row.addEventListener('dragstart', (e) => {
+          draggedStackPart = { id: node.id, index: stackIdx };
+          row.classList.add('is-dragging');
+          e.dataTransfer?.setData('text/plain', node.id);
+          if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+        });
+        row.addEventListener('dragend', () => {
+          draggedStackPart = null;
+          row.classList.remove('is-dragging');
+          for (const el of stackList.querySelectorAll('.is-drag-over')) {
+            el.classList.remove('is-drag-over');
+          }
+        });
+        row.addEventListener('dragover', (e) => {
+          if (!draggedStackPart || draggedStackPart.id === node.id) return;
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+          row.classList.add('is-drag-over');
+        });
+        row.addEventListener('dragleave', () => {
+          row.classList.remove('is-drag-over');
+        });
+        row.addEventListener('drop', (e) => {
+          e.preventDefault();
+          row.classList.remove('is-drag-over');
+          if (!draggedStackPart || draggedStackPart.id === node.id) return;
+          const delta = stackIdx - draggedStackPart.index;
+          const movedId = draggedStackPart.id;
+          draggedStackPart = null;
+          if (delta !== 0) {
+            cb.onMovePart(movedId, delta);
+          }
+        });
+      }
+
+      const grip = h('span', 'sfb-b-drag-handle', '⋮⋮');
+      grip.title = 'Drag to reorder block';
+      grip.setAttribute('aria-hidden', 'true');
+
       const labelBtn = h('button', 'sfb-b-stack-label', node.part.name);
       labelBtn.type = 'button';
       labelBtn.addEventListener('click', () => cb.onSelectPart(node.id));
+
+      const upBtn = h('button', 'sfb-b-move sfb-b-move-up', '▲');
+      upBtn.type = 'button';
+      upBtn.title = `Move ${node.part.name} forward`;
+      upBtn.setAttribute('aria-label', `Move ${node.part.name} up`);
+      upBtn.disabled = stackIdx === 0;
+      upBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        cb.onMovePart(node.id, -1);
+      });
+
+      const dnBtn = h('button', 'sfb-b-move sfb-b-move-down', '▼');
+      dnBtn.type = 'button';
+      dnBtn.title = `Move ${node.part.name} aft`;
+      dnBtn.setAttribute('aria-label', `Move ${node.part.name} down`);
+      dnBtn.disabled = stackIdx === design.stack.length - 1;
+      dnBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        cb.onMovePart(node.id, 1);
+      });
 
       const delBtn = h('button', 'sfb-b-del', '×');
       delBtn.type = 'button';
@@ -1267,17 +1369,40 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
       });
 
       const nodeTag = makeFlawTag(node.id);
-      if (nodeTag) row.append(labelBtn, nodeTag, delBtn);
-      else row.append(labelBtn, delBtn);
+      if (nodeTag) row.append(grip, labelBtn, nodeTag, upBtn, dnBtn, delBtn);
+      else row.append(grip, labelBtn, upBtn, dnBtn, delBtn);
       li.append(row);
 
       if (node.children.length > 0) {
         const sub = h('ul', 'sfb-b-sublist');
         for (const ch of node.children) {
           const cli = h('li', `sfb-b-stack-row sfb-b-child-row${ch.id === selectedId ? ' is-selected' : ''}`);
+          cli.dataset.partId = ch.id;
           const clabel = h('button', 'sfb-b-stack-label', ch.part.name);
           clabel.type = 'button';
           clabel.addEventListener('click', () => cb.onSelectPart(ch.id));
+
+          const cup = h('button', 'sfb-b-move sfb-b-move-up', '▲');
+          cup.type = 'button';
+          cup.title = `Nudge ${ch.part.name} 2 cm forward`;
+          cup.setAttribute('aria-label', `Move ${ch.part.name} forward`);
+          cup.addEventListener('click', (e) => {
+            e.stopPropagation();
+            lastInspectorKey = '';
+            const nextOffset = Math.max(-0.3, Number(((ch.offset ?? 0) - 0.02).toFixed(4)));
+            cb.onUpdatePart(ch.id, { offset: nextOffset }, true);
+          });
+
+          const cdn = h('button', 'sfb-b-move sfb-b-move-down', '▼');
+          cdn.type = 'button';
+          cdn.title = `Nudge ${ch.part.name} 2 cm aft`;
+          cdn.setAttribute('aria-label', `Move ${ch.part.name} aft`);
+          cdn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            lastInspectorKey = '';
+            const nextOffset = Math.min(0.3, Number(((ch.offset ?? 0) + 0.02).toFixed(4)));
+            cb.onUpdatePart(ch.id, { offset: nextOffset }, true);
+          });
 
           const cdel = h('button', 'sfb-b-del', '×');
           cdel.type = 'button';
@@ -1289,8 +1414,8 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
           });
 
           const childTag = makeFlawTag(ch.id);
-          if (childTag) cli.append(clabel, childTag, cdel);
-          else cli.append(clabel, cdel);
+          if (childTag) cli.append(clabel, childTag, cup, cdn, cdel);
+          else cli.append(clabel, cup, cdn, cdel);
           sub.append(cli);
         }
         li.append(sub);

@@ -301,6 +301,101 @@ describe('createSim', () => {
     }
     expect(sim.state.phase).toBe('landed');
   });
+
+  it('gradual canopy inflation and pendulum righting torque during parachute descent and landing', () => {
+    // Launch at an angle so the rocket pitches over and is tilted at apogee / parachute deployment.
+    const sim = createSim(
+      makeRocket(true),
+      makeMotor(),
+      makeConfig({ railAngle: 0.35, windSpeed: 4, windDirection: 0 }),
+      makeDeps(),
+    );
+    sim.ignite();
+    while (!sim.state.chuteDeployed && !sim.done) sim.step(0.01);
+    expect(sim.state.chuteDeployed).toBe(true);
+
+    // At deployment (t = tDeploy), canopy is only partially inflated (5% line stretch),
+    // and over CHUTE_INFLATE_TIME (0.6 s) drag/inflation increases as the rocket descends.
+    // Let's deploy during faster descent (e.g. altitude chute) to directly verify gradual inflation
+    // and pendulum righting torque.
+    const altRocket = makeRocket(false);
+    altRocket.components.push({
+      kind: 'parachute',
+      id: 'chute-alt',
+      name: 'Main chute',
+      x: 0.05,
+      length: 0.01,
+      density: 0,
+      diameter: CHUTE_D,
+      cd: CHUTE_CD,
+      deployEvent: 'altitude',
+      deployAltitude: 80,
+      deployDelay: 0,
+      mass: 0.005,
+    });
+    const altSim = createSim(
+      altRocket,
+      makeMotor(),
+      makeConfig({ railAngle: 0.35, windSpeed: 2, windDirection: 0 }),
+      makeDeps(),
+    );
+    altSim.ignite();
+    while (!altSim.state.chuteDeployed && !altSim.done) altSim.step(0.002);
+    expect(altSim.state.chuteDeployed).toBe(true);
+
+    const dragAtOpen = altSim.state.drag;
+    altSim.step(0.15);
+    const dragMidOpen = altSim.state.drag;
+    expect(dragMidOpen).toBeGreaterThan(dragAtOpen * 1.5);
+
+    // Continue to landing and verify pendulum righting torque aligns nose upward (+Y > 0.9)
+    // and damps angular velocity before touchdown.
+    let preLandingNoseY = 0;
+    let preLandingOmega = Infinity;
+    while (!altSim.done) {
+      if (altSim.state.altitude > 1 && altSim.state.altitude < 15) {
+        preLandingNoseY = quatRotate(altSim.state.quat, [0, 1, 0])[1];
+        preLandingOmega = Math.hypot(...altSim.state.omega);
+      }
+      altSim.step(0.05);
+    }
+    expect(altSim.state.phase).toBe('landed');
+    expect(preLandingNoseY).toBeGreaterThan(0.9);
+    expect(preLandingOmega).toBeLessThan(0.2);
+    const landingEvent = altSim.events.find((e) => e.type === 'landing');
+    expect(landingEvent?.message).toContain('vertical');
+    expect(landingEvent?.message).toContain('drift');
+  });
+
+  it('rail friction reduces launch-off acceleration when tilted or under crosswind', () => {
+    const rocket = makeRocket(true);
+    const motor = makeMotor();
+    const deps = makeDeps();
+
+    // Tilted launch rail (30 deg): lateral gravity component induces normal force and rail lug friction.
+    const angle = Math.PI / 6;
+    const simTilted = createSim(rocket, motor, makeConfig({ railAngle: angle, railLength: 2 }), deps);
+    simTilted.ignite();
+    simTilted.step(0.2);
+    expect(simTilted.state.phase).toBe('rail');
+
+    // Without rail friction, acceleration along the rail at low speed would be F/m - g*cos(angle).
+    // With rail friction (mu = 0.25), friction removes mu * g * sin(angle) from acceleration.
+    const idealSpeedNoFriction = (THRUST / MASS - G0 * Math.cos(angle)) * 0.2;
+    const expectedFrictionLoss = 0.25 * G0 * Math.sin(angle) * 0.2;
+    expect(simTilted.state.speed).toBeLessThan(idealSpeedNoFriction - expectedFrictionLoss * 0.7);
+
+    // Crosswind on a tilted rail further increases lateral load and reduces rail exit speed.
+    const simCrosswind = createSim(
+      rocket,
+      motor,
+      makeConfig({ railAngle: angle, railAzimuth: 0, windSpeed: 12, windDirection: Math.PI / 2, railLength: 2 }),
+      deps,
+    );
+    simCrosswind.ignite();
+    simCrosswind.step(0.2);
+    expect(simCrosswind.state.speed).toBeLessThan(simTilted.state.speed);
+  });
 });
 
 

@@ -2359,3 +2359,68 @@ canvas { display: block; }
   padding-bottom: env(safe-area-inset-bottom, 0px);
   padding-right: env(safe-area-inset-right, 0px);
 }
+
+/* 8. Builder Stack Block Drag-and-Drop & Inline Move Buttons */
+.sfb-b-stack-row[draggable="true"] {
+  cursor: grab;
+}
+
+.sfb-b-stack-row.is-dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.sfb-b-stack-row.is-drag-over {
+  border-color: var(--sfb-accent);
+  box-shadow: 0 0 0 2px rgba(127, 215, 255, 0.45);
+  background: rgba(127, 215, 255, 0.24);
+}
+
+.sfb-b-drag-handle {
+  flex: none;
+  padding: 0 2px 0 6px;
+  color: var(--sfb-muted);
+  font-size: 11px;
+  letter-spacing: -1px;
+  user-select: none;
+  cursor: grab;
+  opacity: 0.7;
+}
+
+.sfb-b-stack-row:hover .sfb-b-drag-handle {
+  opacity: 1;
+  color: var(--sfb-text);
+}
+
+.sfb-b-move {
+  appearance: none;
+  flex: none;
+  width: 24px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--sfb-muted);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.sfb-b-move:hover:not(:disabled) {
+  color: var(--sfb-accent);
+  background: rgba(127, 215, 255, 0.12);
+}
+
+.sfb-b-move:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.sfb-root.sfb-root.sfb-builder.sfb-mobile .sfb-b-move {
+  width: 36px;
+  height: 44px;
+  min-height: 44px;
+  font-size: 12px;
+}

@@ -1,0 +1,88 @@
+/* Scroll-driven galaxy-to-Earth backdrop: canvas layer plus the projected text labels. */
+.auth-sky {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.auth-sky canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.auth-sky-labels {
+  position: absolute;
+  inset: 0;
+}
+
+/* Each label is moved to its projected point with a transform set from script. */
+.auth-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  white-space: nowrap;
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.32em;
+  color: #9fb4d6;
+  padding-left: 10px;
+  margin-top: -0.5em;
+  visibility: hidden;
+  will-change: transform, opacity;
+}
+
+.auth-label--sat {
+  color: #f0a3b4;
+}
+
+.auth-label--body {
+  color: #cfdcf2;
+  font-size: 12px;
+}
+
+.auth-label--earth {
+  font-size: 14px;
+  letter-spacing: 0.4em;
+}
+
+.auth-label--star {
+  color: #dbe9ff;
+}
+
+.auth-label--here,
+.auth-label--site {
+  color: #7fd7ff;
+  padding-left: 18px;
+}
+
+/* Small ring drawn on the labelled point. */
+.auth-label--here::before,
+.auth-label--site::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin-top: -5px;
+  box-sizing: border-box;
+  border: 1px solid #7fd7ff;
+  border-radius: 50%;
+  animation: auth-label-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes auth-label-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.5); opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-label--here::before,
+  .auth-label--site::before {
+    animation: none;
+  }
+}

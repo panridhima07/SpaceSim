@@ -116,6 +116,28 @@ const TRAIL_INTERVAL_S = 0.05; // 20 Hz of sim time
 const WARP_CAP_ATMOSPHERE = 10;
 const WARP_CAP_ALTITUDE = 100_000; // m
 
+/**
+ * Realistic time-scale modulation during liftoff and touchdown at 1x warp:
+ * eases into ignition and rail exit so the rocket doesn't snap off the pad instantaneously,
+ * and eases into final ground contact so the parachute landing is clearly perceived.
+ */
+function realisticTimeFactor(s: Sim | null, warp: number): number {
+  if (!s || s.done || warp !== 1) return 1;
+  const { phase, t, altitude } = s.state;
+  if (phase === 'pad' || phase === 'rail') {
+    return 0.45 + 0.35 * Math.min(1, t / 0.6);
+  }
+  if (phase === 'boost' && t < 1.2) {
+    const u = Math.max(0, Math.min(1, (t - 0.3) / 0.9));
+    return 0.8 + 0.2 * u;
+  }
+  if (phase === 'descent' && altitude < 15) {
+    const u = Math.max(0, Math.min(1, altitude / 15));
+    return 0.65 + 0.35 * u;
+  }
+  return 1;
+}
+
 // ---------- Renderer, scene and fixed world objects ----------
 
 const app = document.getElementById('app');
@@ -182,6 +204,10 @@ let rocketRoot: THREE.Group | null = null;
 let markers: Markers | null = null;
 let exhaust: Exhaust | null = null;
 let chute: THREE.Group | null = null;
+let chuteDeployTime: number | null = null;
+let chuteLandedTime: number | null = null;
+const chuteDir = new THREE.Vector3(0, 1, 0);
+const chuteSettleAxis = new THREE.Vector3(1, 0, 0);
 
 let lastNow = performance.now();
 
@@ -476,6 +502,8 @@ function removeChute(): void {
   scene.remove(chute);
   disposeGroup(chute);
   chute = null;
+  chuteDeployTime = null;
+  chuteLandedTime = null;
 }
 
 function applyVisibilityToggles(): void {
@@ -763,12 +791,21 @@ function updateSmokeAndTrail(state: SimState | null, origin: Vec3, simDt: number
   trail.update(origin);
 }
 
-function updateParachute(state: SimState | null): void {
+function updateParachute(state: SimState | null, realDt: number): void {
   if (!rocket || !rocketRoot || !state) {
     if (chute) chute.visible = false;
     return;
   }
-  if (state.chuteDeployed && !chute) {
+  if (!state.chuteDeployed) {
+    if (chute) chute.visible = false;
+    chuteDeployTime = null;
+    chuteLandedTime = null;
+    return;
+  }
+
+  const up = new THREE.Vector3(...state.pos).normalize();
+
+  if (!chute) {
     const p = firstParachute(rocket);
     if (p) {
       chute = buildParachute(p.diameter);
@@ -776,15 +813,76 @@ function updateParachute(state: SimState | null): void {
     }
   }
   if (!chute) return;
-  chute.visible = state.chuteDeployed;
+
+  if (chuteDeployTime === null) {
+    const deployEv = sim?.events.find((e) => e.type === 'chuteDeploy');
+    chuteDeployTime = deployEv ? deployEv.t : state.t;
+    const speed0 = len(state.vel);
+    if (speed0 > 0.5) {
+      chuteDir.set(...state.vel).multiplyScalar(-1 / speed0);
+    } else {
+      chuteDir.copy(up);
+    }
+    const windX = -Math.sin(activeConfig.windDirection);
+    const windZ = Math.cos(activeConfig.windDirection);
+    if (Math.hypot(windX, windZ) > 0.01) {
+      chuteSettleAxis.set(windX, 0, windZ).normalize();
+    } else {
+      const nose = new THREE.Vector3(0, 1, 0).applyQuaternion(rocketRoot.quaternion);
+      const horiz = nose.sub(up.clone().multiplyScalar(nose.dot(up)));
+      if (horiz.lengthSq() > 1e-4) chuteSettleAxis.copy(horiz.normalize());
+      else chuteSettleAxis.set(1, 0, 0);
+    }
+  }
+
+  chute.visible = true;
   chute.position.copy(rocketRoot.position);
-  // Canopy points opposite the velocity; when nearly still, straight up.
-  const speed = len(state.vel);
-  const dir =
-    speed > 1
-      ? new THREE.Vector3(...state.vel).multiplyScalar(-1 / speed)
-      : new THREE.Vector3(...state.pos).normalize();
-  chute.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+
+  // Smooth S-curve inflation over 0.6 s after deployment.
+  const dtOpen = Math.max(0, state.t - chuteDeployTime);
+  const uOpen = Math.min(1, dtOpen / 0.6);
+  const inflate = 0.2 + 0.8 * (uOpen * uOpen * (3 - 2 * uOpen));
+
+  if (state.phase === 'landed' || state.phase === 'crashed') {
+    if (chuteLandedTime === null) chuteLandedTime = replayT !== null ? 1.4 : 0;
+    else if (replayT === null) chuteLandedTime += realDt;
+    // Settle and collapse canopy gently toward the ground rather than hovering straight up.
+    const uLand = Math.min(1, chuteLandedTime / 1.4);
+    const settle = uLand * uLand * (3 - 2 * uLand);
+
+    const restDir = chuteSettleAxis.clone().addScaledVector(up, 0.18).normalize();
+    const targetDir = up.clone().lerp(restDir, settle).normalize();
+    const alpha = replayT !== null ? 1 : 1 - Math.exp(-6 * Math.max(0.001, realDt));
+    chuteDir.lerp(targetDir, alpha).normalize();
+
+    const radialScale = inflate * (1 - 0.15 * settle);
+    const axialScale = inflate * (1 - 0.55 * settle);
+    chute.scale.set(radialScale, axialScale, radialScale);
+  } else {
+    chuteLandedTime = null;
+    // Blend smoothly between opposite air-relative / descent velocity and local up at low speed.
+    const windSpeed = activeConfig.windSpeed;
+    const gust = 1 + activeConfig.gust * Math.sin(1.7 * state.t) * Math.sin(0.31 * state.t + 1);
+    const profile = state.altitude > 0 ? Math.min(2, Math.max(0, Math.pow(state.altitude / 10, 0.14))) : 0;
+    const ws = windSpeed * gust * profile;
+    const vx = state.vel[0] - (-Math.sin(activeConfig.windDirection) * ws);
+    const vy = state.vel[1];
+    const vz = state.vel[2] - (Math.cos(activeConfig.windDirection) * ws);
+    const vRelSpeed = Math.hypot(vx, vy, vz);
+
+    const velDir = vRelSpeed > 1e-3
+      ? new THREE.Vector3(-vx / vRelSpeed, -vy / vRelSpeed, -vz / vRelSpeed)
+      : up.clone();
+    // Smooth speed blend so canopy never snaps across a hard speed threshold.
+    const wVel = Math.min(1, Math.max(0, (vRelSpeed - 0.2) / 1.8));
+    const targetDir = up.clone().lerp(velDir, wVel).normalize();
+
+    const alpha = replayT !== null ? 1 : 1 - Math.exp(-10 * Math.max(0.001, realDt));
+    chuteDir.lerp(targetDir, alpha).normalize();
+    chute.scale.set(inflate, inflate, inflate);
+  }
+
+  chute.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), chuteDir);
 }
 
 function updateForces(state: SimState | null, origin: Vec3): void {
@@ -839,7 +937,7 @@ function updateWorld(state: SimState | null, origin: Vec3, realDt: number, simDt
 
   placeRocket(state, origin, now);
   updateSmokeAndTrail(state, origin, simDt, realDt);
-  updateParachute(state);
+  updateParachute(state, realDt);
   updateForces(state, origin);
   updateSky(state, origin);
 }
@@ -896,7 +994,7 @@ function frame(now: number): void {
     return;
   }
 
-  const simDt = clock.tick(realDt);
+  const simDt = clock.tick(realDt * realisticTimeFactor(sim, clock.warp));
   clock.setMaxWarp(maxWarpFor(sim));
   advanceSim(simDt);
   advanceStress();
@@ -1044,10 +1142,13 @@ function refreshBuilder(refitCamera = false, forceInspectorRefresh = false): voi
   });
 }
 
+let transitionPromptActive = false;
+
 function clearPlacement(): void {
   placingPreset = null;
   placingSnaps = [];
   hoveredSnapId = null;
+  transitionPromptActive = false;
   builderView.setSnapPoints([]);
   builderUi.setPlacing(null, []);
 }
@@ -1056,6 +1157,7 @@ function commitSnapPlacement(preset: PartPreset, snap: SnapPoint, addTransition?
   const base = currentDesign() ?? createEmptyDesign();
   // If diameter mismatches and caller hasn't decided yet, ask whether to insert a transition.
   if (addTransition === undefined && !snap.diameterMatch && snap.needsTransition) {
+    transitionPromptActive = true;
     builderUi.setTransitionPrompt({ preset, snap });
     return;
   }
@@ -1111,10 +1213,18 @@ const builderUi = createBuilderUI(app, {
   },
   onDragStartPreset: (preset) => beginPlacement(preset, false),
   onDragEndPreset: () => {
-    if (placingPreset) clearPlacement();
+    if (placingPreset && !transitionPromptActive) clearPlacement();
   },
   onSelectPart: (partId) => {
     builderSelectedId = partId;
+    if (partId) {
+      const d = currentDesign();
+      const found = d ? findPart(d, partId) : null;
+      if (found && found.parentId !== null && found.part.kind !== 'finset' && !builderCutaway) {
+        builderCutaway = true;
+        builderUi.setCutaway(true);
+      }
+    }
     refreshBuilder(false, true);
   },
   onUpdatePart: (partId, patch, commit) => {
@@ -1191,6 +1301,7 @@ const builderUi = createBuilderUI(app, {
   },
   onFrameCamera: () => builderView.frameRocket(),
   onGoToPad: () => exitBuilderToPad(),
+  onMission: () => enterMission(),
   onSaveDesign: () => {
     const d = currentDesign();
     if (!d) return;
@@ -1328,7 +1439,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   const hit = builderView.pickPart(e.clientX, e.clientY);
   if (hit !== builderSelectedId) {
     builderSelectedId = hit;
-    refreshBuilder(false);
+    refreshBuilder(false, true);
   }
 });
 
@@ -1347,7 +1458,7 @@ renderer.domElement.addEventListener('dragover', (e) => {
 renderer.domElement.addEventListener('drop', (e) => {
   if (appMode !== 'builder' || !placingPreset) return;
   e.preventDefault();
-  const snap = builderView.pickSnapPoint(e.clientX, e.clientY) ?? placingSnaps[0] ?? null;
+  const snap = builderView.pickSnapPoint(e.clientX, e.clientY);
   const preset = placingPreset;
   if (snap && preset) {
     commitSnapPlacement(preset, snap);
@@ -1492,10 +1603,15 @@ interface DebugHook {
 loadSample();
 requestAnimationFrame(frame);
 
-// Someone who just signed up or signed in on the landing page goes straight to build mode.
+// Someone who picked Chandrayaan-3 on the landing page goes straight to mission mode;
+// someone who just signed up or signed in goes straight to build mode.
 // Everyone else gets the title screen, once per browser session (returning from the Moon
 // page skips it).
-if (takeEnterBuildFlag()) {
+const selectedPreset = takeSelectedPreset();
+const enterBuild = takeEnterBuildFlag();
+if (selectedPreset === 'chandrayaan-3') {
+  enterMission();
+} else if (enterBuild) {
   enterBuilder();
 } else {
   mountHero(app, {
@@ -1504,6 +1620,17 @@ if (takeEnterBuildFlag()) {
     onMoon: () => window.location.assign('./landing.html'),
     onMission: () => enterMission(),
   });
+}
+
+/** Preset mission chosen on the landing page (set in src/auth/gate.ts). */
+function takeSelectedPreset(): string | null {
+  try {
+    const preset = window.sessionStorage.getItem('astra-preset');
+    window.sessionStorage.removeItem('astra-preset');
+    return preset;
+  } catch {
+    return null;
+  }
 }
 
 /** True once after a sign-in through the landing page (the flag is set in src/app/boot.ts). */

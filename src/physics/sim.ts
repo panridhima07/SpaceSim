@@ -49,6 +49,8 @@ const HIGH_ALTITUDE = 100_000; // m
 const LOG_INTERVAL = 0.02; // s of sim time
 const MAX_SUBSTEPS_PER_CALL = 20_000;
 const CHUTE_DAMPING_RATE = 10; // 1/s, angular damping rate under canopy (torque = -rate * I * omega)
+const CHUTE_INFLATE_TIME = 0.6; // s, gradual canopy inflation time to model realistic opening shock
+const RAIL_FRICTION_MU = 0.25; // kinetic friction coefficient of rail lugs/buttons under lateral force
 const SAFE_LANDING_SPEED = 8; // m/s, canopy impact speed still counted as a landing
 const ZERO: Vec3 = [0, 0, 0];
 const NO_CONTROLS: Controls = { gimbalPitch: 0, gimbalYaw: 0 };
@@ -252,18 +254,32 @@ export function createSim(
     let drag: number;
 
     const chuteCdA = chutes.reduce(
-      (sum, c) =>
-        c.deployedAt !== undefined
-          ? sum + Math.PI * (c.chute.diameter / 2) ** 2 * c.chute.cd
-          : sum,
+      (sum, c) => {
+        if (c.deployedAt === undefined) return sum;
+        const dtOpen = Math.max(0, t - c.deployedAt);
+        const u = clamp(dtOpen / CHUTE_INFLATE_TIME, 0, 1);
+        // Smooth S-curve canopy inflation (0.05 initial line stretch -> 1.0 full canopy)
+        const inflate = 0.05 + 0.95 * (u * u * (3 - 2 * u));
+        return sum + Math.PI * (c.chute.diameter / 2) ** 2 * c.chute.cd * inflate;
+      },
       0,
     );
 
     if (chuteCdA > 0) {
-      // Canopy replaces the rocket's aerodynamics; strong angular damping stops the tumble.
-      force = scale(vRel, -0.5 * atm.rho * v * chuteCdA);
+      // Canopy drag acts along the air-relative wind; body aerodynamics add residual damping
+      // and right the rocket under the suspension lines during landing descent.
+      const chuteForce = scale(vRel, -0.5 * atm.rho * v * chuteCdA);
+      const bodyDrag = q * aero.refArea * aero.cd;
+      const bodyForce: Vec3 = v > 0 ? scale(vRel, -bodyDrag / v) : [0, 0, 0];
+      force = add(chuteForce, bodyForce);
       drag = len(force);
-      torque = scale(quatRotate(quat, omega), -CHUTE_DAMPING_RATE * mp.iPitch);
+
+      // Suspension lines attach fore of CG, pulling the rocket upright against the drag vector,
+      // while rotational drag damps out post-deployment pendulum and tumble rates.
+      const attachOffset = Math.max(0.02, mp.cgX * 0.4);
+      const pendTorque = cross(scale(a, attachOffset), chuteForce);
+      const dampTorque = scale(quatRotate(quat, omega), -CHUTE_DAMPING_RATE * mp.iPitch);
+      torque = add(pendTorque, dampTorque);
     } else {
       drag = q * aero.refArea * aero.cd;
       if (v > 0) force = scale(vRel, -drag / v);
@@ -340,6 +356,15 @@ export function createSim(
     const pos = add(railStart, scale(railDir, s));
     const e = evaluate(pos, scale(railDir, v), ZERO, railQuat, t);
     let acc = dot(e.acc, railDir);
+    // Lateral normal load on the launch rail (from rail tilt and crosswind) induces lug friction.
+    const accParallel = scale(railDir, acc);
+    const accLateral = len(sub(e.acc, accParallel));
+    const frictionAcc = RAIL_FRICTION_MU * accLateral;
+    if (v > 0) {
+      acc -= frictionAcc;
+    } else if (acc > 0) {
+      acc = Math.max(0, acc - frictionAcc);
+    }
     // The launch-rail lug cannot pull the rocket back down the rail.
     if (v <= 0 && acc < 0) acc = 0;
     return [v, acc];
@@ -440,19 +465,33 @@ export function createSim(
 
   function touchdown(): void {
     const impact = state.speed;
+    const vDown = Math.max(0, -radialVelocity(state.pos, state.vel));
+    const vHoriz = Math.sqrt(Math.max(0, impact * impact - vDown * vDown));
     const k = (R_EARTH + config.launchAltitude) / len(state.pos);
     // Clamp to the ground and stop.
     state.pos = scale(state.pos, k);
     state.vel = [0, 0, 0];
     state.omega = [0, 0, 0];
-    const ok = state.chuteDeployed && impact <= SAFE_LANDING_SPEED;
+    const ok = state.chuteDeployed && vDown <= SAFE_LANDING_SPEED && impact <= SAFE_LANDING_SPEED * 1.5;
     state.phase = ok ? 'landed' : 'crashed';
     isDone = true;
     applyDerived(evaluate(state.pos, state.vel, state.omega, state.quat, state.t));
     if (ok) {
-      emit('landing', `Landed at ${impact.toFixed(1)} m/s impact speed`, state.t, 0, impact);
+      emit(
+        'landing',
+        `Landed at ${impact.toFixed(1)} m/s (${vDown.toFixed(1)} m/s vertical, ${vHoriz.toFixed(1)} m/s drift)`,
+        state.t,
+        0,
+        impact,
+      );
     } else {
-      emit('crash', `Impact at ${impact.toFixed(1)} m/s impact speed`, state.t, 0, impact);
+      emit(
+        'crash',
+        `Impact at ${impact.toFixed(1)} m/s (${vDown.toFixed(1)} m/s vertical)`,
+        state.t,
+        0,
+        impact,
+      );
     }
   }
 

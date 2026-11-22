@@ -7,3 +7,4 @@ astra-spaceflight (1)
 
 .vercel
 .env*
+!.env.example
