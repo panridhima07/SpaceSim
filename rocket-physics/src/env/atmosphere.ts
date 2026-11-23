@@ -15,8 +15,11 @@ const R_STAR = 8.31432; // J/(mol K), the value USSA76 uses
 const R_SPECIFIC = R_STAR / M_AIR;
 const R_EARTH_GEOPOT = 6356766; // m
 const GAMMA = 1.4;
+const GAMMA_R = GAMMA * R_SPECIFIC;
 const AVOGADRO = 6.02214076e23;
 const MOLECULE_DIAMETER = 3.65e-10; // effective collision diameter of air, m
+// Mean free path = MFP_K / rho  (lambda = 1 / (sqrt2 pi d^2 n), n = rho N_A / M).
+const MFP_K = M_AIR / (Math.SQRT2 * Math.PI * MOLECULE_DIAMETER * MOLECULE_DIAMETER * AVOGADRO);
 
 // Geopotential base height (m), lapse rate (K/m)
 const LAYERS: ReadonlyArray<readonly [number, number]> = [
@@ -42,6 +45,12 @@ for (let i = 1; i < LAYERS.length; i++) {
   );
 }
 
+// Per-layer constants used by the hot path.
+// LAYER_EXP: exponent of the pressure power law for a gradient layer (unused when L = 0).
+// LAYER_INV_RT: 1 / (R_SPECIFIC * T_base), used by the isothermal exponential (L = 0).
+const LAYER_EXP: number[] = LAYERS.map(([, L]) => (L === 0 ? 0 : -G0P / (L * R_SPECIFIC)));
+const LAYER_INV_RT: number[] = BASE_T.map((T) => 1 / (R_SPECIFIC * T));
+
 // Base altitude (km), density (kg/m^3), scale height (km)
 const EXPO: ReadonlyArray<readonly [number, number, number]> = [
   [90, 3.396e-6, 5.382],
@@ -65,6 +74,8 @@ const EXPO: ReadonlyArray<readonly [number, number, number]> = [
   [900, 5.245e-15, 181.05],
   [1000, 3.019e-15, 268.0],
 ];
+// 1 / scale height, precomputed per table row.
+const EXPO_INV_H: number[] = EXPO.map((row) => 1 / row[2]);
 
 export interface AtmosphereState {
   temperature: number; // K
@@ -84,17 +95,6 @@ const VACUUM: AtmosphereState = {
   meanFreePath: Infinity,
 };
 
-function lower(z: number): { T: number; p: number } {
-  const h = (R_EARTH_GEOPOT * z) / (R_EARTH_GEOPOT + z);
-  let i = LAYERS.length - 1;
-  while (i > 0 && h < LAYERS[i][0]) i--;
-  const [h0, L] = LAYERS[i];
-  const dh = h - h0;
-  const T = BASE_T[i] + L * dh;
-  const p = L === 0 ? BASE_P[i] * Math.exp((-G0P * dh) / (R_SPECIFIC * BASE_T[i])) : BASE_P[i] * Math.pow(T / BASE_T[i], -G0P / (L * R_SPECIFIC));
-  return { T, p };
-}
-
 function upperTemperature(zkm: number): number {
   if (zkm < 91) return 186.8673;
   if (zkm < 110) {
@@ -109,25 +109,50 @@ function upperTemperature(zkm: number): number {
 function upperDensity(zkm: number): number {
   let i = EXPO.length - 1;
   while (i > 0 && zkm < EXPO[i][0]) i--;
-  const [h0, rho0, H] = EXPO[i];
-  return rho0 * Math.exp(-(zkm - h0) / H);
+  return EXPO[i][1] * Math.exp(-(zkm - EXPO[i][0]) * EXPO_INV_H[i]);
 }
 
 const RHO_86 = (() => {
-  const { T, p } = lower(86000);
+  // Sea-level-style lower-atmosphere evaluation at 86 km (same as the hot path below).
+  const h = (R_EARTH_GEOPOT * 86000) / (R_EARTH_GEOPOT + 86000);
+  let i = LAYERS.length - 1;
+  while (i > 0 && h < LAYERS[i][0]) i--;
+  const L = LAYERS[i][1];
+  const dh = h - LAYERS[i][0];
+  const T = BASE_T[i] + L * dh;
+  const p = L === 0 ? BASE_P[i] * Math.exp(-G0P * dh * LAYER_INV_RT[i]) : BASE_P[i] * Math.pow(T / BASE_T[i], LAYER_EXP[i]);
   return p / (R_SPECIFIC * T);
 })();
+const LOG_RHO_86 = Math.log(RHO_86);
+const LOG_RHO_90 = Math.log(upperDensity(90));
 
-/** Atmospheric state at geometric altitude z (m) above the ellipsoid. */
-export function atmosphere(z: number): AtmosphereState {
-  if (z > 1.0e6) return VACUUM;
+/**
+ * Writes the atmospheric state at geometric altitude z (m) into `out` and returns `out`.
+ * Allocates nothing. Above 1000 km the VACUUM values are copied in (the shared constant
+ * is never handed out here).
+ */
+export function atmosphereInto(out: AtmosphereState, z: number): AtmosphereState {
+  if (z > 1.0e6) {
+    out.temperature = VACUUM.temperature;
+    out.pressure = VACUUM.pressure;
+    out.density = VACUUM.density;
+    out.speedOfSound = VACUUM.speedOfSound;
+    out.viscosity = VACUUM.viscosity;
+    out.meanFreePath = VACUUM.meanFreePath;
+    return out;
+  }
   let T: number;
   let rho: number;
   let p: number;
   if (z <= 86000) {
-    const s = lower(Math.max(z, -2000));
-    T = s.T;
-    p = s.p;
+    const zc = Math.max(z, -2000);
+    const h = (R_EARTH_GEOPOT * zc) / (R_EARTH_GEOPOT + zc);
+    let i = LAYERS.length - 1;
+    while (i > 0 && h < LAYERS[i][0]) i--;
+    const L = LAYERS[i][1];
+    const dh = h - LAYERS[i][0];
+    T = BASE_T[i] + L * dh;
+    p = L === 0 ? BASE_P[i] * Math.exp(-G0P * dh * LAYER_INV_RT[i]) : BASE_P[i] * Math.pow(T / BASE_T[i], LAYER_EXP[i]);
     rho = p / (R_SPECIFIC * T);
   } else {
     const zkm = z / 1000;
@@ -135,21 +160,25 @@ export function atmosphere(z: number): AtmosphereState {
     if (zkm < 90) {
       // Blend log-density between the two models so density stays continuous.
       const f = (zkm - 86) / 4;
-      rho = Math.exp(Math.log(RHO_86) * (1 - f) + Math.log(upperDensity(90)) * f);
+      rho = Math.exp(LOG_RHO_86 * (1 - f) + LOG_RHO_90 * f);
     } else {
       rho = upperDensity(zkm);
     }
     p = rho * R_SPECIFIC * T;
   }
-  const n = (rho / M_AIR) * AVOGADRO;
-  return {
-    temperature: T,
-    pressure: p,
-    density: rho,
-    speedOfSound: Math.sqrt(GAMMA * R_SPECIFIC * T),
-    viscosity: (1.458e-6 * Math.pow(T, 1.5)) / (T + 110.4),
-    meanFreePath: 1 / (Math.SQRT2 * Math.PI * MOLECULE_DIAMETER * MOLECULE_DIAMETER * n),
-  };
+  out.temperature = T;
+  out.pressure = p;
+  out.density = rho;
+  out.speedOfSound = Math.sqrt(GAMMA_R * T);
+  out.viscosity = (1.458e-6 * T * Math.sqrt(T)) / (T + 110.4);
+  out.meanFreePath = MFP_K / rho;
+  return out;
+}
+
+/** Atmospheric state at geometric altitude z (m) above the ellipsoid. */
+export function atmosphere(z: number): AtmosphereState {
+  if (z > 1.0e6) return VACUUM;
+  return atmosphereInto({ temperature: 0, pressure: 0, density: 0, speedOfSound: 0, viscosity: 0, meanFreePath: 0 }, z);
 }
 
 /** Horizontal wind, m/s, blowing TOWARD east / north. */

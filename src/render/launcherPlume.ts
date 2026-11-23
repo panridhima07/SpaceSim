@@ -21,7 +21,7 @@ export interface LauncherPlumes {
     stageGroup: THREE.Group;
     plumes: PlumeInstance[];
   }[];
-  geometry: THREE.ConeGeometry;
+  geometry: THREE.BufferGeometry;
   materials: THREE.Material[];
 }
 
@@ -32,15 +32,83 @@ export interface PlumeUpdateState {
   ambientPressure: number;
 }
 
-function unitFlameGeometry(): THREE.ConeGeometry {
-  const g = new THREE.ConeGeometry(1, 1, 16, 1, true);
-  g.rotateX(Math.PI);
-  g.translate(0, -0.5, 0);
+/**
+ * Unit flame: nozzle exit at y = 0, tip at y = -1, radius 1 at the exit. The profile bulges a
+ * little past the exit (the plume expands) then tapers to the tip. uv.y is 0 at the exit, 1 at
+ * the tip, which the flame shader uses for its colour ramp.
+ */
+function unitFlameGeometry(): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [];
+  const n = 20;
+  for (let i = 0; i <= n; i++) {
+    const s = i / n;
+    const r = (0.92 + 0.45 * Math.sin(Math.min(1, s * 2.2) * Math.PI * 0.5)) * Math.pow(1 - s, 0.75) + 0.02;
+    pts.push(new THREE.Vector2(r, -s));
+  }
+  const g = new THREE.LatheGeometry(pts.reverse(), 24);
+  // LatheGeometry's uv.y runs along the profile (tip first after the reverse): flip so 0 = exit.
+  const uv = g.getAttribute('uv') as THREE.BufferAttribute;
+  for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - uv.getY(i));
   return g;
 }
 
+const flameTime = { value: 0 };
+/** Advance the flame flicker (seconds). Shared by every plume. */
+export function setPlumeTime(t: number): void {
+  flameTime.value = t % 1000;
+}
+
+function flameMaterial(outer: number, inner: number, core: boolean): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uOuter: { value: new THREE.Color(outer) },
+      uInner: { value: new THREE.Color(inner) },
+      uTime: flameTime,
+      uCore: { value: core ? 1 : 0 },
+    },
+    vertexShader: `
+      #include <common>
+      #include <logdepthbuf_pars_vertex>
+      varying vec2 vUv;
+      varying float vFacing;
+      void main() {
+        vUv = uv;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vec3 n = normalize(normalMatrix * normal);
+        vFacing = abs(dot(n, normalize(-mv.xyz)));
+        gl_Position = projectionMatrix * mv;
+        #include <logdepthbuf_vertex>
+      }`,
+    fragmentShader: `
+      #include <common>
+      #include <logdepthbuf_pars_fragment>
+      uniform vec3 uOuter;
+      uniform vec3 uInner;
+      uniform float uTime;
+      uniform float uCore;
+      varying vec2 vUv;
+      varying float vFacing;
+      void main() {
+        #include <logdepthbuf_fragment>
+        float v = vUv.y;
+        // Flicker and shock-diamond banding along the length.
+        float flick = 0.85 + 0.15 * sin(uTime * 47.0 + v * 23.0) * sin(uTime * 31.0 + vUv.x * 40.0);
+        float diamonds = 0.82 + 0.18 * pow(abs(sin(v * 26.0 - uTime * 2.0)), 6.0) * (1.0 - v);
+        float body = pow(1.0 - v, mix(1.6, 2.6, uCore)) * smoothstep(0.0, 0.04, v + 0.02);
+        float edge = pow(vFacing, mix(1.2, 0.6, uCore));
+        vec3 col = mix(uInner * 1.6, uOuter, smoothstep(0.0, mix(0.55, 0.3, uCore), v));
+        float a = body * edge * flick * diamonds;
+        gl_FragColor = vec4(col * a, a);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+}
+
 function makePlume(
-  geometry: THREE.ConeGeometry,
+  geometry: THREE.BufferGeometry,
   outerMat: THREE.Material,
   innerMat: THREE.Material,
   baseRadius: number,
@@ -67,34 +135,10 @@ export function buildLauncherPlumes(
 ): LauncherPlumes {
   const geometry = unitFlameGeometry();
 
-  const liquidOuter = new THREE.MeshBasicMaterial({
-    color: LIQUID_OUTER,
-    transparent: true,
-    opacity: 0.9,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
-  const liquidInner = new THREE.MeshBasicMaterial({
-    color: LIQUID_INNER,
-    transparent: true,
-    opacity: 0.95,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
-  const solidOuter = new THREE.MeshBasicMaterial({
-    color: SOLID_OUTER,
-    transparent: true,
-    opacity: 0.92,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
-  const solidInner = new THREE.MeshBasicMaterial({
-    color: SOLID_INNER,
-    transparent: true,
-    opacity: 0.98,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
+  const liquidOuter = flameMaterial(LIQUID_OUTER, LIQUID_INNER, false);
+  const liquidInner = flameMaterial(LIQUID_INNER, 0xffffff, true);
+  const solidOuter = flameMaterial(SOLID_OUTER, SOLID_INNER, false);
+  const solidInner = flameMaterial(SOLID_INNER, 0xffffff, true);
 
   const materials: THREE.Material[] = [liquidOuter, liquidInner, solidOuter, solidInner];
   const stages: LauncherPlumes['stages'] = [];
@@ -110,7 +154,7 @@ export function buildLauncherPlumes(
 
     const nozzleHeight = 0.6 * stage.radius;
     const nozzleRadius = stage.engineCount === 1 ? 0.32 * stage.radius : 0.24 * stage.radius;
-    const baseLength = 6 * stage.radius;
+    const baseLength = 10 * stage.radius;
     const ringRadius = 0.5 * stage.radius;
 
     const stagePlumes: PlumeInstance[] = [];
@@ -178,7 +222,8 @@ export function updatePlumes(plumes: LauncherPlumes, state: PlumeUpdateState): v
       const solidLen = p.solid ? 1.25 : 1;
       const solidWidth = p.solid ? 1.3 : 1;
       const length = p.baseLength * (0.3 + 0.7 * throttle) * solidLen;
-      const width = p.baseRadius * pressureScale * solidWidth;
+      // Plumes are wider than the nozzle exit even at sea level.
+      const width = p.baseRadius * 1.7 * pressureScale * solidWidth;
       p.outer.scale.set(width, length, width);
       p.inner.scale.set(width * 0.5, length * 0.6, width * 0.5);
     }

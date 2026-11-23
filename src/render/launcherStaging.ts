@@ -24,7 +24,7 @@ export function updateLauncherStaging(
       if (t === null) {
         group.visible = true;
         for (let k = 0; k < group.children.length && k < count; k++) {
-          const angle = (2 * Math.PI * k) / count;
+          const angle = (stageSpec.parallel.phase ?? 0) + (2 * Math.PI * k) / count;
           const booster = group.children[k];
           booster.position.set(
             radialOffset * Math.cos(angle),
@@ -43,7 +43,7 @@ export function updateLauncherStaging(
         const tilt = Math.min(0.6, 0.25 * dt);
 
         for (let k = 0; k < group.children.length && k < count; k++) {
-          const angle = (2 * Math.PI * k) / count;
+          const angle = (stageSpec.parallel.phase ?? 0) + (2 * Math.PI * k) / count;
           const ux = Math.cos(angle);
           const uz = Math.sin(angle);
           const booster = group.children[k];

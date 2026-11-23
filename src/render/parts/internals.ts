@@ -13,7 +13,10 @@ import {
   TIER_ACCENT,
   mixColor,
   partMaterial,
+  radialSegments,
+  scopedPart,
   seeded,
+  sharedGeometry,
   type PartBuilder,
   type PartContext,
   type PartIconSet,
@@ -24,6 +27,16 @@ import {
 // helpers
 
 const SEGMENTS: Record<PartTier, number> = { best: 64, ok: 32, bad: 12 };
+/**
+ * Thin decorative bands on these hidden parts stand 1-1.2% proud of the surface, so half
+ * the main surface's segments still keep every band facet outside it.
+ */
+const BAND_SEGMENTS_MAX = 32;
+
+/** Radial segments for a cutaway part at this tier (capped on touch devices). */
+function segmentsFor(tier: PartTier): number {
+  return radialSegments(SEGMENTS[tier], 'inner');
+}
 const TWO_PI = Math.PI * 2;
 
 function ok(n: unknown): n is number {
@@ -218,7 +231,7 @@ function capGeo(contour: THREE.Vector2[], holes: THREE.Vector2[][], ys: number[]
 function bandMesh(r: number, yc: number, h: number, y0: number, y1: number, seg: number, color: number, ctx: PartContext): THREE.Mesh {
   const hh = Math.max(Math.min(h, y1 - y0), 1e-9);
   const yy = Math.min(Math.max(yc, y0 + hh / 2), y1 - hh / 2);
-  const g = new THREE.CylinderGeometry(r, r, hh, seg, 1, true);
+  const g = new THREE.CylinderGeometry(r, r, hh, Math.min(seg, BAND_SEGMENTS_MAX), 1, true);
   g.translate(0, yy, 0);
   return new THREE.Mesh(g, partMaterial(color, ctx));
 }
@@ -277,7 +290,7 @@ function helixRibbon(r: number, y1: number, y0: number, turns: number, hw: numbe
   return g;
 }
 
-export const buildInnerTube: PartBuilder<InnerTube> = (c, tier, ctx) => {
+export const buildInnerTube: PartBuilder<InnerTube> = scopedPart((c, tier, ctx) => {
   const ro = c.outerRadius;
   const L = c.length;
   if (!(ok(c.x) && ok(L) && L > 0 && ok(ro) && ro > 0)) return emptyGroup();
@@ -286,7 +299,7 @@ export const buildInnerTube: PartBuilder<InnerTube> = (c, tier, ctx) => {
   const t = ok(c.thickness) && c.thickness > 0 ? c.thickness : 0;
   const solid = t >= ro;
   const ri = t > 0 && t < ro ? ro - t : 0;
-  const seg = SEGMENTS[tier];
+  const seg = segmentsFor(tier);
   const base = baseColor(c.color, PART_COLORS.tube, tier);
 
   let profile: Prof[];
@@ -326,7 +339,7 @@ export const buildInnerTube: PartBuilder<InnerTube> = (c, tier, ctx) => {
     }
   }
   return finish(g, det);
-};
+});
 
 // ---------------------------------------------------------------------------------
 // rings
@@ -364,7 +377,7 @@ function eyeBolt(c: Ring, tier: PartTier, y1: number, d: number, ro: number, pr:
   return m;
 }
 
-export const buildRing: PartBuilder<Ring> = (c, tier, ctx) => {
+export const buildRing: PartBuilder<Ring> = scopedPart((c, tier, ctx) => {
   const ro = c.outerRadius;
   const L = c.length;
   if (!(ok(c.x) && ok(L) && L > 0 && ok(ro) && ro > 0 && ok(c.innerRadius))) return emptyGroup();
@@ -373,7 +386,7 @@ export const buildRing: PartBuilder<Ring> = (c, tier, ctx) => {
   const y1 = -c.x;
   const y0 = -(c.x + L);
   const ymid = (y0 + y1) / 2;
-  const seg = SEGMENTS[tier];
+  const seg = segmentsFor(tier);
   const base = baseColor(c.color, PART_COLORS.ring, tier);
   const mat = partMaterial(base, ctx);
   const kind = ringKind(c, ri);
@@ -452,19 +465,19 @@ export const buildRing: PartBuilder<Ring> = (c, tier, ctx) => {
     for (let i = 0; i < n; i++) {
       const th = seeded(c.id, 50 + i) * TWO_PI;
       const yy = Math.min(Math.max(y0 + sr + (L - 2 * sr) * seeded(c.id, 70 + i), y0 + sr), y1 - sr);
-      const sg = new THREE.SphereGeometry(sr, 6, 4);
+      const sg = sharedGeometry(ctx, `glue|${sr}`, () => new THREE.SphereGeometry(sr, 6, 4));
       const m = new THREE.Mesh(sg, partMaterial(glue, ctx));
       m.position.set(ro * Math.cos(th), yy, ro * Math.sin(th));
       det.add(m);
     }
   }
   return finish(g, det);
-};
+});
 
 // ---------------------------------------------------------------------------------
 // mass component
 
-export const buildMass: PartBuilder<MassComponent> = (c, tier, ctx) => {
+export const buildMass: PartBuilder<MassComponent> = scopedPart((c, tier, ctx) => {
   if (!(ok(c.x) && ok(c.length) && c.length >= 0 && ok(ctx.maxRadius) && ctx.maxRadius > 0)) return emptyGroup();
   const R = 0.6 * ctx.maxRadius;
   let y1: number;
@@ -478,7 +491,7 @@ export const buildMass: PartBuilder<MassComponent> = (c, tier, ctx) => {
     y0 = -(c.x + c.length);
   }
   const h = y1 - y0;
-  const seg = SEGMENTS[tier];
+  const seg = segmentsFor(tier);
   const base = baseColor(c.color, PART_COLORS.mass, tier);
   const mat = partMaterial(base, ctx);
   const g = new THREE.Group();
@@ -498,10 +511,14 @@ export const buildMass: PartBuilder<MassComponent> = (c, tier, ctx) => {
     // payload / altimeter-sled look: brass retaining band plus four axial guide rails
     det.add(bandMesh(R * 1.012, (y0 + y1) / 2, Math.max(0.2 * h, 1e-9), y0 + ch, y1 - ch, seg, mixColor(base, 0xc9962b, 0.75), ctx));
     const rh = Math.max(h - 2 * ch, 1e-9);
+    // One rail shape, turned a quarter about the axis for each rail.
+    const rg = new THREE.CylinderGeometry(R * 1.012, R * 1.012, rh, 3, 1, true, -0.05, 0.1);
+    rg.translate(0, (y0 + y1) / 2, 0);
+    const railMat = partMaterial(mixColor(base, PART_COLORS.metal, 0.6), ctx);
     for (let i = 0; i < 4; i++) {
-      const rg = new THREE.CylinderGeometry(R * 1.012, R * 1.012, rh, 3, 1, true, (i * Math.PI) / 2 - 0.05, 0.1);
-      rg.translate(0, (y0 + y1) / 2, 0);
-      det.add(new THREE.Mesh(rg, partMaterial(mixColor(base, PART_COLORS.metal, 0.6), ctx)));
+      const rail = new THREE.Mesh(rg, railMat);
+      rail.rotation.y = (i * Math.PI) / 2;
+      det.add(rail);
     }
   } else if (tier === 'ok') {
     g.add(new THREE.Mesh(revolve(sectionProfile(R, 0, y0, y1), seg, { hard: true }), mat));
@@ -516,12 +533,12 @@ export const buildMass: PartBuilder<MassComponent> = (c, tier, ctx) => {
     g.add(new THREE.Mesh(revolve(profile, seg, { radial, flat: true }), mat));
   }
   return finish(g, det);
-};
+});
 
 // ---------------------------------------------------------------------------------
 // packed parachute
 
-export const buildPackedChute: PartBuilder<Parachute> = (c, tier, ctx) => {
+export const buildPackedChute: PartBuilder<Parachute> = scopedPart((c, tier, ctx) => {
   if (!(ok(c.x) && ok(c.length) && c.length >= 0 && ok(ctx.maxRadius) && ctx.maxRadius > 0)) return emptyGroup();
   const R = 0.7 * ctx.maxRadius;
   const y1 = -c.x;
@@ -529,7 +546,7 @@ export const buildPackedChute: PartBuilder<Parachute> = (c, tier, ctx) => {
   if (c.length === 0) y0 = y1 - 0.6 * ctx.maxRadius;
   else y0 = -(c.x + c.length);
   const h = y1 - y0;
-  const seg = SEGMENTS[tier];
+  const seg = segmentsFor(tier);
   const base = baseColor(c.color, PART_COLORS.chute, tier);
   const mat = partMaterial(base, ctx);
   const g = new THREE.Group();
@@ -553,10 +570,14 @@ export const buildPackedChute: PartBuilder<Parachute> = (c, tier, ctx) => {
     );
     // four shroud lines lying along the fold crests between the domes
     const lineColor = mixColor(base, 0xffffff, 0.7);
+    // One line shape, turned a quarter about the axis for each line.
+    const lg = new THREE.CylinderGeometry(R * 1.012, R * 1.012, Math.max(h - 2 * a, 1e-9), 3, 1, true, -0.03, 0.06);
+    lg.translate(0, (y0 + y1) / 2, 0);
+    const lineMat = partMaterial(lineColor, ctx);
     for (let i = 0; i < 4; i++) {
-      const lg = new THREE.CylinderGeometry(R * 1.012, R * 1.012, Math.max(h - 2 * a, 1e-9), 3, 1, true, (i * Math.PI) / 2 - 0.03, 0.06);
-      lg.translate(0, (y0 + y1) / 2, 0);
-      det.add(new THREE.Mesh(lg, partMaterial(lineColor, ctx)));
+      const line = new THREE.Mesh(lg, lineMat);
+      line.rotation.y = (i * Math.PI) / 2;
+      det.add(line);
     }
   } else if (tier === 'ok') {
     g.add(new THREE.Mesh(revolve(capsuleProfile(R, y1, y0, a, 5), seg), mat));
@@ -590,7 +611,7 @@ export const buildPackedChute: PartBuilder<Parachute> = (c, tier, ctx) => {
     g.add(new THREE.Mesh(flat, mat));
   }
   return finish(g, det);
-};
+});
 
 // ---------------------------------------------------------------------------------
 // icons

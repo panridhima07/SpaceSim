@@ -2,6 +2,7 @@
 // the page with a sign-in / sign-up / confirm-email card. The app itself is loaded afterwards
 // (see src/app/boot.ts and src/landing/boot.ts).
 
+import '../app/motion.css';
 import './auth.css';
 import type { Session } from '@supabase/supabase-js';
 import {
@@ -91,6 +92,9 @@ const GLYPHS: Record<string, string> = {
   // A ring around a dot.
   starlink:
     '<circle cx="16" cy="16" r="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="16" cy="16" r="10" fill="none" stroke="currentColor" stroke-width="1.6"/>',
+  // A radar sweep: a circle with one line from the centre.
+  'eos-09':
+    '<circle cx="16" cy="16" r="11" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M16 16L24 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="16" cy="16" r="1.8" fill="currentColor"/>',
 };
 
 interface CaptionDef {
@@ -106,7 +110,7 @@ const CAPTIONS: CaptionDef[] = [
   { a: 0.07, b: 0.24, kicker: '01 · The Milky Way', heading: '100,000 light-years across', line: 'Somewhere in one of its spiral arms is a small yellow star.' },
   { a: 0.28, b: 0.44, kicker: '02 · The neighbourhood', heading: 'The nearest stars', line: 'Alpha Centauri is 4.4 light-years away. Sirius, the brightest star in our sky, is 8.6.' },
   { a: 0.5, b: 0.66, kicker: '03 · The solar system', heading: 'One star, eight planets', line: 'The third one out has oceans, and people who build rockets.' },
-  { a: 0.7, b: 0.82, kicker: '04 · Earth', heading: 'Home', line: 'More than 10,000 working satellites circle it. Three flights are waiting below.' },
+  { a: 0.7, b: 0.82, kicker: '04 · Earth', heading: 'Home', line: 'More than 10,000 working satellites circle it. Four flights are waiting below.' },
 ];
 
 const RAIL: Array<{ label: string; p: number }> = [
@@ -308,7 +312,7 @@ function mountShell(
     list.append(btn);
   }
   slot.append(list);
-  missions.append(el('p', 'auth-kicker auth-missions-kicker', 'Three real flights · open without an account'), slot);
+  missions.append(el('p', 'auth-kicker auth-missions-kicker', 'Four real flights · open without an account'), slot);
 
   page.append(buildPitch(), missions, card);
   root.append(journey.el, hud, track, page);
@@ -566,7 +570,15 @@ function mountAccountChip(session: Session): void {
     await signOut().catch(() => {});
     window.location.reload();
   });
-  menu.append(el('span', 'auth-chip-email', address), out);
+  // Reopens the data-consent popup (src/cloud/session.ts listens for this).
+  const privacy = el('button', 'auth-btn', 'Data & privacy');
+  privacy.type = 'button';
+  privacy.addEventListener('click', () => {
+    menu.hidden = true;
+    toggle.setAttribute('aria-expanded', 'false');
+    window.dispatchEvent(new Event('astra-open-consent'));
+  });
+  menu.append(el('span', 'auth-chip-email', address), privacy, out);
   toggle.addEventListener('click', () => {
     menu.hidden = !menu.hidden;
     toggle.setAttribute('aria-expanded', String(!menu.hidden));

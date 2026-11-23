@@ -26,6 +26,13 @@ export interface AdaptiveOptions {
   hInit?: number;
   hMin?: number;
   hMax?: number;
+  /**
+   * First-same-as-last: the derivative at the end of an accepted step is kept and used as
+   * the first stage of the next one, saving one evaluation in seven. Turn it on only when
+   * the right-hand side is the same function of (t, y) from one step to the next; call
+   * `invalidate()` after changing anything it depends on. Default off.
+   */
+  fsal?: boolean;
 }
 
 /**
@@ -39,6 +46,10 @@ export class Dopri5 {
   private readonly atol: number;
   private readonly hMin: number;
   private readonly hMax: number;
+  private readonly fsal: boolean;
+  private endT = NaN;
+  private endY: number[] | null = null;
+  private endK: number[] | null = null;
 
   constructor(f: Deriv, opts: AdaptiveOptions = {}) {
     this.f = f;
@@ -47,6 +58,13 @@ export class Dopri5 {
     this.h = opts.hInit ?? 1;
     this.hMin = opts.hMin ?? 1e-6;
     this.hMax = opts.hMax ?? Infinity;
+    this.fsal = opts.fsal ?? false;
+  }
+
+  /** Forget the derivative kept from the last step (see `fsal`). */
+  invalidate(): void {
+    this.endY = null;
+    this.endK = null;
   }
 
   /** Take one accepted step from (t, y), never passing tEnd. Works forward or backward in time. */
@@ -55,7 +73,8 @@ export class Dopri5 {
     const n = y.length;
     const f = this.f;
     let h = Math.min(Math.abs(this.h), this.hMax);
-    const k1 = f(t, y);
+    // Reuse the last stage of the previous step when this one starts exactly where it ended.
+    const k1 = this.endK !== null && y === this.endY && t === this.endT ? this.endK : f(t, y);
     const tmp = new Array<number>(n);
     for (let attempt = 0; attempt < 60; attempt++) {
       const remaining = Math.abs(tEnd - t);
@@ -100,7 +119,13 @@ export class Dopri5 {
         const grow = err > 0 ? Math.min(5, 0.9 * Math.pow(err, -0.2)) : 5;
         // Do not let a short final step shrink the remembered step size.
         if (!last || grow < 1) this.h = Math.min(this.hMax, Math.max(this.hMin, hUsed * grow));
-        return { t: last ? tEnd : t + hs, y: yn };
+        const tn = last ? tEnd : t + hs;
+        if (this.fsal) {
+          this.endT = tn;
+          this.endY = yn;
+          this.endK = k7;
+        }
+        return { t: tn, y: yn };
       }
       h = Math.max(this.hMin, hUsed * Math.max(0.2, 0.9 * Math.pow(err, -0.2)));
     }
@@ -117,7 +142,8 @@ export function integrateAdaptive(
   opts: AdaptiveOptions = {},
   onStep?: (t: number, y: number[]) => boolean | void,
 ): { t: number; y: number[]; steps: number } {
-  const solver = new Dopri5(f, opts);
+  // One fixed right-hand side for the whole call, so the last stage can always be reused.
+  const solver = new Dopri5(f, { ...opts, fsal: true });
   let t = t0;
   let y = y0;
   let steps = 0;

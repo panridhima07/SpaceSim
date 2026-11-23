@@ -42,6 +42,7 @@ import {
   scale,
   sub,
 } from './vec';
+import { makeWindInto, siteAtmosphere } from './wind';
 
 const MAX_SUBSTEP = 0.002; // s, while in atmosphere or thrusting
 const COAST_SUBSTEP = 0.1; // s, above HIGH_ALTITUDE and not thrusting
@@ -73,6 +74,8 @@ interface Eval {
   q: number;
   altitude: number;
   speed: number;
+  /** Speed relative to the air. */
+  airspeed: number;
 }
 
 interface Kin {
@@ -94,7 +97,24 @@ function clamp(x: number, lo: number, hi: number): number {
 }
 
 function isFiniteVec(v: readonly number[]): boolean {
-  return v.every((x) => Number.isFinite(x));
+  for (let i = 0; i < v.length; i++) if (!Number.isFinite(v[i])) return false;
+  return true;
+}
+
+/** quatRotate(q, v) written to out: v + w(2 u x v) + u x (2 u x v), same operation order as vec.ts. */
+function rotate(qx: number, qy: number, qz: number, qw: number, vx: number, vy: number, vz: number, out: Vec3): void {
+  const c0 = qy * vz - qz * vy;
+  const c1 = qz * vx - qx * vz;
+  const c2 = qx * vy - qy * vx;
+  const t0 = c0 * 2;
+  const t1 = c1 * 2;
+  const t2 = c2 * 2;
+  const d0 = qy * t2 - qz * t1;
+  const d1 = qz * t0 - qx * t2;
+  const d2 = qx * t1 - qy * t0;
+  out[0] = vx + qw * t0 + d0;
+  out[1] = vy + qw * t1 + d1;
+  out[2] = vz + qw * t2 + d2;
 }
 
 function rk4(x0: Vec3, k1: Vec3, k2: Vec3, k3: Vec3, k4: Vec3, h: number): Vec3 {
@@ -205,20 +225,50 @@ export function createSim(
     chuteDeployed: false,
   };
 
-  function windAt(altitude: number, t: number): Vec3 {
-    if (altitude <= 0 || config.windSpeed === 0) return [0, 0, 0];
-    const gust = 1 + config.gust * Math.sin(1.7 * t) * Math.sin(0.31 * t + 1);
-    const profile = clamp(Math.pow(altitude / 10, 0.14), 0, 2);
-    const s = config.windSpeed * gust * profile;
-    // Wind blows FROM the compass direction, so the air moves toward its opposite.
-    return [-Math.sin(config.windDirection) * s, 0, Math.cos(config.windDirection) * s];
+  const windInto = makeWindInto(config);
+  // Standard air, shifted to the temperature and pressure measured at the pad when given.
+  const airAt = siteAtmosphere(deps.atmosphere, config);
+
+  // Scratch vectors for evaluateInto. The function never re-enters itself, so one set is enough.
+  const sW: Vec3 = [0, 0, 0]; // air velocity
+  const sA: Vec3 = [0, 0, 0]; // nose direction, world
+  const sO: Vec3 = [0, 0, 0]; // rotated angular velocity / body torque
+  const sT: Vec3 = [0, 0, 0]; // thrust direction, world
+
+  function makeEval(): Eval {
+    return {
+      acc: [0, 0, 0],
+      omegaDot: [0, 0, 0],
+      mass: 0,
+      cgX: 0,
+      cpX: 0,
+      refLength: 0,
+      thrust: 0,
+      drag: 0,
+      accelG: 0,
+      mach: 0,
+      alpha: 0,
+      q: 0,
+      altitude: 0,
+      speed: 0,
+      airspeed: 0,
+    };
   }
 
   /** Forces and torques at a given kinematic state. Does not apply rail or pad constraints. */
   function evaluate(pos: Vec3, vel: Vec3, omega: Vec3, quat: Quat, t: number): Eval {
-    const r = len(pos);
+    return evaluateInto(makeEval(), pos, vel, omega, quat, t);
+  }
+
+  // Same arithmetic, in the same order, as the vector-helper form (add/sub/scale/cross/quatRotate),
+  // written out per component so no temporary arrays are allocated.
+  function evaluateInto(o: Eval, pos: Vec3, vel: Vec3, omega: Vec3, quat: Quat, t: number): Eval {
+    const px = pos[0];
+    const py = pos[1];
+    const pz = pos[2];
+    const r = Math.sqrt(px * px + py * py + pz * pz);
     const altitude = r - R_EARTH - config.launchAltitude;
-    const atm = deps.atmosphere(r - R_EARTH);
+    const atm = airAt(r - R_EARTH);
     const tBurn = ignited ? t - tIgnition : -1;
     let mp: MassProps = deps.massProps(activeRocket, activeMotor, tBurn);
     if (isMultiStage && stageMotors) {
@@ -240,115 +290,230 @@ export function createSim(
       activeMotor && ignited && tBurn < activeMotor.burnTime ? deps.thrust(activeMotor, tBurn) : 0;
     const mass = mp.mass;
 
-    const gravity = scale(pos, -MU_EARTH / (r * r * r));
-    const vRel = sub(vel, windAt(altitude, t));
-    const v = len(vRel);
-    const a = quatRotate(quat, [0, 1, 0]); // nose direction, world
+    const gk = -MU_EARTH / (r * r * r);
+    const gx = px * gk;
+    const gy = py * gk;
+    const gz = pz * gk;
+    windInto(sW, altitude, t);
+    const vrx = vel[0] - sW[0];
+    const vry = vel[1] - sW[1];
+    const vrz = vel[2] - sW[2];
+    const v = Math.sqrt(vrx * vrx + vry * vry + vrz * vrz);
+    const qx = quat[0];
+    const qy = quat[1];
+    const qz = quat[2];
+    const qw = quat[3];
+    rotate(qx, qy, qz, qw, 0, 1, 0, sA); // nose direction, world
+    const ax = sA[0];
+    const ay = sA[1];
+    const az = sA[2];
     const mach = atm.soundSpeed > 0 ? v / atm.soundSpeed : 0;
     const q = 0.5 * atm.rho * v * v;
     const aero: AeroProps = deps.aeroProps(activeRocket, mach, mp.cgX);
-    const alpha = v < 0.1 ? 0 : Math.acos(clamp(dot(vRel, a) / v, -1, 1));
+    const vDotA = vrx * ax + vry * ay + vrz * az;
+    const alpha = v < 0.1 ? 0 : Math.acos(clamp(vDotA / v, -1, 1));
 
-    let force: Vec3 = [0, 0, 0];
-    let torque: Vec3 = [0, 0, 0];
+    let fx = 0;
+    let fy = 0;
+    let fz = 0;
+    let tx = 0;
+    let ty = 0;
+    let tz = 0;
     let drag: number;
 
-    const chuteCdA = chutes.reduce(
-      (sum, c) => {
-        if (c.deployedAt === undefined) return sum;
-        const dtOpen = Math.max(0, t - c.deployedAt);
-        const u = clamp(dtOpen / CHUTE_INFLATE_TIME, 0, 1);
-        // Smooth S-curve canopy inflation (0.05 initial line stretch -> 1.0 full canopy)
-        const inflate = 0.05 + 0.95 * (u * u * (3 - 2 * u));
-        return sum + Math.PI * (c.chute.diameter / 2) ** 2 * c.chute.cd * inflate;
-      },
-      0,
-    );
+    let chuteCdA = 0;
+    for (let i = 0; i < chutes.length; i++) {
+      const c = chutes[i];
+      if (c.deployedAt === undefined) continue;
+      const dtOpen = Math.max(0, t - c.deployedAt);
+      const u = clamp(dtOpen / CHUTE_INFLATE_TIME, 0, 1);
+      // Smooth S-curve canopy inflation (0.05 initial line stretch -> 1.0 full canopy)
+      const inflate = 0.05 + 0.95 * (u * u * (3 - 2 * u));
+      chuteCdA = chuteCdA + Math.PI * (c.chute.diameter / 2) ** 2 * c.chute.cd * inflate;
+    }
 
     if (chuteCdA > 0) {
       // Canopy drag acts along the air-relative wind; body aerodynamics add residual damping
       // and right the rocket under the suspension lines during landing descent.
-      const chuteForce = scale(vRel, -0.5 * atm.rho * v * chuteCdA);
+      const cs = -0.5 * atm.rho * v * chuteCdA;
+      const cfx = vrx * cs;
+      const cfy = vry * cs;
+      const cfz = vrz * cs;
       const bodyDrag = q * aero.refArea * aero.cd;
-      const bodyForce: Vec3 = v > 0 ? scale(vRel, -bodyDrag / v) : [0, 0, 0];
-      force = add(chuteForce, bodyForce);
-      drag = len(force);
+      let bfx = 0;
+      let bfy = 0;
+      let bfz = 0;
+      if (v > 0) {
+        const bs = -bodyDrag / v;
+        bfx = vrx * bs;
+        bfy = vry * bs;
+        bfz = vrz * bs;
+      }
+      fx = cfx + bfx;
+      fy = cfy + bfy;
+      fz = cfz + bfz;
+      drag = Math.sqrt(fx * fx + fy * fy + fz * fz);
 
       // Suspension lines attach fore of CG, pulling the rocket upright against the drag vector,
       // while rotational drag damps out post-deployment pendulum and tumble rates.
       const attachOffset = Math.max(0.02, mp.cgX * 0.4);
-      const pendTorque = cross(scale(a, attachOffset), chuteForce);
-      const dampTorque = scale(quatRotate(quat, omega), -CHUTE_DAMPING_RATE * mp.iPitch);
-      torque = add(pendTorque, dampTorque);
+      const lx = ax * attachOffset;
+      const ly = ay * attachOffset;
+      const lz = az * attachOffset;
+      const pendX = ly * cfz - lz * cfy;
+      const pendY = lz * cfx - lx * cfz;
+      const pendZ = lx * cfy - ly * cfx;
+      rotate(qx, qy, qz, qw, omega[0], omega[1], omega[2], sO);
+      const ds = -CHUTE_DAMPING_RATE * mp.iPitch;
+      tx = pendX + sO[0] * ds;
+      ty = pendY + sO[1] * ds;
+      tz = pendZ + sO[2] * ds;
     } else {
       drag = q * aero.refArea * aero.cd;
-      if (v > 0) force = scale(vRel, -drag / v);
+      if (v > 0) {
+        const ds = -drag / v;
+        fx = vrx * ds;
+        fy = vry * ds;
+        fz = vrz * ds;
+      }
 
       // Normal force opposes the lateral part of the relative wind.
-      const lateral = sub(vRel, scale(a, dot(vRel, a)));
-      const nDir = normalize(scale(lateral, -1));
-      const planform = 2 * rocket.maxRadius * rocket.length;
+      const latX = vrx - ax * vDotA;
+      const latY = vry - ay * vDotA;
+      const latZ = vrz - az * vDotA;
+      const nx = latX * -1;
+      const ny = latY * -1;
+      const nz = latZ * -1;
+      const nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      let ndx = 0;
+      let ndy = 0;
+      let ndz = 0;
+      if (nl > 0) {
+        const inv = 1 / nl;
+        ndx = nx * inv;
+        ndy = ny * inv;
+        ndz = nz * inv;
+      }
       const sa = Math.sin(alpha);
-      const bodyLift = 1.1 * (planform / aero.refArea) * sa * sa;
-      const fn = scale(nDir, q * aero.refArea * (aero.cnAlpha * sa + bodyLift));
-      force = add(force, fn);
-      // Lever arm from CG to CP: CP aft of CG (cpX > cgX) gives a restoring torque.
-      torque = add(torque, cross(scale(a, mp.cgX - aero.cpX), fn));
+      const bodyLiftK = aero.bodyLift ?? (1.1 * (2 * rocket.maxRadius * rocket.length)) / aero.refArea;
+      const finNoseS = q * aero.refArea * aero.cnAlpha * sa;
+      const bodyS = q * aero.refArea * bodyLiftK * sa * sa;
+      const fnS = finNoseS + bodyS;
+      const fnx = ndx * fnS;
+      const fny = ndy * fnS;
+      const fnz = ndz * fnS;
+      fx = fx + fnx;
+      fy = fy + fny;
+      fz = fz + fnz;
+      // Torque about the CG. Barrowman lift acts at the CP and body lift at the body planform
+      // centroid; a station aft of the CG gives a restoring torque. The force direction is
+      // shared, so the two parts combine into one lever arm weighted by their size.
+      const bodyX = aero.bodyLiftX ?? aero.cpX;
+      const lev = fnS !== 0 ? mp.cgX - (finNoseS * aero.cpX + bodyS * bodyX) / fnS : mp.cgX - aero.cpX;
+      const lx = ax * lev;
+      const ly = ay * lev;
+      const lz = az * lev;
+      tx = tx + (ly * fnz - lz * fny);
+      ty = ty + (lz * fnx - lx * fnz);
+      tz = tz + (lx * fny - ly * fnx);
 
       // Pitch damping from the transverse part of the angular velocity.
-      const omegaW = quatRotate(quat, omega);
-      const omegaT = sub(omegaW, scale(a, dot(omegaW, a)));
-      torque = add(torque, scale(omegaT, -0.5 * atm.rho * v * aero.refArea * aero.dampSum));
+      rotate(qx, qy, qz, qw, omega[0], omega[1], omega[2], sO);
+      const owx = sO[0];
+      const owy = sO[1];
+      const owz = sO[2];
+      const owDotA = owx * ax + owy * ay + owz * az;
+      const otx = owx - ax * owDotA;
+      const oty = owy - ay * owDotA;
+      const otz = owz - az * owDotA;
+      const dk = -0.5 * atm.rho * v * aero.refArea * aero.dampSum;
+      tx = tx + otx * dk;
+      ty = ty + oty * dk;
+      tz = tz + otz * dk;
     }
 
     if (thrust > 0) {
       // Small-angle gimbal: rotate the nose direction about body X (pitch) then body Z (yaw).
       const p = controls.gimbalPitch;
       const y = controls.gimbalYaw;
-      const dirBody: Vec3 = [-Math.cos(p) * Math.sin(y), Math.cos(p) * Math.cos(y), Math.sin(p)];
-      const ft = scale(quatRotate(quat, dirBody), thrust);
-      force = add(force, ft);
+      rotate(qx, qy, qz, qw, -Math.cos(p) * Math.sin(y), Math.cos(p) * Math.cos(y), Math.sin(p), sT);
+      const ftx = sT[0] * thrust;
+      const fty = sT[1] * thrust;
+      const ftz = sT[2] * thrust;
+      fx = fx + ftx;
+      fy = fy + fty;
+      fz = fz + ftz;
       // Nozzle sits (length - cgX) aft of the CG.
-      torque = add(torque, cross(scale(a, -(rocket.length - mp.cgX)), ft));
+      const nozzle = -(rocket.length - mp.cgX);
+      const lx = ax * nozzle;
+      const ly = ay * nozzle;
+      const lz = az * nozzle;
+      tx = tx + (ly * ftz - lz * fty);
+      ty = ty + (lz * ftx - lx * ftz);
+      tz = tz + (lx * fty - ly * ftx);
     }
 
-    const acc = add(gravity, scale(force, 1 / mass));
-    const tauBody = quatRotate(quatConj(quat), torque);
+    const invMass = 1 / mass;
+    const acc = o.acc;
+    acc[0] = gx + fx * invMass;
+    acc[1] = gy + fy * invMass;
+    acc[2] = gz + fz * invMass;
+    // Torque to the body frame: rotate by the conjugate quaternion.
+    rotate(-qx, -qy, -qz, qw, tx, ty, tz, sO);
     const iP = mp.iPitch;
     const iR = mp.iRoll;
-    const iw: Vec3 = [iP * omega[0], iR * omega[1], iP * omega[2]];
-    const gyro = cross(omega, iw);
-    const omegaDot: Vec3 = [
-      (tauBody[0] - gyro[0]) / iP,
-      (tauBody[1] - gyro[1]) / iR,
-      (tauBody[2] - gyro[2]) / iP,
-    ];
+    const o0 = omega[0];
+    const o1 = omega[1];
+    const o2 = omega[2];
+    const iw0 = iP * o0;
+    const iw1 = iR * o1;
+    const iw2 = iP * o2;
+    const g0 = o1 * iw2 - o2 * iw1;
+    const g1 = o2 * iw0 - o0 * iw2;
+    const g2 = o0 * iw1 - o1 * iw0;
+    const od = o.omegaDot;
+    od[0] = (sO[0] - g0) / iP;
+    od[1] = (sO[1] - g1) / iR;
+    od[2] = (sO[2] - g2) / iP;
 
-    return {
-      acc,
-      omegaDot,
-      mass,
-      cgX: mp.cgX,
-      cpX: aero.cpX,
-      refLength: aero.refLength,
-      thrust,
-      drag,
-      accelG: len(force) / (mass * G0),
-      mach,
-      alpha,
-      q,
-      altitude,
-      speed: len(vel),
-    };
+    o.mass = mass;
+    o.cgX = mp.cgX;
+    o.cpX = aero.cpX;
+    o.refLength = aero.refLength;
+    o.thrust = thrust;
+    o.drag = drag;
+    o.accelG = Math.sqrt(fx * fx + fy * fy + fz * fz) / (mass * G0);
+    o.mach = mach;
+    o.alpha = alpha;
+    o.q = q;
+    o.altitude = altitude;
+    o.speed = len(vel);
+    o.airspeed = v;
+    return o;
   }
 
   function evalFinite(e: Eval): boolean {
+    const a = e.acc;
+    const w = e.omegaDot;
     return (
-      isFiniteVec(e.acc) &&
-      isFiniteVec(e.omegaDot) &&
-      [e.mass, e.cgX, e.cpX, e.refLength, e.thrust, e.drag, e.accelG, e.mach, e.alpha, e.q, e.altitude, e.speed].every(
-        (x) => Number.isFinite(x),
-      )
+      Number.isFinite(a[0]) &&
+      Number.isFinite(a[1]) &&
+      Number.isFinite(a[2]) &&
+      Number.isFinite(w[0]) &&
+      Number.isFinite(w[1]) &&
+      Number.isFinite(w[2]) &&
+      Number.isFinite(e.mass) &&
+      Number.isFinite(e.cgX) &&
+      Number.isFinite(e.cpX) &&
+      Number.isFinite(e.refLength) &&
+      Number.isFinite(e.thrust) &&
+      Number.isFinite(e.drag) &&
+      Number.isFinite(e.accelG) &&
+      Number.isFinite(e.mach) &&
+      Number.isFinite(e.alpha) &&
+      Number.isFinite(e.q) &&
+      Number.isFinite(e.altitude) &&
+      Number.isFinite(e.speed)
     );
   }
 
@@ -380,9 +545,54 @@ export function createSim(
     return { s, v };
   }
 
-  function freeDeriv(pos: Vec3, vel: Vec3, omega: Vec3, quat: Quat, t: number) {
-    const e = evaluate(pos, vel, omega, quat, t);
-    return { p: vel, v: e.acc, w: e.omegaDot };
+  // RK4 scratch: one Eval per stage (its acc / omegaDot are that stage's k.v / k.w) and the
+  // stage input vectors. Stage k.p is the velocity fed to that stage, so those must persist
+  // until the final combination.
+  let K1 = makeEval();
+  const K2 = makeEval();
+  const K3 = makeEval();
+  const K4 = makeEval();
+  const P2: Vec3 = [0, 0, 0];
+  const V2: Vec3 = [0, 0, 0];
+  const W2: Vec3 = [0, 0, 0];
+  const P3: Vec3 = [0, 0, 0];
+  const V3: Vec3 = [0, 0, 0];
+  const W3: Vec3 = [0, 0, 0];
+  const P4: Vec3 = [0, 0, 0];
+  const V4: Vec3 = [0, 0, 0];
+  const W4: Vec3 = [0, 0, 0];
+  let evalMain = makeEval();
+
+  // evalMain holds the evaluation of the committed state. The next step's first RK4 stage
+  // evaluates exactly that state again, so it is reused unless something evaluate() reads from
+  // the closure changed in between (epoch), the state arrays were replaced, or the controls moved.
+  let epoch = 0;
+  let evalEpoch = -1;
+  let evalT = NaN;
+  let evalPos: Vec3 | undefined;
+  let evalVel: Vec3 | undefined;
+  let evalOmega: Vec3 | undefined;
+  let evalQuat: Quat | undefined;
+  let evalPitch = NaN;
+  let evalYaw = NaN;
+
+  function stage(
+    P: Vec3,
+    V: Vec3,
+    W: Vec3,
+    p0: Vec3,
+    v0: Vec3,
+    w0: Vec3,
+    kp: Vec3,
+    kv: Vec3,
+    kw: Vec3,
+    s: number,
+  ): void {
+    for (let i = 0; i < 3; i++) {
+      P[i] = p0[i] + kp[i] * s;
+      V[i] = v0[i] + kv[i] * s;
+      W[i] = w0[i] + kw[i] * s;
+    }
   }
 
   function integrateFree(h: number, t0: number): Kin {
@@ -390,31 +600,32 @@ export function createSim(
     const v0 = state.vel;
     const w0 = state.omega;
     const q0 = state.quat;
-    const k1 = freeDeriv(p0, v0, w0, q0, t0);
-    const k2 = freeDeriv(
-      add(p0, scale(k1.p, h / 2)),
-      add(v0, scale(k1.v, h / 2)),
-      add(w0, scale(k1.w, h / 2)),
-      q0,
-      t0 + h / 2,
-    );
-    const k3 = freeDeriv(
-      add(p0, scale(k2.p, h / 2)),
-      add(v0, scale(k2.v, h / 2)),
-      add(w0, scale(k2.w, h / 2)),
-      q0,
-      t0 + h / 2,
-    );
-    const k4 = freeDeriv(
-      add(p0, scale(k3.p, h)),
-      add(v0, scale(k3.v, h)),
-      add(w0, scale(k3.w, h)),
-      q0,
-      t0 + h,
-    );
-    const pos = rk4(p0, k1.p, k2.p, k3.p, k4.p, h);
-    const vel = rk4(v0, k1.v, k2.v, k3.v, k4.v, h);
-    const omega = rk4(w0, k1.w, k2.w, k3.w, k4.w, h);
+    if (
+      evalEpoch === epoch &&
+      evalT === t0 &&
+      evalPos === p0 &&
+      evalVel === v0 &&
+      evalOmega === w0 &&
+      evalQuat === q0 &&
+      evalPitch === controls.gimbalPitch &&
+      evalYaw === controls.gimbalYaw
+    ) {
+      const reuse = evalMain;
+      evalMain = K1;
+      K1 = reuse;
+    } else {
+      evaluateInto(K1, p0, v0, w0, q0, t0);
+    }
+    evalEpoch = -1;
+    stage(P2, V2, W2, p0, v0, w0, v0, K1.acc, K1.omegaDot, h / 2);
+    evaluateInto(K2, P2, V2, W2, q0, t0 + h / 2);
+    stage(P3, V3, W3, p0, v0, w0, V2, K2.acc, K2.omegaDot, h / 2);
+    evaluateInto(K3, P3, V3, W3, q0, t0 + h / 2);
+    stage(P4, V4, W4, p0, v0, w0, V3, K3.acc, K3.omegaDot, h);
+    evaluateInto(K4, P4, V4, W4, q0, t0 + h);
+    const pos = rk4(p0, v0, V2, V3, V4, h);
+    const vel = rk4(v0, K1.acc, K2.acc, K3.acc, K4.acc, h);
+    const omega = rk4(w0, K1.omegaDot, K2.omegaDot, K3.omegaDot, K4.omegaDot, h);
     // Orientation advances with the trapezoidal mean body rate, then renormalises.
     const quat = quatIntegrate(q0, scale(add(w0, omega), 0.5), h);
     return { pos, vel, omega, quat };
@@ -424,6 +635,7 @@ export function createSim(
     state.mass = e.mass;
     state.altitude = e.altitude;
     state.speed = e.speed;
+    state.airspeed = e.airspeed;
     state.mach = e.mach;
     state.alpha = e.alpha;
     state.dynamicPressure = e.q;
@@ -522,6 +734,7 @@ export function createSim(
     const tBurn = ignited ? t - tIgnition : -1;
 
     if (nextStageIgnitionT !== undefined && t >= nextStageIgnitionT && stageMotors) {
+      epoch++;
       activeMotor = stageMotors[firingStageIdx].motor;
       tIgnition = t;
       nextStageIgnitionT = undefined;
@@ -550,6 +763,7 @@ export function createSim(
           const x1 = Math.max(...sb.components.map((c) => c.x + c.length));
           return (x0 + x1) / 2 <= newLen;
         });
+        epoch++;
         activeRocket = { ...activeRocket, components: kept, length: newLen, maxRadius: newMaxR, sideBodies: keptSide };
         const keptSet = new Set<Component>(kept);
         for (let ci = chutes.length - 1; ci >= 0; ci--) {
@@ -602,6 +816,7 @@ export function createSim(
       }
       if (trigger !== undefined && t >= trigger + (c.deployDelay || 0)) {
         const first = !state.chuteDeployed;
+        epoch++;
         run.deployedAt = t;
         state.chuteDeployed = true;
         if (first) {
@@ -664,12 +879,12 @@ export function createSim(
     }
 
     // Check the candidate before committing so a NaN never reaches the state or log.
-    const e = evaluate(cand.pos, cand.vel, cand.omega, cand.quat, t1);
+    const e = evaluateInto(evalMain, cand.pos, cand.vel, cand.omega, cand.quat, t1);
     if (
       !isFiniteVec(cand.pos) ||
       !isFiniteVec(cand.vel) ||
       !isFiniteVec(cand.omega) ||
-      !cand.quat.every((x) => Number.isFinite(x)) ||
+      !isFiniteVec(cand.quat) ||
       !evalFinite(e)
     ) {
       diverge();
@@ -685,6 +900,14 @@ export function createSim(
     state.vel = cand.vel;
     state.omega = cand.omega;
     state.quat = cand.quat;
+    evalEpoch = epoch;
+    evalT = t1;
+    evalPos = cand.pos;
+    evalVel = cand.vel;
+    evalOmega = cand.omega;
+    evalQuat = cand.quat;
+    evalPitch = controls.gimbalPitch;
+    evalYaw = controls.gimbalYaw;
     applyDerived(e);
     transitions(e);
     tickLog();
@@ -696,6 +919,7 @@ export function createSim(
 
   function ignite(): void {
     if (!motor || ignited || isDone) return;
+    epoch++;
     ignited = true;
     tIgnition = state.t;
     emit('ignition', `Ignition: ${motor.manufacturer} ${motor.designation}`);

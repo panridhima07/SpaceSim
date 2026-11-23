@@ -1,5 +1,5 @@
-// Mission definitions for the app. Every number here is copied from
-// rocket-physics/examples/lvm3-gto.ts.
+// Mission definitions for the app. The LVM3 numbers are copied from
+// rocket-physics/examples/lvm3-gto.ts; the other missions live in ./missions, one file each.
 
 import type { ReferenceEvent } from './adapter';
 import {
@@ -12,11 +12,30 @@ import {
   type SimConfig,
   type VehicleSpec,
 } from './engine';
+import { EOS09_MISSION } from './missions/eos09';
+import { STARLINK_MISSION } from './missions/starlink';
 
 export interface FailureCase {
   id: string;
   failures: Failure[];
   note: string;
+}
+
+/** What the launcher carries and how it lets go of it once in orbit. */
+export interface MissionPayload {
+  label: string;
+  /** Seconds between engine cutoff in orbit and separation. */
+  deployAfter: number;
+  /** Speed the separation springs give the payload relative to the stage, m/s. */
+  springSpeed: number;
+  /** Seconds the flight is followed after separation. */
+  watch: number;
+  /** How it is drawn: one spacecraft, or a flat stack of `count` satellites. */
+  look: 'spacecraft' | 'satellite' | 'stack';
+  count?: number;
+  /** Real-flight separation time, seconds after liftoff, if published. */
+  realDeployT?: number;
+  note?: string;
 }
 
 export interface MissionDef {
@@ -26,6 +45,7 @@ export interface MissionDef {
   vehicle: () => VehicleSpec;
   faults?: () => FaultSpec;
   failureCases?: FailureCase[];
+  payload?: MissionPayload;
   config: SimConfig;
   ascent: AscentOptions;
   tMax: number;                         // s, safety limit
@@ -72,8 +92,19 @@ export const MISSIONS: MissionDef[] = [
         note: 'The hydrogen tank leaks 2 kg/s.',
       },
     ],
+    payload: {
+      label: 'Chandrayaan-3',
+      deployAfter: 15,
+      springSpeed: 0.5, // assumed; typical for a spring separation system
+      watch: 60,
+      look: 'spacecraft',
+      realDeployT: 969.42,
+      note: 'Propulsion module and lander, 3,900 kg together.',
+    },
     config: { site: SITES.sriharikota, epoch: new Date('2023-07-14T09:05:17Z') },
-    ascent: { target: { perigeeAltitude: 170e3, apogeeAltitude: 36500e3 }, pitchKickDeg: 8 },
+    // 21.3 degrees on the south-east azimuth, as flown. This is what points the transfer orbit's
+    // far end at where the Moon is on 5 August 2023; src/lunar/cruise.ts depends on it.
+    ascent: { target: { perigeeAltitude: 170e3, apogeeAltitude: 36500e3, inclinationDeg: 21.3, southward: true }, pitchKickDeg: 8 },
     tMax: 3000,
     reference: [
       { label: 'L110 ignition', pattern: /L110 core ignition/, t: 108.1 },
@@ -85,6 +116,8 @@ export const MISSIONS: MissionDef[] = [
     ],
     referenceSource: 'Published LVM3-M4 flight events, as listed in rocket-physics/examples/lvm3-gto.ts',
   },
+  STARLINK_MISSION,
+  EOS09_MISSION,
 ];
 
 export function getMission(id: string): MissionDef | undefined {

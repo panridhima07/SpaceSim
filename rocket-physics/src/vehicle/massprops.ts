@@ -2,7 +2,7 @@
 // stages fall away. The vehicle is treated as axisymmetric, so the inertia tensor is
 // diagonal in body axes (X along the vehicle toward the nose).
 
-import { boosterCount, tankOffsets, type StageSpec, type VehicleRuntime, type VehicleSpec } from './types.ts';
+import { boosterCount, tankOffsets, type VehicleRuntime, type VehicleSpec } from './types.ts';
 import type { Vec3 } from '../math/vec.ts';
 
 export interface MassProps {
@@ -17,15 +17,6 @@ export interface MassProps {
   top: number;
   /** Station of each stage's base (engine gimbal plane); NaN when detached. */
   stageBase: number[];
-}
-
-interface Item {
-  m: number; // mass of one copy
-  x: number; // station of its CG
-  ia: number; // own axial inertia
-  it: number; // own transverse inertia
-  n: number; // copies arranged symmetrically
-  d: number; // radial offset of each copy
 }
 
 /** Station of each attached stage's base and the top of the stack. */
@@ -51,91 +42,224 @@ export function stackLayout(v: VehicleSpec, rt: VehicleRuntime): { base: number[
   return { base, top, length };
 }
 
-function stageItems(s: StageSpec, base: number, prop: number[], off: number, out: Item[]): void {
-  const n = boosterCount(s);
-  const d = s.parallel?.radialOffset ?? 0;
-  const R = s.radius;
+interface TankModel {
+  /** Station of the tank bottom from the stack base. */
+  x0: number;
+  radius: number;
+  length: number;
+  full: number;
+  liquid: boolean;
+}
+
+interface StageModel {
+  /** Index of the stage's first tank in the flat propellant array. */
+  off: number;
+  /** Copies arranged symmetrically, and the radial offset of each. */
+  n: number;
+  d: number;
+  /** Sum over the copies of (d cos a)^2 and (d sin a)^2: their spread about Z and Y. */
+  sy: number;
+  sz: number;
   // Dry structure as a thin-walled cylinder.
-  out.push({
-    m: s.dryMass,
-    x: base + (s.dryCgFraction ?? 0.4) * s.length,
-    ia: s.dryMass * R * R,
-    it: s.dryMass * ((R * R) / 2 + (s.length * s.length) / 12),
-    n,
-    d,
-  });
-  s.tanks.forEach((t, k) => {
-    const m = Math.max(0, prop[off + k]);
-    if (m <= 0) return;
-    const r = t.radius ?? R;
-    // Liquid settles under thrust: the column shortens from the top. Solid grain keeps its length.
-    const h = (t.kind ?? 'liquid') === 'liquid' ? t.length * Math.min(1, m / t.propellantMass) : t.length;
-    out.push({ m, x: base + t.bottom + h / 2, ia: 0.5 * m * r * r, it: m * ((r * r) / 4 + (h * h) / 12), n, d });
-  });
+  dryM: number;
+  dryX: number;
+  dryIa: number;
+  dryIt: number;
+  tanks: TankModel[];
+}
+
+/** Which parts are attached, as one number. Two runtimes with the same signature have the same layout. */
+export function massSignature(rt: VehicleRuntime): number {
+  let sig = rt.fairingAttached ? 1 : 0;
+  const st = rt.stages;
+  // Bit 0 is the fairing, bit i + 1 is stage i (a vehicle has far fewer than 30 stages).
+  for (let i = 0; i < st.length; i++) if (st[i].attached) sig |= 2 << i;
+  return sig;
+}
+
+/**
+ * Mass properties of one configuration of the vehicle (one set of attached parts),
+ * with everything that does not depend on the propellant worked out once. The simulator
+ * evaluates this several times per step; `massProperties` below is the one-shot form.
+ */
+export class MassModel {
+  readonly signature: number;
+  readonly stageBase: number[];
+  readonly top: number;
+  readonly length: number;
+  private readonly stages: StageModel[] = [];
+  /** Payload and fairing: mass, station, axial and transverse inertia, four numbers each. */
+  private readonly fixed: number[] = [];
+  /** Scratch: mass, station, axial and transverse inertia of every item found in the last pass. */
+  private readonly item: Float64Array;
+
+  constructor(v: VehicleSpec, rt: VehicleRuntime) {
+    this.signature = massSignature(rt);
+    const { base, top, length } = stackLayout(v, rt);
+    this.stageBase = base;
+    this.top = top;
+    this.length = length;
+    const offs = tankOffsets(v);
+    let items = 2;
+    v.stages.forEach((s, i) => {
+      if (!rt.stages[i].attached) return;
+      const n = boosterCount(s);
+      const d = s.parallel?.radialOffset ?? 0;
+      const R = s.radius;
+      // Copies sit at angles 2 pi k / n around the axis, starting on +Y.
+      let sy = 0;
+      let sz = 0;
+      for (let k = 0; k < n; k++) {
+        const a = (2 * Math.PI * k) / n;
+        sy += (d * Math.cos(a)) ** 2;
+        sz += (d * Math.sin(a)) ** 2;
+      }
+      this.stages.push({
+        off: offs[i],
+        n,
+        d,
+        sy,
+        sz,
+        dryM: s.dryMass,
+        dryX: base[i] + (s.dryCgFraction ?? 0.4) * s.length,
+        dryIa: s.dryMass * R * R,
+        dryIt: s.dryMass * ((R * R) / 2 + (s.length * s.length) / 12),
+        tanks: s.tanks.map((t) => ({
+          x0: base[i] + t.bottom,
+          radius: t.radius ?? R,
+          length: t.length,
+          full: t.propellantMass,
+          liquid: (t.kind ?? 'liquid') === 'liquid',
+        })),
+      });
+      items += 1 + s.tanks.length;
+    });
+    const cores = v.stages.filter((s) => !s.parallel);
+    const pr = v.payload.radius ?? cores[cores.length - 1].radius * 0.8;
+    const pm = v.payload.mass;
+    this.fixed.push(pm, top + v.payload.length / 2, 0.5 * pm * pr * pr, pm * ((pr * pr) / 4 + v.payload.length ** 2 / 12));
+    if (rt.fairingAttached && v.fairing) {
+      const f = v.fairing;
+      this.fixed.push(f.mass, top + f.length * 0.45, f.mass * f.radius ** 2, f.mass * (f.radius ** 2 / 2 + f.length ** 2 / 12));
+    }
+    this.item = new Float64Array(4 * items);
+  }
+
+  /**
+   * Fill `out` for the propellant masses found at prop[offset], prop[offset + 1], ...
+   * (one per tank, in vehicle order). Nothing is allocated; `out.inertia` is written in place.
+   */
+  evaluate(prop: ArrayLike<number>, offset: number, out: MassProps): void {
+    const item = this.item;
+    const stages = this.stages;
+    let k = 0;
+    let mass = 0;
+    let moment = 0;
+    for (let i = 0; i < stages.length; i++) {
+      const s = stages[i];
+      item[k] = s.dryM;
+      item[k + 1] = s.dryX;
+      item[k + 2] = s.dryIa;
+      item[k + 3] = s.dryIt;
+      mass += s.dryM * s.n;
+      moment += s.dryM * s.n * s.dryX;
+      k += 4;
+      const tanks = s.tanks;
+      for (let j = 0; j < tanks.length; j++) {
+        const t = tanks[j];
+        const p = prop[offset + s.off + j];
+        const m = p > 0 ? p : 0;
+        // Liquid settles under thrust: the column shortens from the top. Solid grain keeps its length.
+        const h = t.liquid ? t.length * Math.min(1, m / t.full) : t.length;
+        const r = t.radius;
+        const x = t.x0 + h / 2;
+        item[k] = m;
+        item[k + 1] = x;
+        item[k + 2] = 0.5 * m * r * r;
+        item[k + 3] = m * ((r * r) / 4 + (h * h) / 12);
+        if (m > 0) {
+          mass += m * s.n;
+          moment += m * s.n * x;
+        }
+        k += 4;
+      }
+    }
+    const fixed = this.fixed;
+    for (let j = 0; j < fixed.length; j += 4) {
+      mass += fixed[j];
+      moment += fixed[j] * fixed[j + 1];
+    }
+    const cg = moment / mass;
+
+    let ixx = 0;
+    let iyy = 0;
+    let izz = 0;
+    k = 0;
+    for (let i = 0; i < stages.length; i++) {
+      const s = stages[i];
+      const count = 1 + s.tanks.length;
+      for (let j = 0; j < count; j++, k += 4) {
+        const m = item[k];
+        if (j > 0 && m <= 0) continue; // an empty tank contributes nothing
+        const dx = item[k + 1] - cg;
+        const dx2 = dx * dx;
+        ixx += s.n * (item[k + 2] + m * s.d * s.d);
+        iyy += s.n * (item[k + 3] + m * dx2) + m * s.sz;
+        izz += s.n * (item[k + 3] + m * dx2) + m * s.sy;
+      }
+    }
+    for (let j = 0; j < fixed.length; j += 4) {
+      const m = fixed[j];
+      const dx = fixed[j + 1] - cg;
+      ixx += fixed[j + 2];
+      iyy += fixed[j + 3] + m * (dx * dx);
+      izz += fixed[j + 3] + m * (dx * dx);
+    }
+    out.mass = mass;
+    out.cg = cg;
+    out.inertia[0] = ixx;
+    out.inertia[1] = iyy;
+    out.inertia[2] = izz;
+    out.length = this.length;
+    out.top = this.top;
+    out.stageBase = this.stageBase;
+  }
 }
 
 export function massProperties(v: VehicleSpec, rt: VehicleRuntime, prop: number[]): MassProps {
-  const { base, top, length } = stackLayout(v, rt);
-  const offs = tankOffsets(v);
-  const items: Item[] = [];
-  v.stages.forEach((s, i) => {
-    if (rt.stages[i].attached) stageItems(s, base[i], prop, offs[i], items);
-  });
-  const cores = v.stages.filter((s) => !s.parallel);
-  const pr = v.payload.radius ?? cores[cores.length - 1].radius * 0.8;
-  const pm = v.payload.mass;
-  items.push({ m: pm, x: top + v.payload.length / 2, ia: 0.5 * pm * pr * pr, it: pm * ((pr * pr) / 4 + v.payload.length ** 2 / 12), n: 1, d: 0 });
-  if (rt.fairingAttached && v.fairing) {
-    const f = v.fairing;
-    items.push({ m: f.mass, x: top + f.length * 0.45, ia: f.mass * f.radius ** 2, it: f.mass * (f.radius ** 2 / 2 + f.length ** 2 / 12), n: 1, d: 0 });
-  }
-
-  let mass = 0;
-  let moment = 0;
-  for (const it of items) {
-    mass += it.m * it.n;
-    moment += it.m * it.n * it.x;
-  }
-  const cg = moment / mass;
-  let ixx = 0;
-  let iyy = 0;
-  let izz = 0;
-  for (const it of items) {
-    const dx2 = (it.x - cg) ** 2;
-    ixx += it.n * (it.ia + it.m * it.d * it.d);
-    // Copies sit at angles 2 pi k / n around the axis, starting on +Y.
-    let sy = 0;
-    let sz = 0;
-    for (let k = 0; k < it.n; k++) {
-      const a = (2 * Math.PI * k) / it.n;
-      sy += (it.d * Math.cos(a)) ** 2;
-      sz += (it.d * Math.sin(a)) ** 2;
-    }
-    iyy += it.n * (it.it + it.m * dx2) + it.m * sz;
-    izz += it.n * (it.it + it.m * dx2) + it.m * sy;
-  }
-  return { mass, cg, inertia: [ixx, iyy, izz], length, top, stageBase: base };
+  const model = new MassModel(v, rt);
+  const out: MassProps = { mass: 0, cg: 0, inertia: [0, 0, 0], length: 0, top: 0, stageBase: model.stageBase };
+  model.evaluate(prop, 0, out);
+  return out;
 }
 
 /** Propellant a stage can still burn, kg (all tanks, all boosters). */
 export function usablePropellant(v: VehicleSpec, stage: number, prop: number[]): number {
   const s = v.stages[stage];
-  const off = tankOffsets(v)[stage];
+  let off = 0;
+  for (let i = 0; i < stage; i++) off += v.stages[i].tanks.length;
   const res = s.residualFraction ?? 0.005;
   // The stage stops when its first tank runs dry, so the limiting tank sets the total.
   let burnable = Infinity;
-  s.tanks.forEach((t, k) => {
+  const tanks = s.tanks;
+  for (let k = 0; k < tanks.length; k++) {
+    const t = tanks[k];
     burnable = Math.min(burnable, Math.max(0, prop[off + k] - res * t.propellantMass) / t.flowFraction);
-  });
+  }
   return burnable * boosterCount(s);
 }
 
 /** Wet mass of a whole stage (all boosters) with the given propellant. */
 export function stageMass(v: VehicleSpec, stage: number, prop: number[]): number {
-  const s = v.stages[stage];
-  const off = tankOffsets(v)[stage];
+  // Called several times per step by guidance and the fault monitor: the stage's tank
+  // offset is summed here rather than by building the whole tankOffsets array.
+  const stages = v.stages;
+  let off = 0;
+  for (let i = 0; i < stage; i++) off += stages[i].tanks.length;
+  const s = stages[stage];
+  const n = s.tanks.length;
   let m = s.dryMass;
-  s.tanks.forEach((_, k) => (m += Math.max(0, prop[off + k])));
+  for (let k = 0; k < n; k++) m += Math.max(0, prop[off + k]);
   return m * boosterCount(s);
 }
 

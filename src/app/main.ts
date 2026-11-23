@@ -12,6 +12,7 @@ import {
   MU_EARTH,
   R_EARTH,
   type Flaw,
+  type Component,
   type InnerTube,
   type Motor,
   type MotorRef,
@@ -26,17 +27,20 @@ import {
 } from '../types';
 import { createSim } from '../physics/sim';
 import { analyzeFlight } from '../physics/flaws';
-import { stressTestSteps, type StressProgress } from '../physics/sweep';
+import { initCloud } from '../cloud/session';
+import { createImportFix } from '../cloud/importFix';
+import { pullDesigns, pushDesign, removeDesign } from '../cloud/designSync';
+import { runSimJobRemote } from '../cloud/remoteSim';
+import { motorSpec } from '../cloud/simJob';
 import { atmosphere } from '../physics/atmosphere';
+import { windVector } from '../physics/wind';
 import { massProps } from '../physics/massprops';
 import { aeroProps } from '../physics/aero';
 import { add, quatRotate, len } from '../physics/vec';
 import { parseOrkXml } from '../ork/parser';
-import { readOrkZip } from '../ork/orkExtras';
-import { embeddedMotors } from '../ork/rse';
 import { fetchMotorFromThrustCurve } from '../ork/thrustcurve';
 import { SAMPLE_ORK_XML } from '../ork/sample';
-import { ALL_MOTORS, findMotor, parseEng, thrustAt } from '../ork/motors';
+import { ALL_MOTORS, findMotor, thrustAt } from '../ork/motors';
 import { buildRocketMesh, buildCgCpMarkers, disposeGroup } from '../render/rocketMesh';
 import { gradeRocket, PART_ICONS, PART_LABELS } from '../render/parts/grade';
 import { buildForceArrows } from '../render/arrows';
@@ -56,15 +60,18 @@ import { mountHero } from './hero';
 import { createCameraRig, type CameraRig } from './cameras';
 import type { CameraMode, ToggleName, UI } from './uiTypes';
 import {
+  aftRadiusOf,
   createEmptyDesign,
   duplicatePart,
   findPart,
+  foreRadiusOf,
   fromRocketModel,
   moveExternalPart,
   removePart,
   toRocketModel,
   updatePart,
   type Design,
+  type ExternalComponent,
 } from '../builder/design';
 import {
   canRedo,
@@ -80,12 +87,12 @@ import type { PartPreset } from '../builder/parts';
 import { applySnap, computeSnapPoints, type SnapPoint } from '../builder/snap';
 import {
   deleteSavedDesign,
-  exportDesignJson,
-  importDesignJson,
   listSavedDesigns,
   saveDesign,
 } from '../builder/storage';
-import { exportOrkZip } from '../builder/orkExport';
+import { importRocketFile, type ImportFormat } from '../io/importer';
+import { exportDesign, type ExportFormat } from '../io/exporter';
+import { buildShareUrl, decodeDesignFromHash, SHARE_HASH_KEY } from '../io/shareLink';
 import { saveBlob } from './saveFile';
 import {
   evaluateChallenges,
@@ -93,13 +100,16 @@ import {
   markChallengesCompleted,
 } from '../builder/challenges';
 import { createBuilderView } from '../builder/view';
+import { friendlyName } from '../builder/friendly';
 import { createBuilderUI, type BuilderStats } from './builderUi';
 import { createMissionView } from './missionView';
 import { createMissionUI } from './missionUi';
-import { runMission } from '../mission/client';
-import { getMission } from '../mission/vehicles';
+import { isAbortError, runMission } from '../mission/client';
+import { getMission, type MissionDef } from '../mission/vehicles';
 import { snapshotAt } from '../mission/snapshot';
 import type { FlightRecord } from '../mission/record';
+import { startPilotedFlight, type PilotedFlight } from '../mission/pilot';
+import { createPilotControls } from './pilotControls';
 import type { FlyOptions } from '../mission/fly';
 import type { ScenarioId } from '../mission/engine';
 
@@ -107,7 +117,6 @@ type Markers = ReturnType<typeof buildCgCpMarkers>;
 type Exhaust = ReturnType<typeof buildExhaust>;
 
 const PHYSICS_DEPS = cachedDeps({ atmosphere, massProps, aeroProps, thrust: thrustAt });
-const STRESS_FRAME_BUDGET_MS = 12; // ms of stress-test work per animation frame
 const TWR_TARGET = 5; // peak thrust-to-weight wanted before the rocket leaves the rail
 const SEVERITY_RANK: Record<Flaw['severity'], number> = { critical: 0, warning: 1, info: 2 };
 const SMOKE_ALT_LIMIT = 30_000; // m, no exhaust puffs above this
@@ -144,7 +153,12 @@ const app = document.getElementById('app');
 if (!app) throw new Error('Missing #app element');
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+/** Phones get a lower pixel-ratio cap: fill rate is their bottleneck. */
+function targetPixelRatio(): number {
+  const coarse = typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+  return Math.min(window.devicePixelRatio, coarse ? 1.5 : 2);
+}
+renderer.setPixelRatio(targetPixelRatio());
 renderer.setSize(window.innerWidth, window.innerHeight);
 app.appendChild(renderer.domElement);
 
@@ -187,7 +201,6 @@ interface StaticFlaw {
   covers: string[];
 }
 let staticFlaws: StaticFlaw[] = [];
-let stressGen: Generator<StressProgress, StressReport, undefined> | null = null;
 let lastStress: StressReport | null = null;
 let sim: Sim | null = null;
 let launched = false;
@@ -210,6 +223,47 @@ const chuteDir = new THREE.Vector3(0, 1, 0);
 const chuteSettleAxis = new THREE.Vector3(1, 0, 0);
 
 let lastNow = performance.now();
+
+// ---------- Render on demand ----------
+
+/** Frames are drawn while now < renderWakeUntil (1.5 s covers OrbitControls damping). */
+let renderWakeUntil = 0;
+function requestRender(ms = 1500): void {
+  const until = performance.now() + ms;
+  if (until > renderWakeUntil) renderWakeUntil = until;
+}
+/** True while the translucent title overlay covers the flight scene. */
+let heroActive = false;
+let lastHeroRenderMs = -Infinity;
+const HERO_FRAME_MS = 100;
+
+for (const type of [
+  'pointerdown',
+  'pointerup',
+  'click',
+  'wheel',
+  'touchstart',
+  'touchmove',
+  'keydown',
+  'keyup',
+  'input',
+  'change',
+  'resize',
+]) {
+  window.addEventListener(type, () => requestRender(), { capture: true, passive: true });
+}
+window.addEventListener(
+  'pointermove',
+  (e) => {
+    if (e.buttons !== 0) requestRender();
+  },
+  { capture: true, passive: true },
+);
+renderer.domElement.addEventListener('pointerdown', () => requestRender(), { passive: true });
+renderer.domElement.addEventListener('wheel', () => requestRender(), { passive: true });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) requestRender();
+});
 
 // ---------- Helpers ----------
 
@@ -539,39 +593,92 @@ function loadRocket(r: RocketModel): void {
 
 function loadSample(): void {
   try {
-    loadRocket(parseOrkXml(SAMPLE_ORK_XML));
+    const model = parseOrkXml(SAMPLE_ORK_XML);
+    // Keep the builder in step with the pad (enterBuilder only seeds from the pad when empty).
+    builderHistory = createHistory(fromRocketModel(model));
+    builderSelectedId = null;
+    lastFlightFlaws = [];
+    clearPlacement();
+    loadRocket(model);
+    if (appMode === 'builder') {
+      refreshBuilder(true, true);
+      builderView.frameRocket();
+    }
   } catch (e) {
     ui.toast(`Could not load sample: ${errorMessage(e)}`);
   }
 }
 
-async function loadFile(file: File): Promise<void> {
+const FORMAT_LABELS: Record<ImportFormat, string> = {
+  ork: 'OpenRocket .ork',
+  rocksim: 'RockSim .rkt',
+  'sfb-json': 'Astra .json',
+  eng: 'RASP .eng',
+  rse: 'RockSim .rse',
+};
+
+function toastWarnings(warnings: string[]): void {
+  if (warnings.length === 0) return;
+  const extra = warnings.length > 1 ? ` (+${warnings.length - 1} more)` : '';
+  ui.toast(`Note: ${warnings[0]}${extra}`);
+}
+
+// Account storage, the consent decision and remembered import fixes (src/cloud).
+const cloudReady = initCloud();
+const importFix = createImportFix(cloudReady, {
+  getDesign: () => currentDesign(),
+  loadDesign: (design) => loadImportedDesign(design, toRocketModel(design), [], true),
+  toast: (message) => ui.toast(message),
+});
+
+function loadImportedDesign(design: Design, model: RocketModel, embedded: Motor[] = [], keepFix = false): void {
+  // A rocket that did not come from the file being fixed ends that file's fix bar.
+  if (!keepFix) importFix.clear();
+  if (embedded.length > 0) adoptEmbeddedMotors(embedded);
+  builderHistory = createHistory(design);
+  builderSelectedId = null;
+  lastFlightFlaws = [];
+  clearPlacement();
+  loadRocket(model);
+  if (appMode === 'builder') {
+    refreshBuilder(true, true);
+    builderView.frameRocket();
+  }
+}
+
+async function importFile(file: File): Promise<void> {
   try {
-    if (/\.eng$/i.test(file.name)) {
-      const parsed = parseEng(await file.text());
-      if (parsed.length === 0) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const result = await importRocketFile(bytes, file.name);
+    if (result.kind === 'motors') {
+      if (result.motors.length === 0) {
         ui.toast(`No motors found in ${file.name}`);
         return;
       }
-      extraMotors = [...extraMotors, ...parsed];
-      ui.toast(`Added ${parsed.length} motor(s) from ${file.name}`);
+      extraMotors = [...extraMotors, ...result.motors];
+      ui.toast(`Added ${result.motors.length} motor(s) from ${file.name}`);
       if (rocket && !motor) {
         const found = resolveMotorFromRef();
         if (found) applyMotor(found);
       } else {
         refreshMotorList();
       }
+      toastWarnings(result.warnings);
       return;
     }
-    const { xml, files } = await readOrkZip(await file.arrayBuffer());
-    const model = parseOrkXml(xml);
-    adoptEmbeddedMotors(embeddedMotors(files));
-    // Sync imported .ork into the builder so it can be edited immediately.
-    builderHistory = createHistory(fromRocketModel(model));
-    builderSelectedId = null;
-    lastFlightFlaws = [];
-    loadRocket(model);
-    if (appMode === 'builder') refreshBuilder(true, true);
+    const design = result.design ?? (result.model ? fromRocketModel(result.model) : null);
+    if (!design) {
+      ui.toast(`No rocket design found in ${file.name}`);
+      return;
+    }
+    const model = result.model ?? toRocketModel(design);
+    loadImportedDesign(design, model, result.motors);
+    ui.toast(`Loaded "${result.name}" (${FORMAT_LABELS[result.format] ?? result.format})`);
+    toastWarnings(result.warnings);
+    // Files from other programs can be drawn wrong; our own JSON is already the user's design.
+    if (result.format === 'ork' || result.format === 'rocksim') {
+      void importFix.afterImport({ bytes, filename: file.name, format: result.format, parsedModel: model, imported: design });
+    }
   } catch (e) {
     ui.toast(`Could not load ${file.name}: ${errorMessage(e)}`);
   }
@@ -696,6 +803,7 @@ function onFlightDone(): void {
   const newlyCompleted = passedNow.filter((c) => !prevDone.has(c.id));
   if (newlyCompleted.length > 0) {
     markChallengesCompleted(newlyCompleted.map((c) => c.id));
+    cachedCompletedChallenges = loadCompletedChallenges();
     ui.toast(`Challenge complete: ${newlyCompleted[0].title}!`);
   }
 }
@@ -708,8 +816,12 @@ function advanceSim(simDt: number): void {
 
 // ---------- Stress test ----------
 
+/** Cancels the stress test that is out on the server (or running as its fallback here). */
+let stressAbort: AbortController | null = null;
+
 function clearStress(): void {
-  stressGen = null;
+  stressAbort?.abort();
+  stressAbort = null;
   lastStress = null;
   ui.setStress(null);
 }
@@ -723,27 +835,33 @@ function startStress(): void {
     ui.toast('Pick a motor first');
     return;
   }
-  if (stressGen) return;
+  if (stressAbort) return;
   lastStress = null;
-  stressGen = stressTestSteps(rocket, motor, ui.getConfig(), PHYSICS_DEPS);
   ui.setStress('running');
-}
-
-/** Run as many stress-test flights as fit in this frame's time budget (at least one). */
-function advanceStress(): void {
-  if (!stressGen) return;
-  const start = performance.now();
-  for (;;) {
-    const step = stressGen.next();
-    if (step.done) {
-      stressGen = null;
-      lastStress = step.value;
-      ui.setStress(step.value);
-      ui.toast('Stress test complete');
-      return;
-    }
-    if (performance.now() - start > STRESS_FRAME_BUDGET_MS) return;
-  }
+  // The flights run on our server while the user waits; if it cannot be reached they run
+  // here instead, in slices that keep the page responsive.
+  const ac = new AbortController();
+  stressAbort = ac;
+  const config = ui.getConfig();
+  const request = { kind: 'stress' as const, design: fromRocketModel(rocket), motors: motorSpec(motor), config };
+  void cloudReady
+    .then(async (cloud) => {
+      const r = await runSimJobRemote(request, { accessToken: await cloud.accessToken(), signal: ac.signal });
+      if (stressAbort !== ac) return;
+      stressAbort = null;
+      lastStress = r.result;
+      ui.setStress(r.result);
+      ui.toast(r.ranOn === 'server' ? 'Stress test complete (ran on our server)' : 'Stress test complete (ran on this device)');
+      if (cloud.mayCollect()) {
+        void cloud.store.logSimRun({ kind: 'stress', config, summary: r.result, durationMs: r.durationMs, ranOn: r.ranOn });
+      }
+    })
+    .catch((e: unknown) => {
+      if (stressAbort !== ac) return;
+      stressAbort = null;
+      ui.setStress(null);
+      ui.toast(`Stress test failed: ${errorMessage(e)}`);
+    });
 }
 
 // ---------- Per-frame world update ----------
@@ -861,13 +979,10 @@ function updateParachute(state: SimState | null, realDt: number): void {
   } else {
     chuteLandedTime = null;
     // Blend smoothly between opposite air-relative / descent velocity and local up at low speed.
-    const windSpeed = activeConfig.windSpeed;
-    const gust = 1 + activeConfig.gust * Math.sin(1.7 * state.t) * Math.sin(0.31 * state.t + 1);
-    const profile = state.altitude > 0 ? Math.min(2, Math.max(0, Math.pow(state.altitude / 10, 0.14))) : 0;
-    const ws = windSpeed * gust * profile;
-    const vx = state.vel[0] - (-Math.sin(activeConfig.windDirection) * ws);
+    const air = windVector(activeConfig, state.altitude, state.t);
+    const vx = state.vel[0] - air[0];
     const vy = state.vel[1];
-    const vz = state.vel[2] - (Math.cos(activeConfig.windDirection) * ws);
+    const vz = state.vel[2] - air[2];
     const vRelSpeed = Math.hypot(vx, vy, vz);
 
     const velDir = vRelSpeed > 1e-3
@@ -914,6 +1029,7 @@ function updateForces(state: SimState | null, origin: Vec3): void {
   );
 }
 
+let starsObj: THREE.Points | undefined;
 function updateSky(state: SimState | null, origin: Vec3): void {
   // Sky and stars follow the CAMERA altitude, so the map view sees space.
   const camAlt = Math.hypot(origin[0] + camera.position.x, origin[1] + camera.position.y, origin[2] + camera.position.z) - R_EARTH;
@@ -921,7 +1037,9 @@ function updateSky(state: SimState | null, origin: Vec3): void {
   const up = state ? new THREE.Vector3(...state.pos).normalize() : new THREE.Vector3(0, 1, 0);
   sky.update(altitude, solar.sunDirection, up);
   // Stars only show once the sky has thinned out with altitude.
-  const stars = solar.group.getObjectByName('Stars') as THREE.Points | undefined;
+  // The star field is added once its catalogue has loaded; look it up until then, then keep it.
+  starsObj ??= solar.group.getObjectByName('Stars') as THREE.Points | undefined;
+  const stars = starsObj;
   if (stars) {
     const mat = stars.material as THREE.PointsMaterial;
     mat.transparent = true;
@@ -931,9 +1049,13 @@ function updateSky(state: SimState | null, origin: Vec3): void {
 }
 
 function updateWorld(state: SimState | null, origin: Vec3, realDt: number, simDt: number, now: number): void {
+  // Behind the title screen the sky is only a backdrop: leave the space textures until it is dismissed.
+  solar.holdAssets = heroActive;
   solar.update(clock.jd, origin, camera.position);
   site.update(origin, activeConfig.launchAltitude);
   site.group.position.y -= padLift;
+  // Sea waves and near-field detail on the terrain around the pad.
+  site.updateTerrain?.(now / 1000, Math.max(0, camera.position.y - site.group.position.y));
 
   placeRocket(state, origin, now);
   updateSmokeAndTrail(state, origin, simDt, realDt);
@@ -965,31 +1087,60 @@ function updateHud(state: SimState | null): void {
 }
 
 function frame(now: number): void {
+  if (document.hidden) {
+    lastNow = now;
+    requestAnimationFrame(frame);
+    return;
+  }
+  importFix.setVisible(appMode === 'builder' && !heroActive);
+  // Under the title overlay the flight scene only needs ~10 fps. lastNow is left alone so the
+  // skipped time is still simulated by the next processed frame.
+  if (heroActive && appMode === 'flight' && now - lastHeroRenderMs < HERO_FRAME_MS && now >= renderWakeUntil) {
+    requestAnimationFrame(frame);
+    return;
+  }
   const realDt = Math.max(0, (now - lastNow) / 1000);
   lastNow = now;
+  const awake = now < renderWakeUntil;
 
   if (appMode === 'builder') {
-    builderView.render(renderer);
+    // controls.update() (damping) runs inside render(), so it only needs to run while awake.
+    if (awake || builderView.isAnimating?.()) builderView.render(renderer);
     requestAnimationFrame(frame);
     return;
   }
 
   if (appMode === 'mission') {
+    // Draw while time advances or while something recently asked for a redraw; idle and
+    // paused (or finished) frames are skipped.
+    let draw = awake || missionView.isAnimating();
+    // A flight being flown by hand steps its physics here and always needs drawing.
+    if (stepPilot(realDt, now)) draw = true;
     if (missionRecord && missionRecord.samples.length > 0) {
       const firstT = missionRecord.samples[0].t;
       const lastT = missionRecord.samples[missionRecord.samples.length - 1].t;
-      if (missionPlaying) {
+      if (missionPlaying && !pilotFlight) {
+        draw = true;
         missionT = Math.min(lastT, missionT + realDt * missionWarp);
-        if (missionT >= lastT) missionPlaying = false;
+        if (missionT >= lastT) {
+          missionPlaying = false;
+          // Let the breakup fireball and coast line settle after the final step.
+          requestRender(2000);
+        }
       }
       missionT = Math.max(firstT, Math.min(lastT, missionT));
-      missionView.setTime(missionT);
-      if (now - lastMissionUiMs >= 100) {
-        lastMissionUiMs = now;
-        missionUi.update(snapshotAt(missionRecord, missionT), missionPlaying, missionWarp);
+      if (draw) {
+        missionView.setTime(missionT);
+        if (now - lastMissionUiMs >= 100) {
+          lastMissionUiMs = now;
+          missionUi.update(snapshotAt(missionRecord, missionT), missionPlaying, missionWarp);
+        }
       }
     }
-    missionView.render(renderer);
+    if (draw) {
+      missionView.render(renderer);
+      missionUi.setViewScale(missionView.viewDistance());
+    }
     requestAnimationFrame(frame);
     return;
   }
@@ -997,7 +1148,6 @@ function frame(now: number): void {
   const simDt = clock.tick(realDt * realisticTimeFactor(sim, clock.warp));
   clock.setMaxWarp(maxWarpFor(sim));
   advanceSim(simDt);
-  advanceStress();
 
   const state = displayState();
   const origin = originFor(cameraRig.mode, state);
@@ -1006,6 +1156,7 @@ function frame(now: number): void {
   updateHud(state);
 
   renderer.render(scene, camera);
+  if (heroActive) lastHeroRenderMs = now;
   requestAnimationFrame(frame);
 }
 
@@ -1013,7 +1164,10 @@ function frame(now: number): void {
 
 const ui: UI = createUI(app, {
   onFile: (file) => {
-    void loadFile(file);
+    void importFile(file);
+  },
+  onExport: (format) => {
+    void handleExport(format);
   },
   onLoadSample: loadSample,
   onLaunch: launch,
@@ -1060,6 +1214,8 @@ let appMode: 'flight' | 'builder' | 'mission' = 'flight';
 let builderHistory: History<Design> | null = null;
 let builderSelectedId: string | null = null;
 let builderCutaway = false;
+/** Mirror mode: side parts (fins, strap-on boosters) go on as a left/right pair. */
+let builderMirror = false;
 let placingPreset: PartPreset | null = null;
 let placingSnaps: SnapPoint[] = [];
 let hoveredSnapId: string | null = null;
@@ -1080,6 +1236,14 @@ function setDesign(next: Design, commit = true): void {
 }
 
 const builderView = createBuilderView(renderer.domElement);
+// Anything that changes what the builder scene shows also wakes the renderer.
+for (const method of ['updateRocket', 'setSnapPoints', 'frameRocket', 'zoomBy', 'setEnabled'] as const) {
+  const original = builderView[method].bind(builderView) as (...args: unknown[]) => void;
+  (builderView as unknown as Record<string, unknown>)[method] = (...args: unknown[]) => {
+    requestRender();
+    original(...args);
+  };
+}
 
 function computeBuilderStats(model: RocketModel): { stats: BuilderStats; cgX: number; cpX: number } {
   if (model.components.length === 0 || model.length <= 0 || model.maxRadius <= 0) {
@@ -1116,9 +1280,19 @@ function computeBuilderStats(model: RocketModel): { stats: BuilderStats; cgX: nu
   };
 }
 
+// localStorage-backed lists, re-read only when they change (writers and builder entry).
+let cachedSavedDesigns: ReturnType<typeof listSavedDesigns> = [];
+let cachedCompletedChallenges: ReturnType<typeof loadCompletedChallenges> = new Set();
+function reloadBuilderStorage(): void {
+  cachedSavedDesigns = listSavedDesigns();
+  cachedCompletedChallenges = loadCompletedChallenges();
+}
+reloadBuilderStorage();
+
 function refreshBuilder(refitCamera = false, forceInspectorRefresh = false): void {
   const d = currentDesign();
   if (!d || !builderHistory) return;
+  requestRender();
   const model = toRocketModel(d);
   const { stats, cgX, cpX } = computeBuilderStats(model);
   builderView.updateRocket({
@@ -1136,10 +1310,19 @@ function refreshBuilder(refitCamera = false, forceInspectorRefresh = false): voi
     canUndo: canUndo(builderHistory),
     canRedo: canRedo(builderHistory),
     motors: [...motorChoices().values()],
-    savedDesigns: listSavedDesigns(),
-    completedChallenges: loadCompletedChallenges(),
+    savedDesigns: cachedSavedDesigns,
+    completedChallenges: cachedCompletedChallenges,
+    fits: (preset) => computeSnapPoints(d, preset.create()).some((sn) => sn.diameterMatch),
     forceInspectorRefresh,
   });
+}
+
+/** Side-mounted parts become a mirrored left/right pair while Mirror is on. */
+function mirrored<T extends Component>(part: T): T {
+  if (!builderMirror) return part;
+  if (part.kind === 'finset') return { ...part, count: 2 };
+  if (part.kind === 'innertube' && (part as InnerTube).radialCount) return { ...part, radialCount: 2 };
+  return part;
 }
 
 let transitionPromptActive = false;
@@ -1161,7 +1344,7 @@ function commitSnapPlacement(preset: PartPreset, snap: SnapPoint, addTransition?
     builderUi.setTransitionPrompt({ preset, snap });
     return;
   }
-  const part = preset.create();
+  const part = mirrored(preset.create());
   const res = applySnap(base, part, snap, {
     addTransition: Boolean(addTransition),
     anchor: preset.defaultAnchor,
@@ -1177,6 +1360,7 @@ function commitSnapPlacement(preset: PartPreset, snap: SnapPoint, addTransition?
   }
   clearPlacement();
   refreshBuilder(false, true);
+  if (res) builderView.frameRocket(true);
 }
 
 function beginPlacement(preset: PartPreset, immediateIfSingle: boolean): void {
@@ -1215,6 +1399,42 @@ const builderUi = createBuilderUI(app, {
   onDragEndPreset: () => {
     if (placingPreset && !transitionPromptActive) clearPlacement();
   },
+  // While a card is dragged the closest ring lights up, however far away the pointer is,
+  // so letting go anywhere over the stage puts the part somewhere sensible.
+  onDragMovePreset: (x, y, overStage) => {
+    if (!placingPreset) return;
+    const hit = overStage ? builderView.pickSnapPoint(x, y, Infinity) : null;
+    const nextId = hit?.id ?? null;
+    if (nextId !== hoveredSnapId) {
+      hoveredSnapId = nextId;
+      builderView.setSnapPoints(placingSnaps, hoveredSnapId, placingPreset.create());
+    }
+    if (hit) builderUi.setDragGhost(`Let go to add: ${hit.label}`);
+  },
+  onDropPreset: (x, y, overStage) => {
+    const preset = placingPreset;
+    if (!preset) return;
+    const snap = overStage ? builderView.pickSnapPoint(x, y, Infinity) : null;
+    if (snap) commitSnapPlacement(preset, snap);
+    else clearPlacement();
+  },
+  onToggleMirror: (on) => {
+    builderMirror = on;
+    requestRender();
+    // Turning Mirror on with fins or boosters selected mirrors those straight away.
+    const d = currentDesign();
+    const found = on && d && builderSelectedId ? findPart(d, builderSelectedId) : null;
+    if (d && found) {
+      const next = mirrored(found.part);
+      if (next !== found.part) {
+        const patch = found.part.kind === 'finset' ? { count: 2 } : { radialCount: 2 };
+        setDesign(updatePart(d, found.part.id, { part: patch as Partial<Component> }), true);
+        refreshBuilder(false, true);
+      }
+    }
+    ui.toast(on ? 'Mirror on: fins and boosters go on as a left-and-right pair' : 'Mirror off');
+  },
+  onZoom: (factor) => builderView.zoomBy(factor),
   onSelectPart: (partId) => {
     builderSelectedId = partId;
     if (partId) {
@@ -1262,6 +1482,7 @@ const builderUi = createBuilderUI(app, {
     if (builderSelectedId === partId) builderSelectedId = null;
     clearPlacement();
     refreshBuilder(false, true);
+    builderView.frameRocket(true);
   },
   onUndo: () => {
     if (!builderHistory || !canUndo(builderHistory)) return;
@@ -1297,6 +1518,7 @@ const builderUi = createBuilderUI(app, {
   },
   onToggleCutaway: (on) => {
     builderCutaway = on;
+    requestRender();
     refreshBuilder(false, false);
   },
   onFrameCamera: () => builderView.frameRocket(),
@@ -1306,11 +1528,19 @@ const builderUi = createBuilderUI(app, {
     const d = currentDesign();
     if (!d) return;
     const thumb = builderView.captureThumbnail(renderer);
-    saveDesign(d, thumb);
+    try {
+      saveDesign(d, thumb);
+    } catch (e) {
+      ui.toast(`Could not save: ${errorMessage(e)}`);
+      return;
+    }
+    reloadBuilderStorage();
     ui.toast(`Saved "${d.name}"`);
     refreshBuilder(false, false);
+    void cloudReady.then((cloud) => pushDesign(cloud, d, thumb, importFix.sourceSha()));
   },
   onLoadSavedDesign: (design) => {
+    importFix.clear();
     builderHistory = createHistory(design);
     builderSelectedId = null;
     lastFlightFlaws = [];
@@ -1319,63 +1549,69 @@ const builderUi = createBuilderUI(app, {
     ui.toast(`Loaded "${design.name}"`);
   },
   onDeleteSavedDesign: (id) => {
+    void cloudReady.then((cloud) => removeDesign(cloud, id));
     deleteSavedDesign(id);
+    reloadBuilderStorage();
     refreshBuilder(false, false);
   },
-  onExportJson: () => {
-    const d = currentDesign();
-    if (!d) return;
-    const blob = new Blob([exportDesignJson(d)], { type: 'application/json' });
-    downloadBlob(blob, `${safeFilename(d.name)}.json`);
+  onExport: (format) => {
+    void handleExport(format);
   },
-  onExportOrk: () => {
-    const d = currentDesign();
-    if (!d) return;
-    void exportOrkZip(d).then((bytes) => {
-      const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-      const blob = new Blob([ab], { type: 'application/zip' });
-      downloadBlob(blob, `${safeFilename(d.name)}.ork`);
-    });
+  onCopyShareLink: () => {
+    void handleCopyShareLink();
   },
   onImportFile: (file) => {
-    void importBuilderFile(file);
+    void importFile(file);
   },
 });
 
-function safeFilename(name: string): string {
-  return (name || 'rocket').replace(/[^a-z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'rocket';
+/** The builder's design while building, the pad rocket otherwise; either falls back to the other. */
+function exportSourceDesign(): Design | null {
+  const padDesign = () => (rocket ? fromRocketModel(rocket) : null);
+  return appMode === 'builder' ? (currentDesign() ?? padDesign()) : (padDesign() ?? currentDesign());
 }
 
-function downloadBlob(blob: Blob, filename: string): void {
-  saveBlob(blob, filename).then(
-    (how) => { if (how === 'saved') ui.toast(`Saved ${filename}`); },
-    (err: unknown) => ui.toast(`Could not save ${filename}: ${err instanceof Error ? err.message : String(err)}`),
-  );
-}
-
-async function importBuilderFile(file: File): Promise<void> {
+async function handleExport(format: ExportFormat): Promise<void> {
+  const d = exportSourceDesign();
+  if (!d || d.stack.length === 0) {
+    ui.toast('Load or build a rocket first');
+    return;
+  }
   try {
-    if (/\.json$/i.test(file.name)) {
-      const imported = importDesignJson(await file.text());
-      builderHistory = createHistory(imported);
-      builderSelectedId = null;
-      lastFlightFlaws = [];
-      clearPlacement();
-      refreshBuilder(true, true);
-      ui.toast(`Imported "${imported.name}"`);
-      return;
+    const { blob, filename } = await exportDesign(d, format);
+    const how = await saveBlob(blob, filename);
+    if (how !== 'cancelled') {
+      ui.toast(`Exported ${filename}`);
     }
-    const { xml, files } = await readOrkZip(await file.arrayBuffer());
-    const model = parseOrkXml(xml);
-    adoptEmbeddedMotors(embeddedMotors(files));
-    builderHistory = createHistory(fromRocketModel(model));
-    builderSelectedId = null;
-    lastFlightFlaws = [];
-    clearPlacement();
-    refreshBuilder(true, true);
-    ui.toast(`Opened "${model.name}" in builder`);
   } catch (e) {
-    ui.toast(`Import failed: ${errorMessage(e)}`);
+    ui.toast(`Export failed: ${errorMessage(e)}`);
+  }
+}
+
+async function handleCopyShareLink(): Promise<void> {
+  const d = exportSourceDesign();
+  if (!d || d.stack.length === 0) {
+    ui.toast('Build or load a rocket first');
+    return;
+  }
+  try {
+    const baseUrl = window.location.href.split('#')[0];
+    const url = await buildShareUrl(d, baseUrl);
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(url);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.append(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    ui.toast('Copied share link');
+  } catch (e) {
+    ui.toast(`Could not copy share link: ${errorMessage(e)}`);
   }
 }
 
@@ -1384,7 +1620,9 @@ function enterBuilder(): void {
     const initial = rocket ? fromRocketModel(rocket) : createEmptyDesign();
     builderHistory = createHistory(initial);
   }
+  reloadBuilderStorage();
   appMode = 'builder';
+  requestRender();
   cameraRig.setEnabled(false);
   builderView.setEnabled(true);
   ui.setVisible(false);
@@ -1400,6 +1638,7 @@ function exitBuilderToPad(): void {
   }
   const model = toRocketModel(d);
   appMode = 'flight';
+  requestRender();
   clearPlacement();
   builderView.setEnabled(false);
   cameraRig.setEnabled(true);
@@ -1409,23 +1648,217 @@ function exitBuilderToPad(): void {
   loadRocket(model);
 }
 
-// Click on the 3D canvas in builder mode places on a snap point (if placing) or selects a part.
+// The 3D stage in builder mode:
+//  - click a glowing ring while placing     -> the part goes there
+//  - click a part                           -> select it
+//  - drag an outside part (nose, tube, ...) -> rings show where it can go; let go to move it
+//  - drag an inside/side part (fins, ...)   -> slides it up and down its tube
+//  - drag empty space                       -> turn the camera (OrbitControls)
+interface StagePartDrag {
+  id: string;
+  kind: 'reorder' | 'slide';
+  startX: number;
+  startY: number;
+  active: boolean;
+  startOffset: number;
+  /** Slide range in metres: at least the parent tube length either way, and always holds startOffset. */
+  minOffset: number;
+  maxOffset: number;
+  name: string;
+  /** True once the first slide tick has pushed its undo step; later ticks replace it. */
+  committed: boolean;
+  /** Latest unapplied slide offset, applied once per animation frame. */
+  pendingOffset: number | null;
+  frame: number;
+}
 let builderDownPos: { x: number; y: number } | null = null;
-renderer.domElement.addEventListener('pointerdown', (e) => {
-  if (appMode !== 'builder') return;
-  builderDownPos = { x: e.clientX, y: e.clientY };
-});
+let stagePartDrag: StagePartDrag | null = null;
+let moveTargets: SnapPoint[] = [];
+let hoveredMoveId: string | null = null;
+
+/** Rings at every joint the dragged stack part could move to (its own two joints excluded). */
+function computeMoveTargets(d: Design, partId: string): SnapPoint[] {
+  const from = d.stack.findIndex((n) => n.id === partId);
+  if (from === -1) return [];
+  const out: SnapPoint[] = [];
+  let station = 0;
+  for (let b = 0; b <= d.stack.length; b++) {
+    if (b !== from && b !== from + 1) {
+      const above = b > 0 ? d.stack[b - 1].part : null;
+      const below = b < d.stack.length ? d.stack[b].part : null;
+      const label =
+        b === 0 ? 'top of the rocket' : b === d.stack.length ? 'bottom of the rocket' : `spot below the ${friendlyName(above!.name)}`;
+      const radius = Math.max(
+        above ? aftRadiusOf(above as ExternalComponent) : 0,
+        below ? foreRadiusOf(below as ExternalComponent) : 0,
+        0.008,
+      );
+      out.push({
+        id: `move-${b}`,
+        kind: b === 0 ? 'top' : b === d.stack.length ? 'bottom' : 'between',
+        label,
+        stationX: station,
+        radius,
+        // Index after the part is lifted out of the stack.
+        insertIndex: b > from ? b - 1 : b,
+        diameterMatch: true,
+      });
+    }
+    if (b < d.stack.length) station += d.stack[b].part.length;
+  }
+  return out;
+}
+
+/** Applies the latest pending slide offset (if any) and cancels the scheduled frame. */
+function flushSlideDrag(drag: StagePartDrag): void {
+  if (drag.frame) {
+    cancelAnimationFrame(drag.frame);
+    drag.frame = 0;
+  }
+  if (drag.pendingOffset === null) return;
+  const offset = drag.pendingOffset;
+  drag.pendingOffset = null;
+  const d = currentDesign();
+  if (!d) return;
+  // One undo step per drag: the first tick commits, the rest replace it.
+  setDesign(updatePart(d, drag.id, { offset }), !drag.committed);
+  drag.committed = true;
+  refreshBuilder(false, false);
+}
+
+function endStagePartDrag(): void {
+  const drag = stagePartDrag;
+  if (drag?.kind === 'slide') {
+    flushSlideDrag(drag);
+    // The inspector was left alone during the drag: show the final value now.
+    if (drag.committed && appMode === 'builder') refreshBuilder(false, true);
+  }
+  stagePartDrag = null;
+  moveTargets = [];
+  hoveredMoveId = null;
+  builderUi.setDragGhost(null);
+  renderer.domElement.style.cursor = '';
+  if (appMode === 'builder') {
+    builderView.setEnabled(true);
+    if (!placingPreset) builderView.setSnapPoints([]);
+  }
+}
+
+// Capture phase: this runs before OrbitControls' own pointerdown, so a press that lands on
+// a part can switch the camera off for the length of the drag.
+renderer.domElement.addEventListener(
+  'pointerdown',
+  (e) => {
+    if (appMode !== 'builder') return;
+    builderDownPos = { x: e.clientX, y: e.clientY };
+    if (e.button !== 0 || placingPreset || e.pointerType === 'touch') return;
+    const d = currentDesign();
+    const hitId = builderView.pickPart(e.clientX, e.clientY);
+    const found = d && hitId ? findPart(d, hitId) : null;
+    if (!d || !found) return;
+    const reorder = found.parentId === null;
+    if (reorder && d.stack.length < 2) return;
+    const startOffset = found.offset ?? 0;
+    const parent = found.parentId ? findPart(d, found.parentId) : null;
+    const reach = Math.max(0.3, parent?.part.length ?? 0);
+    stagePartDrag = {
+      id: found.part.id,
+      kind: reorder ? 'reorder' : 'slide',
+      startX: e.clientX,
+      startY: e.clientY,
+      active: false,
+      startOffset,
+      minOffset: Math.min(-reach, startOffset),
+      maxOffset: Math.max(reach, startOffset),
+      name: friendlyName(found.part.name),
+      committed: false,
+      pendingOffset: null,
+      frame: 0,
+    };
+    builderView.setEnabled(false);
+    try {
+      renderer.domElement.setPointerCapture(e.pointerId);
+    } catch {
+      /* not capturable: the drag still works while the pointer stays over the stage */
+    }
+  },
+  { capture: true },
+);
+
 renderer.domElement.addEventListener('pointermove', (e) => {
-  if (appMode !== 'builder' || !placingPreset || placingSnaps.length === 0) return;
+  if (appMode !== 'builder') return;
+  const drag = stagePartDrag;
+  if (drag) {
+    const d = currentDesign();
+    if (!d) return;
+    if (!drag.active) {
+      if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < 8) return;
+      drag.active = true;
+      renderer.domElement.style.cursor = 'grabbing';
+      if (builderSelectedId !== drag.id) {
+        builderSelectedId = drag.id;
+        refreshBuilder(false, true);
+      }
+      if (drag.kind === 'reorder') {
+        moveTargets = computeMoveTargets(d, drag.id);
+        hoveredMoveId = null;
+        builderView.setSnapPoints(moveTargets, null);
+      }
+    }
+    if (drag.kind === 'reorder') {
+      const hit = builderView.pickSnapPoint(e.clientX, e.clientY, Infinity);
+      const nextId = hit?.id ?? null;
+      if (nextId !== hoveredMoveId) {
+        hoveredMoveId = nextId;
+        builderView.setSnapPoints(moveTargets, hoveredMoveId);
+      }
+      builderUi.setDragGhost(hit ? `Move ${drag.name} to the ${hit.label}` : `Move ${drag.name}`, e.clientX, e.clientY);
+    } else {
+      // Down the screen is toward the tail, which is a positive offset.
+      const metres = (e.clientY - drag.startY) * builderView.metersPerPixel();
+      const offset = Math.max(drag.minOffset, Math.min(drag.maxOffset, Number((drag.startOffset + metres).toFixed(4))));
+      // Rebuilding the model and mesh is costly: apply at most once per frame.
+      drag.pendingOffset = offset;
+      if (!drag.frame) {
+        drag.frame = requestAnimationFrame(() => {
+          drag.frame = 0;
+          if (stagePartDrag === drag) flushSlideDrag(drag);
+        });
+      }
+      builderUi.setDragGhost(`Slide ${drag.name}: ${(offset * 100).toFixed(1)} cm`, e.clientX, e.clientY);
+    }
+    return;
+  }
+  if (!placingPreset || placingSnaps.length === 0) return;
   const hit = builderView.pickSnapPoint(e.clientX, e.clientY);
   const nextId = hit?.id ?? null;
   if (nextId !== hoveredSnapId) {
     hoveredSnapId = nextId;
-    builderView.setSnapPoints(placingSnaps, hoveredSnapId);
+    builderView.setSnapPoints(placingSnaps, hoveredSnapId, placingPreset.create());
   }
+  renderer.domElement.style.cursor = hit ? 'pointer' : '';
 });
+
 renderer.domElement.addEventListener('pointerup', (e) => {
-  if (appMode !== 'builder' || !builderDownPos) return;
+  if (appMode !== 'builder') return;
+  const drag = stagePartDrag;
+  if (drag?.active) {
+    const d = currentDesign();
+    const target =
+      drag.kind === 'reorder' ? moveTargets.find((t) => t.id === hoveredMoveId) ?? null : null;
+    endStagePartDrag();
+    builderDownPos = null;
+    if (d && target && target.insertIndex !== undefined) {
+      const next = moveExternalPart(d, drag.id, target.insertIndex);
+      if (next !== d) {
+        setDesign(next, true);
+        refreshBuilder(false, true);
+      }
+    }
+    return;
+  }
+  if (drag) endStagePartDrag();
+  if (!builderDownPos) return;
   const dist = Math.hypot(e.clientX - builderDownPos.x, e.clientY - builderDownPos.y);
   builderDownPos = null;
   if (dist > 8) return;
@@ -1443,28 +1876,9 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   }
 });
 
-// Desktop drag-from-palette onto 3D canvas snap points.
-renderer.domElement.addEventListener('dragover', (e) => {
-  if (appMode !== 'builder' || !placingPreset) return;
-  e.preventDefault();
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-  const hit = builderView.pickSnapPoint(e.clientX, e.clientY);
-  const nextId = hit?.id ?? null;
-  if (nextId !== hoveredSnapId) {
-    hoveredSnapId = nextId;
-    builderView.setSnapPoints(placingSnaps, hoveredSnapId);
-  }
-});
-renderer.domElement.addEventListener('drop', (e) => {
-  if (appMode !== 'builder' || !placingPreset) return;
-  e.preventDefault();
-  const snap = builderView.pickSnapPoint(e.clientX, e.clientY);
-  const preset = placingPreset;
-  if (snap && preset) {
-    commitSnapPlacement(preset, snap);
-  } else {
-    clearPlacement();
-  }
+renderer.domElement.addEventListener('pointercancel', () => {
+  if (stagePartDrag) endStagePartDrag();
+  builderDownPos = null;
 });
 
 activeConfig = ui.getConfig();
@@ -1476,14 +1890,21 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   builderView.resize(w, h);
   missionView.resize(w, h);
+  renderer.setPixelRatio(targetPixelRatio());
   renderer.setSize(w, h);
+  requestRender();
 });
 
 // ---------- Mission mode glue ----------
 
-const missionDef = getMission('lvm3-m4')!;
+const DEFAULT_MISSION_ID = 'lvm3-m4';
+// The mission now being shown. Changed by selectMission().
+let missionDef: MissionDef = getMission(DEFAULT_MISSION_ID)!;
 const missionView = createMissionView(renderer.domElement);
+// Keyed by `${missionId}:${caseId}` so two missions never share a flight.
 const missionCache = new Map<string, FlightRecord>();
+// Bumped on every load; a load that is no longer the latest does not touch the UI.
+let missionLoadSeq = 0;
 const SCENARIO_IDS = new Set<string>(['blocked-vent', 'regulator-low', 'hot-grain']);
 let missionRecord: FlightRecord | null = null;
 let missionT = 0;
@@ -1491,7 +1912,79 @@ let missionPlaying = true;
 let missionWarp = 1;
 let lastMissionUiMs = -Infinity;
 
+// ---------- Piloted flight: the mission flown live, by hand ----------
+
+let pilotFlight: PilotedFlight | null = null;
+let pilotMarkerVersion = -1;
+let lastPilotPathMs = -Infinity;
+/** Live flights step the physics every frame, so the top replay speed is not offered. */
+const PILOT_MAX_WARP = 20;
+
+function startPilot(): void {
+  // A replay still loading must not land on top of the live flight.
+  missionLoadSeq++;
+  missionLoadAbort?.abort();
+  missionLoadAbort = null;
+  missionUi.setBusy(null);
+  let flight: PilotedFlight;
+  try {
+    flight = startPilotedFlight(missionDef);
+  } catch (e) {
+    missionUi.setError(`Could not start the flight: ${errorMessage(e)}`);
+    return;
+  }
+  applyMissionRecord(flight.record);
+  pilotFlight = flight;
+  pilotMarkerVersion = flight.markerVersion;
+  lastPilotPathMs = -Infinity;
+  missionWarp = 1;
+  pilotControls.setFlight(flight);
+  pilotControls.update();
+}
+
+/** Stop flying and leave the flight so far on screen as an ordinary replay. */
+function endPilot(): void {
+  const flight = pilotFlight;
+  if (!flight) return;
+  const record = flight.finish();
+  applyMissionRecord(record);
+  missionT = record.samples[record.samples.length - 1].t;
+  missionPlaying = false;
+  missionView.setTime(missionT);
+  missionUi.update(snapshotAt(record, missionT), missionPlaying, missionWarp);
+  requestRender(2000);
+}
+
+/** Advances a live flight by one frame. Returns true while one is running. */
+function stepPilot(realDt: number, now: number): boolean {
+  const flight = pilotFlight;
+  if (!flight) return false;
+  if (missionPlaying && !flight.ended) {
+    // A stalled tab must not turn into one enormous physics step.
+    flight.advance(Math.min(realDt, 0.1) * Math.min(missionWarp, PILOT_MAX_WARP));
+  }
+  const samples = flight.record.samples;
+  missionT = samples[samples.length - 1].t;
+  if (now - lastPilotPathMs >= 500) {
+    lastPilotPathMs = now;
+    missionView.refreshPath();
+  }
+  if (flight.markerVersion !== pilotMarkerVersion) {
+    pilotMarkerVersion = flight.markerVersion;
+    missionUi.setRecord(flight.record, missionDef);
+  }
+  pilotControls.update();
+  if (flight.ended) endPilot();
+  return true;
+}
+
 function applyMissionRecord(record: FlightRecord): void {
+  // Showing any flight, including a finished live one as a replay, ends live flying.
+  if (pilotFlight) {
+    pilotFlight = null;
+    pilotControls.setFlight(null);
+  }
+  requestRender();
   missionRecord = record;
   missionT = record.samples[0]?.t ?? 0;
   missionPlaying = true;
@@ -1504,9 +1997,28 @@ function applyMissionRecord(record: FlightRecord): void {
   }
 }
 
+const MISSION_CACHE_MAX = 8;
+// Map order is recency order: a hit re-inserts, and the oldest entry is evicted past the cap.
+function cacheMissionRecord(key: string, rec: FlightRecord): void {
+  missionCache.delete(key);
+  missionCache.set(key, rec);
+  while (missionCache.size > MISSION_CACHE_MAX) {
+    missionCache.delete(missionCache.keys().next().value as string);
+  }
+}
+// The in-flight flight computation; aborted (worker terminated) when a newer load starts.
+let missionLoadAbort: AbortController | null = null;
+
 async function loadMissionCase(caseId: string): Promise<void> {
-  const cached = missionCache.get(caseId);
+  const def = missionDef;
+  const seq = ++missionLoadSeq;
+  missionLoadAbort?.abort();
+  missionLoadAbort = null;
+  const key = `${def.id}:${caseId}`;
+  const cached = missionCache.get(key);
   if (cached) {
+    cacheMissionRecord(key, cached);
+    missionUi.setBusy(null);
     applyMissionRecord(cached);
     return;
   }
@@ -1518,31 +2030,52 @@ async function loadMissionCase(caseId: string): Promise<void> {
       : SCENARIO_IDS.has(caseId)
         ? { scenario: caseId as ScenarioId, destructive: true }
         : { failureCase: caseId, destructive: true };
+  const controller = new AbortController();
+  missionLoadAbort = controller;
   try {
-    const rec = await runMission(missionDef.id, opts);
-    missionCache.set(caseId, rec);
-    if (appMode === 'mission') {
+    const rec = await runMission(def.id, opts, controller.signal);
+    cacheMissionRecord(key, rec);
+    if (seq === missionLoadSeq && appMode === 'mission') {
       applyMissionRecord(rec);
     }
   } catch (e) {
-    missionUi.setError(`Mission failed: ${errorMessage(e)}`);
+    if (isAbortError(e)) return;
+    if (seq === missionLoadSeq) missionUi.setError(`Mission failed: ${errorMessage(e)}`);
   } finally {
-    missionUi.setBusy(null);
+    if (seq === missionLoadSeq) {
+      missionUi.setBusy(null);
+      if (missionLoadAbort === controller) missionLoadAbort = null;
+    }
   }
+}
+
+/** Switches to another mission and loads its nominal flight. Unknown ids are ignored. */
+function selectMission(id: string): void {
+  const def = getMission(id);
+  if (!def) return;
+  requestRender();
+  missionDef = def;
+  missionRecord = null;
+  missionT = 0;
+  missionPlaying = true;
+  void loadMissionCase('nominal');
 }
 
 const missionUi = createMissionUI(app, {
   onExit: () => exitMission(),
+  onMission: (id) => selectMission(id),
   onFly: (caseId) => {
     void loadMissionCase(caseId);
   },
   onPlayPause: () => {
+    requestRender();
     missionPlaying = !missionPlaying;
     if (missionRecord && missionRecord.samples.length > 0) {
       missionUi.update(snapshotAt(missionRecord, missionT), missionPlaying, missionWarp);
     }
   },
   onWarp: (warp) => {
+    requestRender();
     missionWarp = warp;
     if (missionRecord && missionRecord.samples.length > 0) {
       missionUi.update(snapshotAt(missionRecord, missionT), missionPlaying, missionWarp);
@@ -1550,29 +2083,43 @@ const missionUi = createMissionUI(app, {
   },
   onScrub: (t) => {
     if (!missionRecord || missionRecord.samples.length === 0) return;
+    requestRender();
     missionT = t;
     missionPlaying = false;
     missionView.setTime(missionT);
     missionUi.update(snapshotAt(missionRecord, missionT), missionPlaying, missionWarp);
   },
-  onCamera: (mode) => missionView.setCamera(mode),
+  onCamera: (mode) => {
+    requestRender();
+    missionView.setCamera(mode);
+  },
 });
 
-function enterMission(): void {
+const pilotControls = createPilotControls(app.querySelector<HTMLElement>('.msn-root')!, {
+  onStart: () => startPilot(),
+  onEnd: () => endPilot(),
+});
+
+function enterMission(id?: string): void {
   appMode = 'mission';
+  heroActive = false;
+  requestRender();
   cameraRig.setEnabled(false);
   builderView.setEnabled(false);
   ui.setVisible(false);
   builderUi.setVisible(false);
   missionUi.setVisible(true);
   missionView.setEnabled(true);
-  if (!missionRecord) {
+  if (id !== undefined && id !== missionDef.id && getMission(id)) {
+    selectMission(id);
+  } else if (!missionRecord) {
     void loadMissionCase('nominal');
   }
 }
 
 function exitMission(): void {
   appMode = 'flight';
+  requestRender();
   missionView.setEnabled(false);
   missionUi.setVisible(false);
   ui.setVisible(true);
@@ -1600,26 +2147,68 @@ interface DebugHook {
   clock,
 };
 
+async function tryLoadSharedRocket(): Promise<void> {
+  const hash = window.location.hash;
+  if (!hash.includes(`${SHARE_HASH_KEY}=`)) return;
+  try {
+    const design = await decodeDesignFromHash(hash);
+    if (!design) return;
+    const model = toRocketModel(design);
+    loadImportedDesign(design, model);
+    ui.toast('Loaded shared rocket');
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  } catch (e) {
+    ui.toast(`Could not load shared rocket: ${errorMessage(e)}`);
+  }
+}
+
 loadSample();
+void tryLoadSharedRocket();
+// Rockets saved to the account on another device join this browser's list.
+void cloudReady
+  .then(pullDesigns)
+  .then((added) => {
+    if (added === 0) return;
+    reloadBuilderStorage();
+    if (appMode === 'builder') refreshBuilder(false, false);
+    ui.toast(`${added} rocket${added === 1 ? '' : 's'} from your account added to Save / Open`);
+  });
 requestAnimationFrame(frame);
 
-// Someone who picked Chandrayaan-3 on the landing page goes straight to mission mode;
+// Someone who picked a flyable mission on the landing page goes straight to mission mode;
 // someone who just signed up or signed in goes straight to build mode.
 // Everyone else gets the title screen, once per browser session (returning from the Moon
 // page skips it).
+const PRESET_MISSIONS = new Map<string, string>([
+  ['chandrayaan-3', 'lvm3-m4'],
+  ['starlink', 'falcon9-starlink'],
+  ['eos-09', 'pslv-c61'],
+]);
 const selectedPreset = takeSelectedPreset();
+const presetMissionId = selectedPreset === null ? undefined : PRESET_MISSIONS.get(selectedPreset);
 const enterBuild = takeEnterBuildFlag();
-if (selectedPreset === 'chandrayaan-3') {
-  enterMission();
+if (presetMissionId !== undefined) {
+  // Falls back to the default mission while a mission definition is not merged yet.
+  enterMission(getMission(presetMissionId) ? presetMissionId : DEFAULT_MISSION_ID);
 } else if (enterBuild) {
   enterBuilder();
 } else {
-  mountHero(app, {
-    onBuild: () => enterBuilder(),
-    onFly: () => {},
+  const hero = mountHero(app, {
+    onBuild: () => {
+      heroActive = false;
+      enterBuilder();
+    },
+    onFly: () => {
+      heroActive = false;
+      requestRender();
+    },
     onMoon: () => window.location.assign('./landing.html'),
-    onMission: () => enterMission(),
+    onMission: () => {
+      heroActive = false;
+      enterMission();
+    },
   });
+  heroActive = hero !== null;
 }
 
 /** Preset mission chosen on the landing page (set in src/auth/gate.ts). */
@@ -1649,4 +2238,26 @@ interface MissionDebugHook {
   astraRunMission?: (id?: string) => Promise<unknown>;
 }
 (window as Window & MissionDebugHook).astraRunMission = (id = 'lvm3-m4') =>
-  import('../mission/client').then((m) => m.runMission(id));
+  runMission(id);
+
+// Dev-only hook for inspecting the mission view from the console:
+// __astraMission.cam('solar'), __astraMission.seek(120), __astraMission.capture() -> JPEG data URL.
+if ((import.meta.env as { DEV?: boolean }).DEV) {
+  (window as Window & { __astraMission?: unknown }).__astraMission = {
+    cam: (mode: Parameters<typeof missionView.setCamera>[0]) => {
+      missionView.setCamera(mode);
+      requestRender(3000);
+    },
+    seek: (t: number) => {
+      missionT = t;
+      missionPlaying = false;
+      missionView.setTime(t);
+      requestRender(1000);
+    },
+    capture: (quality = 0.8): string => {
+      missionView.render(renderer);
+      return renderer.domElement.toDataURL('image/jpeg', quality);
+    },
+    view: missionView,
+  };
+}

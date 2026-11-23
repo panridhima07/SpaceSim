@@ -11,3 +11,7 @@ fixtures/external
 rocket-physics/test
 rocket-physics/examples
 *.txt
+# Screen recordings and slide decks are not part of the site.
+*.mp4
+*.ppt
+*.pptx

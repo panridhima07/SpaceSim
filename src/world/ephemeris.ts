@@ -163,6 +163,23 @@ export function heliocentricOrbitSamples(name: string, jd: number, n: number): V
   return out;
 }
 
+/**
+ * Same orbit as heliocentricOrbitSamples, but written straight into `out` as flat x,y,z metres in
+ * the WORLD frame (eclipticToWorld applied), as a closed loop of n + 1 points (the last repeats the
+ * first). `out` needs (n + 1) * 3 entries. Skips the per-point Vec3 arrays of the older function.
+ */
+export function fillHeliocentricOrbitWorld(name: string, jd: number, n: number, out: Float32Array): void {
+  const el = elementsAt(name, jd);
+  const m = ECLIPTIC_TO_WORLD;
+  for (let k = 0; k <= n; k++) {
+    const p = ellipsePointAU(el, (2 * Math.PI * (k % n)) / n);
+    const x = p[0] * AU, y = p[1] * AU, z = p[2] * AU;
+    out[k * 3] = m[0][0] * x + m[0][1] * y + m[0][2] * z;
+    out[k * 3 + 1] = m[1][0] * x + m[1][1] * y + m[1][2] * z;
+    out[k * 3 + 2] = m[2][0] * x + m[2][1] * y + m[2][2] * z;
+  }
+}
+
 // Low-precision lunar theory (Meeus, Astronomical Algorithms ch. 47, main terms only).
 // Accuracy about 0.1 to 0.5 degrees in longitude, adequate for v1.
 // Longitude/distance terms: [D, M, M', F, sin-coef (1e-6 deg) or cos-coef (1e-3 km)].

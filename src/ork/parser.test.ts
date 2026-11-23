@@ -282,3 +282,41 @@ describe.skipIf(!fsMod.existsSync(TWO_STAGE) || !fsMod.existsSync(THREE_STAGE))(
     });
   },
 );
+
+describe('parseOrkXml limits', () => {
+  const wrap = (inner: string): string =>
+    `<openrocket><rocket><name>T</name><subcomponents><stage><subcomponents>${inner}</subcomponents></stage></subcomponents></rocket></openrocket>`;
+  const tube = (extra: string): string =>
+    `<bodytube><name>b</name><length>0.3</length><radius>0.025</radius><thickness>0.001</thickness><subcomponents>${extra}</subcomponents></bodytube>`;
+
+  it('clamps fin, instance counts to 64 and lengths and radii to their limits', () => {
+    const fins = '<trapezoidfinset><name>f</name><fincount>1000000000</fincount><rootchord>0.07</rootchord><tipchord>0.03</tipchord><height>0.05</height><sweeplength>0.02</sweeplength><thickness>0.003</thickness></trapezoidfinset>';
+    const lug = '<launchlug><name>l</name><radius>0.003</radius><length>0.02</length><instancecount>99999</instancecount></launchlug>';
+    const rocket = parseOrkXml(wrap(`<bodytube><name>huge</name><length>1e9</length><radius>1e6</radius><thickness>1e6</thickness><subcomponents>${fins}${lug}</subcomponents></bodytube>`));
+    const body = rocket.components.find((c) => c.kind === 'bodytube') as BodyTube;
+    expect(body.length).toBe(100);
+    expect(body.outerRadius).toBe(10);
+    expect(body.thickness).toBeLessThanOrEqual(body.outerRadius);
+    expect((rocket.components.find((c) => c.kind === 'finset') as FinSet).count).toBe(64);
+    expect((rocket.components.find((c) => c.kind === 'ring') as Ring).instanceCount).toBe(64);
+  });
+
+  it('keeps normal fin counts and reads at most 1000 children per part', () => {
+    const fin = '<trapezoidfinset><name>f</name><fincount>4</fincount><rootchord>0.07</rootchord><height>0.05</height></trapezoidfinset>';
+    expect((parseOrkXml(wrap(tube(fin))).components.find((c) => c.kind === 'finset') as FinSet).count).toBe(4);
+    const many = '<masscomponent><name>m</name><mass>0.001</mass><packedlength>0.01</packedlength></masscomponent>'.repeat(1500);
+    const r = parseOrkXml(wrap(tube(many)));
+    expect(r.components.filter((c) => c.kind === 'mass')).toHaveLength(1000);
+  });
+
+  it('rejects DOCTYPE and ENTITY declarations', () => {
+    const evil = `<?xml version="1.0"?><!DOCTYPE lol [<!ENTITY a "aaaa">]>${wrap('')}`;
+    expect(() => parseOrkXml(evil)).toThrow(/DOCTYPE or ENTITY/);
+    expect(() => parseOrkXml(`<!doctype x>${wrap('')}`)).toThrow(/DOCTYPE or ENTITY/);
+  });
+
+  it('rejects oversize files and text', async () => {
+    await expect(parseOrkFile(new Uint8Array(20 * 1024 * 1024 + 1))).rejects.toThrow(/too large/);
+    expect(() => parseOrkXml(`<a>${' '.repeat(20 * 1024 * 1024)}</a>`)).toThrow(/too large/);
+  });
+});

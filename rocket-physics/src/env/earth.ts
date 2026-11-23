@@ -48,18 +48,47 @@ export interface Geodetic {
  * height are the same whether the input is ECI or ECEF; only `lon` differs.
  */
 export function toGeodetic(r: Vec3): Geodetic {
-  const p = Math.hypot(r[0], r[1]);
-  const lon = Math.atan2(r[1], r[0]);
-  let lat = Math.atan2(r[2], p * (1 - E2));
+  solveGeodetic(r[0], r[1], r[2]);
+  return { lat: Math.atan2(r[2], gDen), lon: Math.atan2(r[1], r[0]), alt: gAlt };
+}
+
+/** Height above the WGS-84 ellipsoid, m. The cheap call when latitude and longitude are not needed. */
+export function geodeticAltitude(x: number, y: number, z: number): number {
+  solveGeodetic(x, y, z);
+  return gAlt;
+}
+
+// Result slots of solveGeodetic. Module-level so the hot path allocates nothing.
+// tan(lat) = z / gDen, and gHyp = hypot(z, gDen).
+let gDen = 1;
+let gHyp = 1;
+let gAlt = 0;
+
+/**
+ * Latitude and height by fixed-point iteration on the pair (sin lat, cos lat), so the loop
+ * needs square roots only, no trigonometry. Stops as soon as the latitude has settled to
+ * about 1e-15 rad; that takes two or three passes for anything from the ground to the Moon.
+ */
+function solveGeodetic(x: number, y: number, z: number): void {
+  const p = Math.sqrt(x * x + y * y);
+  let den = p * (1 - E2);
+  let h = Math.sqrt(z * z + den * den);
   let alt = 0;
   for (let i = 0; i < 6; i++) {
-    const s = Math.sin(lat);
-    const c = Math.cos(lat);
-    const N = RE / Math.sqrt(1 - E2 * s * s);
-    alt = p * c + r[2] * s - N * (1 - E2 * s * s); // stable at the poles
-    lat = Math.atan2(r[2], p * (1 - (E2 * N) / (N + alt)));
+    const s = h > 0 ? z / h : 0;
+    const c = h > 0 ? den / h : 1;
+    const w = 1 - E2 * s * s;
+    const N = RE / Math.sqrt(w);
+    alt = p * c + z * s - N * w; // stable at the poles
+    const next = p * (1 - (E2 * N) / (N + alt));
+    const moved = Math.abs(next - den);
+    den = next;
+    h = Math.sqrt(z * z + den * den);
+    if (moved <= 1e-15 * h) break;
   }
-  return { lat, lon, alt };
+  gDen = den;
+  gHyp = h;
+  gAlt = alt;
 }
 
 export interface LocalFrame extends Geodetic {
@@ -70,11 +99,19 @@ export interface LocalFrame extends Geodetic {
 
 /** East / north / up unit vectors at r, in the same frame r is given in. */
 export function localFrame(r: Vec3): LocalFrame {
-  const g = toGeodetic(r);
-  const sl = Math.sin(g.lat), cl = Math.cos(g.lat);
-  const so = Math.sin(g.lon), co = Math.cos(g.lon);
+  const x = r[0];
+  const y = r[1];
+  const z = r[2];
+  solveGeodetic(x, y, z);
+  const sl = gHyp > 0 ? z / gHyp : 0;
+  const cl = gHyp > 0 ? gDen / gHyp : 1;
+  const p = Math.sqrt(x * x + y * y);
+  const so = p > 0 ? y / p : 0;
+  const co = p > 0 ? x / p : 1;
   return {
-    ...g,
+    lat: Math.atan2(z, gDen),
+    lon: Math.atan2(y, x),
+    alt: gAlt,
     east: [-so, co, 0],
     north: [-sl * co, -sl * so, cl],
     up: [cl * co, cl * so, sl],

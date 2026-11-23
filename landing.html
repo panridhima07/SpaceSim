@@ -3,34 +3,32 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <meta name="theme-color" content="#101c30" />
+    <meta name="theme-color" content="#0a0a0b" />
     <link rel="icon" type="image/png" href="/icon-192.png" />
-    <title>Moon Landing · Space Flight Builder</title>
+    <title>Chandrayaan-3 to the Moon · Space Flight Builder</title>
     <style>
       /* Restyled to match the ASTRA SPACEFLIGHT reference and .sfb-root token system:
-         flat dark glass panels, no 3D tilt, a top bar, flat keys, cyan accent. */
+         flat dark glass panels, no 3D tilt, a top bar, flat keys, amber accent. */
       @property --sfb-px { syntax: '<number>'; inherits: false; initial-value: 0; }
       @property --sfb-py { syntax: '<number>'; inherits: false; initial-value: 0; }
       :root,
       .sfb-root {
         color-scheme: dark;
-        --sfb-panel: rgba(6, 11, 20, 0.68);
-        --sfb-line: rgba(150, 195, 255, 0.16);
-        --sfb-text: #dbe9ff;
-        --sfb-muted: #7f93b2;
-        --sfb-accent: #7fd7ff;
-        --sfb-accent2: #ffb454;
+        --sfb-panel: rgba(14, 14, 16, 0.68);
+        --sfb-line: rgba(255, 255, 255, 0.08);
+        --sfb-text: #ededee;
+        --sfb-muted: #8a8a90;
+        --sfb-accent: #f5a65b;
+        --sfb-accent2: #5fc4b8;
         --sfb-critical: #ff5d6c;
-        --sfb-warning: #ffb454;
-        --sfb-info: #7fd7ff;
+        --sfb-warning: #ffd166;
+        --sfb-info: #5fc4b8;
         --sfb-good: #7dffb2;
         --sfb-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
         --sfb-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
         --sfb-ease-in: cubic-bezier(0.7, 0, 0.84, 0);
         --sfb-ease-move: cubic-bezier(0.65, 0, 0.35, 1);
-        --sfb-slab:
-          0 14px 50px rgba(0, 0, 0, 0.45),
-          inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        --sfb-slab: 0 14px 50px rgba(0, 0, 0, 0.45);
         /* Legacy aliases kept for backwards compatibility */
         --ink: var(--sfb-text);
         --dim: var(--sfb-muted);
@@ -49,17 +47,29 @@
         margin: 0;
         height: 100%;
         overflow: hidden;
-        background: #02040a;
+        background: #0a0a0b;
         color: var(--sfb-text);
         font: 400 13px/1.35 "Inter", "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
         font-variant-numeric: tabular-nums;
         -webkit-font-smoothing: antialiased;
         user-select: none;
       }
+      input[type="range"] { accent-color: var(--sfb-accent); }
       #view { position: fixed; inset: 0; }
+      /* H or the dock button clears the readouts off the view. Leaving is quicker than arriving. */
+      #hud, #log {
+        transition: opacity 240ms var(--sfb-ease-out), translate 240ms var(--sfb-ease-out), visibility 0s;
+      }
+      body.hud-off #hud, body.hud-off #log {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+        translate: 12px 0;
+        transition: opacity 150ms var(--sfb-ease-in), translate 150ms var(--sfb-ease-in), visibility 0s 150ms;
+      }
       #view canvas { display: block; touch-action: none; }
-      @keyframes in-left { from { opacity: 0; translate: -28px 0; } }
-      @keyframes in-right { from { opacity: 0; translate: 28px 0; } }
+      @keyframes in-left { from { opacity: 0; translate: -14px 0; } }
+      @keyframes in-right { from { opacity: 0; translate: 14px 0; } }
       @keyframes rise { from { opacity: 0; translate: 0 18px; } }
       @keyframes pop { from { opacity: 0; scale: 0.95; } }
 
@@ -68,7 +78,7 @@
       .sfb-panel {
         position: fixed;
         border: 1px solid var(--sfb-line);
-        border-radius: 14px;
+        border-radius: 10px;
         padding: 12px 14px;
         background: var(--sfb-panel);
         backdrop-filter: blur(18px) saturate(1.4);
@@ -106,7 +116,7 @@
         gap: 8px;
         font-size: 12px;
         font-weight: 400;
-        letter-spacing: 0.28em;
+        letter-spacing: 0.14em;
         text-transform: uppercase;
         color: var(--sfb-muted);
         white-space: nowrap;
@@ -116,18 +126,19 @@
       #brand b svg {
         flex: none;
         color: var(--sfb-accent);
-        filter: drop-shadow(0 0 8px rgba(127, 215, 255, 0.6));
+        filter: none;
       }
       #brand .chip {
         padding: 5px 12px;
         border: 1px solid var(--sfb-line);
         border-radius: 999px;
+        font-family: var(--sfb-mono);
         font-size: 11px;
         font-weight: 500;
-        letter-spacing: 0.2em;
+        letter-spacing: 0.14em;
         text-transform: uppercase;
         color: var(--sfb-accent);
-        background: rgba(10, 20, 36, 0.5);
+        background: rgba(20, 20, 23, 0.5);
         white-space: nowrap;
       }
       #brand a.btn { margin-left: auto; }
@@ -143,16 +154,17 @@
       #hud .phase {
         font-size: 15px;
         font-weight: 600;
-        letter-spacing: 0.22em;
+        letter-spacing: 0.14em;
         text-transform: uppercase;
         color: #fff;
-        text-shadow: 0 0 14px rgba(127, 215, 255, 0.6);
+        text-shadow: none;
       }
       #hud .site {
-        color: var(--sfb-accent);
+        color: var(--sfb-muted);
+        font-family: var(--sfb-mono);
         font-size: 10px;
         font-weight: 600;
-        letter-spacing: 0.2em;
+        letter-spacing: 0.14em;
         text-transform: uppercase;
         margin: 2px 0 8px;
         min-height: 1.4em;
@@ -161,8 +173,9 @@
       #hud td { padding: 2px 0; }
       #hud td:first-child {
         color: var(--sfb-muted);
+        font-family: var(--sfb-mono);
         font-size: 10px;
-        letter-spacing: 0.18em;
+        letter-spacing: 0.14em;
         text-transform: uppercase;
       }
       #hud td:last-child {
@@ -187,8 +200,8 @@
         display: block;
         height: 100%;
         border-radius: 99px;
-        background: linear-gradient(90deg, #3aa8ff, var(--sfb-accent));
-        transition: width 0.35s cubic-bezier(0.2, 0.7, 0.2, 1);
+        background: var(--sfb-accent);
+        transition: width 240ms var(--sfb-ease-out);
       }
 
       /* Event log, bottom left. */
@@ -228,7 +241,7 @@
         gap: 8px;
         justify-content: center;
         max-width: min(780px, calc(100vw - 24px));
-        border-radius: 14px;
+        border-radius: 10px;
         padding: 8px 10px;
         animation: rise 380ms var(--sfb-ease-out) 120ms backwards;
       }
@@ -253,19 +266,19 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        background: rgba(18, 30, 52, 0.55);
+        background: rgba(255, 255, 255, 0.04);
         border: 1px solid var(--sfb-line);
-        border-radius: 10px;
+        border-radius: 8px;
         box-shadow: none;
-        transition: background 0.18s, border-color 0.18s, transform 0.12s, filter 0.18s, box-shadow 0.18s;
+        transition: background 150ms var(--sfb-ease-out), border-color 150ms var(--sfb-ease-out), transform 120ms var(--sfb-ease-out), filter 150ms var(--sfb-ease-out), box-shadow 150ms var(--sfb-ease-out);
       }
       @media (hover: hover) {
         .sfb-btn:hover:not(:disabled),
         a.btn:hover,
         #dock button:hover:not(:disabled),
         #result button:hover:not(:disabled) {
-          background: rgba(40, 70, 120, 0.5);
-          border-color: rgba(127, 215, 255, 0.5);
+          background: rgba(255, 255, 255, 0.08);
+          border-color: rgba(255, 255, 255, 0.16);
         }
       }
       .sfb-btn:active:not(:disabled),
@@ -285,7 +298,7 @@
       .sfb-btn.is-active,
       #dock button.on,
       #dock button.is-active {
-        background: rgba(127, 215, 255, 0.16);
+        background: rgba(245, 166, 91, 0.12);
         border-color: var(--sfb-accent);
         color: var(--sfb-accent);
       }
@@ -294,7 +307,7 @@
         .sfb-btn.is-active:hover:not(:disabled),
         #dock button.on:hover:not(:disabled),
         #dock button.is-active:hover:not(:disabled) {
-          background: rgba(127, 215, 255, 0.22);
+          background: rgba(245, 166, 91, 0.16);
           border-color: var(--sfb-accent);
         }
       }
@@ -327,10 +340,10 @@
         margin: 0 0 6px;
         font-size: 28px;
         font-weight: 300;
-        letter-spacing: 0.18em;
+        letter-spacing: -0.01em;
         text-transform: uppercase;
-        color: #fff;
-        text-shadow: 0 0 30px rgba(127, 215, 255, 0.5);
+        color: #ededee;
+        text-shadow: none;
       }
       #result p {
         margin: 6px 0 16px;
@@ -340,19 +353,19 @@
       }
       #result button:first-of-type,
       .sfb-btn-primary {
-        background: linear-gradient(180deg, rgba(127, 215, 255, 0.95), rgba(70, 160, 230, 0.95));
-        color: #031018;
-        font-weight: 700;
+        background: #f4f4f2;
+        color: #0a0a0b;
+        font-weight: 600;
         border-color: transparent;
-        box-shadow: 0 0 24px rgba(127, 215, 255, 0.35);
+        box-shadow: none;
       }
       @media (hover: hover) {
         #result button:first-of-type:hover:not(:disabled),
         .sfb-btn-primary:hover:not(:disabled) {
-          background: linear-gradient(180deg, rgba(127, 215, 255, 0.95), rgba(70, 160, 230, 0.95));
+          background: #fff;
           border-color: transparent;
-          filter: brightness(1.08);
-          box-shadow: 0 0 36px rgba(127, 215, 255, 0.6);
+          filter: none;
+          box-shadow: none;
         }
       }
 
@@ -367,9 +380,9 @@
         padding: 8px 18px;
         border-radius: 999px;
         box-shadow: none;
-        background: rgba(10, 20, 36, 0.5);
+        background: rgba(20, 20, 23, 0.5);
         font-size: 11px;
-        letter-spacing: 0.2em;
+        letter-spacing: 0.14em;
         text-transform: uppercase;
         color: var(--sfb-accent);
       }
@@ -377,7 +390,7 @@
       @media (max-width: 760px) {
         :root,
         .sfb-root {
-          --sfb-panel: rgba(8, 13, 24, 0.92);
+          --sfb-panel: rgba(14, 14, 16, 0.92);
         }
         .panel,
         .sfb-panel {
@@ -393,7 +406,7 @@
           gap: 8px;
         }
         #brand .wide, #brand .chip { display: none; }
-        #brand b { letter-spacing: 0.2em; }
+        #brand b { letter-spacing: 0.14em; }
         #hud {
           top: calc(68px + env(safe-area-inset-top, 0px));
           right: 10px;
@@ -417,7 +430,7 @@
           overflow-x: auto;
           scrollbar-width: none;
           padding: 8px 10px;
-          border-radius: 14px;
+          border-radius: 10px;
         }
         #dock::-webkit-scrollbar { display: none; }
         #dock button { flex: none; }
@@ -455,15 +468,15 @@
   <body class="sfb-root">
     <div id="view"></div>
     <div id="brand" class="panel sfb-panel">
-      <b><svg viewBox="0 0 32 32" width="20" height="20" aria-hidden="true"><path d="M16 3l6 17-6-3.6L10 20z" fill="currentColor"/><path d="M9 24h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><strong>Astra</strong><span class="wide">Moon Landing</span></b>
-      <span class="chip">Moon landing</span>
+      <b><svg viewBox="0 0 32 32" width="20" height="20" aria-hidden="true"><path d="M16 3l6 17-6-3.6L10 20z" fill="currentColor"/><path d="M9 24h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><strong>Astra</strong><span class="wide">Chandrayaan-3</span></b>
+      <span class="chip" id="chip">Journey to the Moon</span>
       <a class="btn sfb-btn" href="./index.html">←&nbsp;<span class="wide">Rocket&nbsp;</span>Builder</a>
     </div>
     <div id="hud" class="panel sfb-panel"></div>
     <div id="log" class="panel sfb-panel"></div>
     <div id="dock" class="panel sfb-panel"></div>
     <div id="result" class="panel sfb-panel"></div>
-    <div id="busy" class="panel sfb-panel">Computing the descent orbit…</div>
+    <div id="busy" class="panel sfb-panel">Flying Chandrayaan-3 from Earth orbit to the Moon…</div>
     <script type="module" src="/src/landing/boot.ts"></script>
   </body>
 </html>

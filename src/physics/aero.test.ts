@@ -12,14 +12,26 @@ describe('aeroProps (Barrowman)', () => {
     expect(a.refLength).toBeCloseTo(0.025, 12);
   });
 
-  it('fixture normal force slope is between 6 and 20 per rad', () => {
+  it('fixture normal force slope is between 6 and 25 per rad', () => {
     const a = aeroProps(FIXTURE_ROCKET, 0.3, cg);
     expect(a.cnAlpha).toBeGreaterThan(6);
-    expect(a.cnAlpha).toBeLessThan(20);
+    expect(a.cnAlpha).toBeLessThan(25);
+  });
+
+  it('body lift acts at the body planform centroid, ahead of the CP', () => {
+    const a = aeroProps(FIXTURE_ROCKET, 0.3, cg);
+    // Body lift factor K * A_planform / A_ref is below the bounding-rectangle value
+    // (the nose tapers) but well above half of it.
+    const rect = (1.1 * 2 * FIXTURE_ROCKET.maxRadius * FIXTURE_ROCKET.length) / a.refArea;
+    expect(a.bodyLift).toBeGreaterThan(0.5 * rect);
+    expect(a.bodyLift).toBeLessThan(rect);
+    expect(a.bodyLiftX).toBeGreaterThan(0);
+    expect(a.bodyLiftX).toBeLessThan(a.cpX);
   });
 
   it('fin CNα matches the hand-computed Barrowman value', () => {
     // Hand calculation for the fixture fin set at M=0 (no compressibility correction).
+    // Body-fin interference Kfb is applied twice, as OpenRocket's stored results do.
     const N = 3;
     const s = 0.04; // span
     const Cr = 0.05;
@@ -30,7 +42,7 @@ describe('aeroProps (Barrowman)', () => {
     const Kfb = 1 + rb / (s + rb);
     const l = Math.sqrt(s * s + (m + Ct / 2 - Cr / 2) ** 2);
     const denom = 1 + Math.sqrt(1 + (2 * l / (Cr + Ct)) ** 2);
-    const finCn = (Kfb * 4 * N * (s / d) ** 2) / denom;
+    const finCn = (Kfb * Kfb * 4 * N * (s / d) ** 2) / denom;
     const nose = 2; // ogive nose with base radius equal to maxRadius
 
     const a = aeroProps(FIXTURE_ROCKET, 0, cg);

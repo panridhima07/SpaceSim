@@ -17,11 +17,12 @@
 
 import * as THREE from 'three';
 import { R_EARTH, type Vec3 } from '../types';
+import { loadSharedTexture } from '../render/textureCache';
 import {
   BODIES,
   bodyPositionEarthCentred,
   eclipticToWorld,
-  heliocentricOrbitSamples,
+  fillHeliocentricOrbitWorld,
   moonGeocentricPosition,
   type BodyDef,
 } from './ephemeris';
@@ -44,6 +45,9 @@ const ORBIT_SAMPLES = 256;
 const ORBIT_OPACITY = 0.5;
 const MOON_PERIOD_DAYS = 27.321661;
 const MOON_ORBIT_REFRESH_DAYS = 1;
+// Planet orbit lines hang off the Sun (repositioned every frame), so only the slow element drift
+// (arcminutes per century) changes their shape. 10 days is invisible even at extreme time warp.
+const PLANET_ORBIT_REFRESH_DAYS = 10;
 const STAR_COUNT = 2600;
 const BRIGHT_STAR_COUNT = 400;
 const STAR_RADIUS = 1e12;
@@ -85,6 +89,11 @@ export interface SolarSystem {
   sunDirection: THREE.Vector3;
   /** Show or hide the constellation stick figures. Returns the new state. */
   setConstellations(on: boolean): boolean;
+  /**
+   * While true, update() does not start the texture and star-catalogue downloads; the bodies keep
+   * their flat fallback colours. Set it while the scene is only a backdrop (the title screen).
+   */
+  holdAssets: boolean;
 }
 
 // ---------- asset loading ----------
@@ -99,22 +108,15 @@ function assetUrl(file: string): string {
   return `${base}${ASSET_DIR}${file}`;
 }
 
-let textureLoader: THREE.TextureLoader | null = null;
-
-/** Loads a texture in the background. Does nothing without a browser or when the file is missing. */
+/**
+ * Loads a texture in the background through the shared cache (so other views reuse the same GPU
+ * texture). Does nothing without a browser or when the file is missing.
+ */
 function loadTexture(file: string, onLoad: (t: THREE.Texture) => void, srgb = true): void {
   if (!assetsEnabled()) return;
-  textureLoader ??= new THREE.TextureLoader();
-  textureLoader.load(
-    assetUrl(file),
-    (t) => {
-      t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-      t.anisotropy = 4;
-      onLoad(t);
-    },
-    undefined,
-    () => {},
-  );
+  loadSharedTexture(assetUrl(file), onLoad, {
+    colorSpace: srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace,
+  });
 }
 
 function loadJson(file: string, onLoad: (data: unknown) => void): void {
@@ -434,6 +436,8 @@ interface BodyEntry {
   /** Moon-style orbit: geocentric, rebuilt only every MOON_ORBIT_REFRESH_DAYS. */
   geocentric: boolean;
   lastGeocentricJd: number;
+  /** Epoch of the last heliocentric orbit fill (NaN until the first update). */
+  lastOrbitJd: number;
 }
 
 export function buildSolarSystem(): SolarSystem {
@@ -441,6 +445,11 @@ export function buildSolarSystem(): SolarSystem {
   group.name = 'solarSystem';
   const sunDirection = new THREE.Vector3(1, 0, 0);
   const dotTex = makeRadialTexture();
+
+  // Network loads (maps, star catalogue, Milky Way) are queued here and only started by the first
+  // update(), so building the scene graph at app start costs no downloads.
+  const deferredLoads: (() => void)[] = [];
+  let assetsRequested = false;
 
   // Earth. Sunk 2 km so the faceted 128x64 tessellation sits below the local ground disc.
   const earthTex = makeEarthTexture();
@@ -475,7 +484,7 @@ export function buildSolarSystem(): SolarSystem {
   // Real Earth: turn the globe so Sriharikota sits under the pad, then add relief, ocean glint,
   // night lights and clouds. The stylised texture stays if the day map cannot be loaded.
   let clouds: THREE.Mesh | null = null;
-  loadTexture('earth_atmos_2048.jpg', (day) => {
+  deferredLoads.push(() => loadTexture('earth_atmos_2048.jpg', (day) => {
     const [mx, my, mz] = siteAlignment(PAD_LAT_DEG, PAD_LON_DEG);
     earth.quaternion.setFromRotationMatrix(
       new THREE.Matrix4().set(
@@ -514,7 +523,7 @@ export function buildSolarSystem(): SolarSystem {
       clouds.visible = false;
       earth.add(clouds);
     });
-  });
+  }));
   const atmosphere = new THREE.Mesh(
     new THREE.SphereGeometry(R_EARTH + 80_000, 96, 48),
     new THREE.MeshBasicMaterial({
@@ -552,12 +561,12 @@ export function buildSolarSystem(): SolarSystem {
   );
   sun.name = 'Sun';
   group.add(sun);
-  loadTexture('sunmap.jpg', (t) => {
+  deferredLoads.push(() => loadTexture('sunmap.jpg', (t) => {
     const m = sun.material as THREE.MeshBasicMaterial;
     m.map = t;
     m.color.set(0xffffff);
     m.needsUpdate = true;
-  });
+  }));
   const sunGlow = makeDot(0xffd27a, dotTex, 'SunGlow');
   sunGlow.scale.set(0.12, 0.12, 1);
   sunGlow.material.blending = THREE.AdditiveBlending;
@@ -611,14 +620,14 @@ export function buildSolarSystem(): SolarSystem {
     points.geometry.dispose();
     points.geometry = geo;
   };
-  loadJson('stars.6.json', (data) => {
+  deferredLoads.push(() => loadJson('stars.6.json', (data) => {
     const { faint, bright } = buildStarBuffers(data as Parameters<typeof buildStarBuffers>[0], STAR_RADIUS);
     if (faint.count + bright.count < 100) return; // not a usable catalogue: keep the random field
     setPoints(stars, faint.positions, faint.colors);
     setPoints(brightStars, bright.positions, bright.colors);
     brightStars.material = brightMaterial;
-  });
-  loadJson('mw.json', (data) => {
+  }));
+  deferredLoads.push(() => loadJson('mw.json', (data) => {
     const tex = makeMilkyWayTexture(data);
     if (!tex) return;
     // Rows are the world-frame images of the equatorial axes, i.e. the world -> equatorial rotation.
@@ -661,8 +670,8 @@ export function buildSolarSystem(): SolarSystem {
     milkyWay.frustumCulled = false;
     milkyWay.renderOrder = -1;
     stars.add(milkyWay);
-  });
-  loadJson('constellations.lines.json', (data) => {
+  }));
+  deferredLoads.push(() => loadJson('constellations.lines.json', (data) => {
     const seg = buildConstellationSegments(data as Parameters<typeof buildConstellationSegments>[0], STAR_RADIUS * 0.95);
     if (seg.length === 0) return;
     const geo = new THREE.BufferGeometry();
@@ -675,7 +684,7 @@ export function buildSolarSystem(): SolarSystem {
     constellations.frustumCulled = false;
     constellations.visible = constellationsOn;
     stars.add(constellations);
-  });
+  }));
   const setConstellations = (on: boolean): boolean => {
     constellationsOn = on;
     if (constellations) constellations.visible = on;
@@ -700,23 +709,23 @@ export function buildSolarSystem(): SolarSystem {
       const look = BODY_LOOK[def.name];
       if (look) {
         const mat = mesh.material as THREE.MeshLambertMaterial;
-        loadTexture(look.map, (t) => {
+        deferredLoads.push(() => loadTexture(look.map, (t) => {
           mat.map = t;
           mat.color.set(0xffffff);
           mat.needsUpdate = true;
-        });
+        }));
         // Spin axis: the ecliptic normal tipped by the body's axial tilt.
         const tilt = (look.tiltDeg * Math.PI) / 180;
         const axis = eclipticToWorld([Math.sin(tilt), 0, Math.cos(tilt)]);
         mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...axis).normalize());
       }
       if (def.name === 'Moon') {
-        loadTexture('moonbump1k.jpg', (t) => {
+        deferredLoads.push(() => loadTexture('moonbump1k.jpg', (t) => {
           const mat = mesh.material as THREE.MeshLambertMaterial;
           mat.bumpMap = t;
           mat.bumpScale = 1.6;
           mat.needsUpdate = true;
-        }, false);
+        }, false));
       }
       if (def.name === 'Saturn') {
         const inner = def.radius * 1.25, outer = def.radius * 2.35;
@@ -732,16 +741,16 @@ export function buildSolarSystem(): SolarSystem {
           depthWrite: false,
           opacity: 0.55,
         });
-        loadTexture('saturnringcolor.jpg', (t) => {
+        deferredLoads.push(() => loadTexture('saturnringcolor.jpg', (t) => {
           ringMat.map = t;
           ringMat.color.setScalar(0.85);
           ringMat.opacity = 0.95;
           ringMat.needsUpdate = true;
-        });
-        loadTexture('saturnringpattern.gif', (t) => {
+        }));
+        deferredLoads.push(() => loadTexture('saturnringpattern.gif', (t) => {
           ringMat.alphaMap = t;
           ringMat.needsUpdate = true;
-        }, false);
+        }, false));
         const ring = new THREE.Mesh(ringGeo, ringMat);
         ring.name = 'SaturnRing';
         ring.rotation.x = Math.PI / 2; // into the equatorial plane
@@ -768,6 +777,7 @@ export function buildSolarSystem(): SolarSystem {
       orbitPositions,
       geocentric,
       lastGeocentricJd: Number.NaN,
+      lastOrbitJd: Number.NaN,
     });
   }
 
@@ -790,19 +800,17 @@ export function buildSolarSystem(): SolarSystem {
     arr[ORBIT_SAMPLES * 3 + 2] = arr[2];
   }
 
-  /** Fills a heliocentric orbit. Vertices are relative to the Sun. */
+  /** Fills a heliocentric orbit straight into the buffer. Vertices are relative to the Sun. */
   function fillHeliocentricOrbit(name: string, jd: number, arr: Float32Array): void {
-    const samples = heliocentricOrbitSamples(name, jd, ORBIT_SAMPLES);
-    for (let k = 0; k <= ORBIT_SAMPLES; k++) {
-      const s = samples[k % ORBIT_SAMPLES];
-      const w = eclipticToWorld(s);
-      arr[k * 3] = w[0];
-      arr[k * 3 + 1] = w[1];
-      arr[k * 3 + 2] = w[2];
-    }
+    fillHeliocentricOrbitWorld(name, jd, ORBIT_SAMPLES, arr);
   }
 
   function update(jd: number, origin: Vec3, cameraWorldPos?: THREE.Vector3): void {
+    if (!assetsRequested && !api.holdAssets) {
+      assetsRequested = true;
+      for (const start of deferredLoads) start();
+      deferredLoads.length = 0;
+    }
     const [ox, oy, oz] = origin;
 
     // Camera in Earth-centred world metres. Undefined cameraWorldPos means the camera is at the origin.
@@ -873,12 +881,16 @@ export function buildSolarSystem(): SolarSystem {
         }
         b.orbit.position.set(-ox, -oy, -oz); // centred on Earth
       } else {
-        fillHeliocentricOrbit(b.def.name, jd, b.orbitPositions);
-        (b.orbit.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+        if (Number.isNaN(b.lastOrbitJd) || Math.abs(jd - b.lastOrbitJd) > PLANET_ORBIT_REFRESH_DAYS) {
+          fillHeliocentricOrbit(b.def.name, jd, b.orbitPositions);
+          b.lastOrbitJd = jd;
+          (b.orbit.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+        }
         b.orbit.position.set(sunRel[0], sunRel[1], sunRel[2]); // centred on the Sun
       }
     }
   }
 
-  return { group, update, sunDirection, setConstellations };
+  const api: SolarSystem = { group, update, sunDirection, setConstellations, holdAssets: false };
+  return api;
 }

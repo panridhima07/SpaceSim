@@ -2,9 +2,16 @@
 // default motor configuration, and the raw entries of the zip archive (rocket.ork
 // plus the embedded thrustcurves/ motor files).
 
-import JSZip from 'jszip';
 import { DOMParser as XmldomParser } from '@xmldom/xmldom';
 import { decodeOrkText } from './parser';
+import {
+  MAX_THRUST_ENTRIES,
+  MAX_ZIP_ENTRIES,
+  assertFileSize,
+  assertSafeXmlText,
+  readZipEntry,
+  type ZipBudget,
+} from '../io/limits';
 
 export interface OrkSimulation {
   name: string;
@@ -49,6 +56,7 @@ type ParserCtor = new () => { parseFromString(text: string, mime: string): XDoc 
 const ELEMENT_NODE = 1;
 
 function parseXml(xml: string): XDoc {
+  assertSafeXmlText(xml);
   const Native = (globalThis as unknown as { DOMParser?: ParserCtor }).DOMParser;
   const Ctor: ParserCtor = Native ?? (XmldomParser as unknown as ParserCtor);
   return new Ctor().parseFromString(xml, 'text/xml');
@@ -156,27 +164,33 @@ export function defaultConfigId(xml: string): string | null {
 export async function readOrkZip(
   data: Uint8Array | ArrayBuffer,
 ): Promise<{ xml: string; files: Record<string, string> }> {
+  assertFileSize(data.byteLength);
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
   const isZip = bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b;
   if (!isZip) {
     return { xml: await decodeOrkText(bytes), files: {} };
   }
 
-  let zip: JSZip;
+  const { default: JSZip } = await import('jszip');
+  let zip: Awaited<ReturnType<typeof JSZip.loadAsync>>;
   try {
     zip = await JSZip.loadAsync(bytes);
   } catch {
     throw new Error('The .ork archive is damaged and cannot be opened.');
   }
-  const entries = Object.values(zip.files).filter((f) => !f.dir);
+  const entries = Object.values(zip.files).filter((f) => !f.dir).slice(0, MAX_ZIP_ENTRIES);
   const rocket = zip.file('rocket.ork') ?? entries.find((f) => /\.ork$/i.test(f.name));
   if (!rocket) throw new Error('The archive has no rocket.ork inside. Is this an OpenRocket file?');
-  const xml = await decodeOrkText(await rocket.async('uint8array'));
+  const budget: ZipBudget = { used: 0 };
+  const xml = await decodeOrkText((await readZipEntry(rocket, budget, 'uint8array')) as Uint8Array);
 
   const files: Record<string, string> = {};
+  let thrustRead = 0;
   for (const f of entries) {
     if (f.name.startsWith('thrustcurves/')) {
-      files[f.name] = await f.async('string');
+      if (thrustRead >= MAX_THRUST_ENTRIES) break;
+      thrustRead++;
+      files[f.name] = (await readZipEntry(f, budget, 'string')) as string;
     }
   }
   return { xml, files };

@@ -29,10 +29,23 @@ export interface ChildNode {
   offset: number;
 }
 
+/** Marks the stack node a stage begins at, with what the file said about that stage. */
+export interface StageStart {
+  name: string;
+  /** Stage-level mass override, kg. */
+  massOverride?: number;
+  overrideSubcomponentsMass?: boolean;
+}
+
 export interface StackNode {
   id: string;
   part: ExternalComponent;
   children: ChildNode[];
+  /**
+   * Set on the first part of a stage carried over from an imported multi-stage rocket.
+   * A stage also begins at every decoupler; this keeps boundaries that have none.
+   */
+  stage?: StageStart;
 }
 
 export interface Design {
@@ -178,8 +191,15 @@ export function addInternalPart(
 
 /** Remove any part (external stack node or internal child) by ID. */
 export function removePart(design: Design, partId: string): Design {
-  if (design.stack.some((s) => s.id === partId)) {
-    return { ...design, stack: design.stack.filter((s) => s.id !== partId) };
+  const idx = design.stack.findIndex((s) => s.id === partId);
+  if (idx !== -1) {
+    const removed = design.stack[idx];
+    const stack = design.stack.filter((s) => s.id !== partId);
+    // Removing the first part of a stage must not merge that stage into the one above.
+    if (removed.stage && idx < stack.length && !stack[idx].stage) {
+      stack[idx] = { ...stack[idx], stage: removed.stage };
+    }
+    return { ...design, stack };
   }
   return {
     ...design,
@@ -329,14 +349,17 @@ function resolveChildX(parentX: number, parentLen: number, childLen: number, anc
 /** Convert an editable Design into the canonical RocketModel consumed by physics, mesh and flaws. */
 export function toRocketModel(design: Design): RocketModel {
   const components: Component[] = [];
+  const placed = new Map<string, { aft: number; outer: number }>();
   const stageStarts: number[] = [0];
+  const stageInfo: (StageStart | undefined)[] = [design.stack[0]?.stage];
   let cursor = 0;
   let maxRadius = 0;
   let length = 0;
 
   for (const node of design.stack) {
-    if (node.part.kind === 'bodytube' && node.part.isDecoupler && components.length > 0) {
+    if ((node.stage || (node.part.kind === 'bodytube' && node.part.isDecoupler)) && components.length > 0) {
       stageStarts.push(components.length);
+      stageInfo.push(node.stage);
     }
 
     const ext = cloneComponent(node.part);
@@ -359,6 +382,7 @@ export function toRocketModel(design: Design): RocketModel {
     }
 
     const parentOuter = aftRadiusOf(ext);
+    placed.set(node.id, { aft: ext.x + ext.length, outer: parentOuter });
 
     for (const ch of node.children) {
       const child = cloneComponent(ch.part);
@@ -383,11 +407,14 @@ export function toRocketModel(design: Design): RocketModel {
       const end = idx + 1 < stageStarts.length ? stageStarts[idx + 1] : components.length;
       const slice = components.slice(startComponent, end);
       const mount = slice.find((c): c is InnerTube => c.kind === 'innertube' && c.isMotorMount);
+      const info = stageInfo[idx];
       return {
-        name: idx === 0 ? 'Sustainer' : `Booster ${idx}`,
+        name: info?.name || (idx === 0 ? 'Sustainer' : `Booster ${idx}`),
         startComponent,
         componentCount: end - startComponent,
         ...(mount?.motor?.designation ? { motorDesignation: mount.motor.designation } : {}),
+        ...(info?.massOverride !== undefined ? { massOverride: info.massOverride } : {}),
+        ...(info?.overrideSubcomponentsMass !== undefined ? { overrideSubcomponentsMass: info.overrideSubcomponentsMass } : {}),
       };
     });
   }
@@ -400,8 +427,26 @@ export function toRocketModel(design: Design): RocketModel {
     stageCount: stages ? stages.length : 1,
     ...(stages ? { stages } : {}),
     warnings: [],
-    ...(design.sideBodies && design.sideBodies.length > 0 ? { sideBodies: design.sideBodies } : {}),
+    ...(design.sideBodies && design.sideBodies.length > 0
+      ? { sideBodies: design.sideBodies.map((sb) => placeSideBody(sb, placed)) }
+      : {}),
   };
+}
+
+/** Aft-most station of a side body's own parts. */
+function sideBodyAft(sb: SideBody): number {
+  return sb.components.reduce((m, c) => Math.max(m, c.x + c.length), -Infinity);
+}
+
+/** Move a mounted side body to where its parent part is now; an unmounted one is left alone. */
+function placeSideBody(sb: SideBody, placed: Map<string, { aft: number; outer: number }>): SideBody {
+  const parent = sb.mount ? placed.get(sb.mount.parentId) : undefined;
+  const aft = sideBodyAft(sb);
+  if (!sb.mount || !parent || !Number.isFinite(aft)) return sb;
+  const shift = parent.aft + sb.mount.aftOffset - aft;
+  const radialOffset = Math.max(0, parent.outer + sb.mount.gap);
+  if (Math.abs(shift) < 1e-9 && Math.abs(radialOffset - sb.radialOffset) < 1e-9) return sb;
+  return { ...sb, radialOffset, components: sb.components.map((c) => ({ ...c, x: c.x + shift })) };
 }
 
 /**
@@ -410,18 +455,43 @@ export function toRocketModel(design: Design): RocketModel {
  * the enclosing (or nearest) external part with exact offsets preserved.
  */
 export function fromRocketModel(rocket: RocketModel): Design {
-  const externals = rocket.components
-    .filter(isExternal)
-    .map((c) => cloneComponent(c))
-    .sort((a, b) => a.x - b.x);
-  const internals = rocket.components.filter(isInternal).map((c) => cloneComponent(c));
+  // Which stage each component of a multi-stage rocket belongs to.
+  const multi = rocket.stages && rocket.stages.length > 1 ? rocket.stages : null;
+  const stageOfIndex = (i: number): number => {
+    if (!multi) return 0;
+    const k = multi.findIndex((st) => i >= st.startComponent && i < st.startComponent + st.componentCount);
+    return k === -1 ? 0 : k;
+  };
+  const indexed = rocket.components.map((c, i) => ({ c, stage: stageOfIndex(i) }));
+
+  const externalEntries = indexed
+    .filter((e) => isExternal(e.c))
+    .map((e) => ({ part: cloneComponent(e.c as ExternalComponent), stage: e.stage }))
+    .sort((a, b) => a.part.x - b.part.x);
+  const internalEntries = indexed
+    .filter((e) => isInternal(e.c))
+    .map((e) => ({ part: cloneComponent(e.c as InternalComponent), stage: e.stage }));
 
   let nextId = 1;
-  const stack: StackNode[] = externals.map((ext) => {
+  const nodeStage: number[] = [];
+  const marked = new Set<number>();
+  const stack: StackNode[] = externalEntries.map(({ part: ext, stage }) => {
     const alloc = allocId(nextId);
     nextId = alloc.nextId;
     ext.id = alloc.id;
-    return { id: alloc.id, part: ext, children: [] };
+    nodeStage.push(stage);
+    const node: StackNode = { id: alloc.id, part: ext, children: [] };
+    // The first body part of each stage carries the stage boundary.
+    if (multi && !marked.has(stage)) {
+      marked.add(stage);
+      const st = multi[stage];
+      node.stage = {
+        name: st.name,
+        ...(st.massOverride !== undefined ? { massOverride: st.massOverride } : {}),
+        ...(st.overrideSubcomponentsMass !== undefined ? { overrideSubcomponentsMass: st.overrideSubcomponentsMass } : {}),
+      };
+    }
+    return node;
   });
 
   // Compute resolved stations of the stack so offsets match the original rocket stations.
@@ -432,13 +502,16 @@ export function fromRocketModel(rocket: RocketModel): Design {
     cursor += node.part.length;
   }
 
-  for (const internal of internals) {
+  for (const { part: internal, stage: ownStage } of internalEntries) {
     if (stack.length === 0) break;
+    // A part stays with a body part of its own stage, so it leaves with that stage.
+    const sameStage = nodeStage.includes(ownStage);
     const mid = internal.x + internal.length / 2;
     // Prefer a bodytube enclosing the midpoint, then any external enclosing the midpoint, then nearest.
     let bestIdx = -1;
     let bestScore = Infinity;
     for (let i = 0; i < stack.length; i++) {
+      if (sameStage && nodeStage[i] !== ownStage) continue;
       const st = stations[i];
       const inside = mid >= st.x - 1e-6 && mid <= st.x + st.length + 1e-6;
       const dist = inside
@@ -477,7 +550,40 @@ export function fromRocketModel(rocket: RocketModel): Design {
     name: rocket.name || 'Imported Rocket',
     stack,
     nextId,
-    ...(rocket.sideBodies && rocket.sideBodies.length > 0 ? { sideBodies: rocket.sideBodies } : {}),
+    ...(rocket.sideBodies && rocket.sideBodies.length > 0
+      ? { sideBodies: rocket.sideBodies.map((sb) => mountSideBody(sb, stack, stations)) }
+      : {}),
+  };
+}
+
+/**
+ * Tie a side body to the body part it sits beside, so resizing or moving that part in
+ * the builder carries the side body with it.
+ */
+function mountSideBody(sb: SideBody, stack: StackNode[], stations: { x: number; length: number }[]): SideBody {
+  const aft = sideBodyAft(sb);
+  const fore = sb.components.reduce((m, c) => Math.min(m, c.x), Infinity);
+  if (stack.length === 0 || !Number.isFinite(aft) || !Number.isFinite(fore)) return sb;
+  const mid = (fore + aft) / 2;
+  let best = 0;
+  let bestScore = Infinity;
+  stations.forEach((st, i) => {
+    const inside = mid >= st.x - 1e-6 && mid <= st.x + st.length + 1e-6;
+    const dist = inside ? 0 : Math.min(Math.abs(mid - st.x), Math.abs(mid - (st.x + st.length)));
+    const score = dist + (stack[i].part.kind === 'bodytube' ? 0 : 0.001);
+    if (score < bestScore) {
+      bestScore = score;
+      best = i;
+    }
+  });
+  const st = stations[best];
+  return {
+    ...sb,
+    mount: {
+      parentId: stack[best].id,
+      aftOffset: aft - (st.x + st.length),
+      gap: sb.radialOffset - aftRadiusOf(stack[best].part),
+    },
   };
 }
 

@@ -2,8 +2,10 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { flyMission } from '../mission/fly';
 import { getMission } from '../mission/vehicles';
 import type { FlightRecord } from '../mission/record';
+import { coastPath, coastPathCapacity, coastPathInto } from '../mission/predict';
 import {
   buildFlownPathPoints,
+  coastValidUntil,
   elementsFromAppState,
   latLonToApp,
   separationAges,
@@ -84,5 +86,28 @@ describe('missionView helpers', () => {
     const el = elementsFromAppState(last.pos, last.vel);
     expect(Math.abs(el.perigeeAltitude - record.orbit!.periapsis)).toBeLessThan(5000);
     expect(Math.abs(el.apogeeAltitude - record.orbit!.apoapsis)).toBeLessThan(50_000);
+  });
+});
+
+describe('coast prediction reuse', () => {
+  it('is never valid while thrusting and valid through a zero-thrust run', () => {
+    const burning = record.samples.find((s) => s.thrust > 0 && s.t > 5)!;
+    expect(coastValidUntil(record, burning.t)).toBe(-Infinity);
+    const lastT = record.samples[record.samples.length - 1].t;
+    const until = coastValidUntil(record, lastT);
+    // The final sample is either still burning (-Infinity) or coasting to the end (Infinity).
+    expect([-Infinity, Infinity]).toContain(until);
+  });
+
+  it('coastPathInto matches coastPath point count and time and stays inside capacity', () => {
+    const cap = coastPathCapacity(1800, 30);
+    const out = { positions: new Float32Array(cap * 3), times: new Float64Array(cap) };
+    const origin: [number, number, number] = [0, 0, 0];
+    const n = coastPathInto(record, 600, 1800, 30, out, origin);
+    const ref = coastPath(record, 600, 1800, 30);
+    expect(n).toBe(ref.length);
+    expect(n).toBeLessThanOrEqual(cap);
+    expect(out.times[n - 1]).toBeCloseTo(ref[n - 1].t, 6);
+    expect(out.positions[0]).toBe(0);
   });
 });

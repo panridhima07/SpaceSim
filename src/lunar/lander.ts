@@ -75,7 +75,7 @@ export interface LandingResult {
 }
 export interface DescentPlan {
   /** Time of powered-descent initiation (perilune). */ tPDI: number; hPDI: number; vPDI: number;
-  range: number; site: LandingSite; pred: (LandingResult & { ok: boolean; reason?: string; dvMargin?: number }) | null;
+  range: number; /** Site offset from the ground track at ignition, m (planTo only). */ cross?: number; site: LandingSite; pred: (LandingResult & { ok: boolean; reason?: string; dvMargin?: number }) | null;
 }
 export interface LanderTelemetry {
   phase: LanderPhase; mode: LanderMode; alt: number; agl: number | null; vv: number; vh: number; speed: number;
@@ -91,6 +91,9 @@ export class LanderSim {
   /** Attitude quaternion [x, y, z, w], body to inertial; body +Y is the thrust axis. */ q: number[];
   w: number[];
   dry: number; prop0: number; prop: number; mass: number; hasRover: boolean;
+  /** Engine and geometry in use (from the spec, or the defaults). */
+  E: { tMax: number; minThrottle: number; isp: number; rcsTorque: number }; G: { cgh: number; foot: number; ik: number };
+  brakeFrac: number; doiPeri: number;
   engine: boolean; thr: number; cmdThr: number; level: number; dCmd: number[] | null; slewing: boolean;
   phase: LanderPhase; mode: LanderMode; input: { pitch: number; roll: number; thr: number };
   hold: 'RETRO' | 'UP' | null; rateCmd: boolean;
@@ -103,6 +106,8 @@ export class LanderSim {
   F: { x: number[]; y: number[]; z: number[] }; W: number[];
   constructor(eph, s, spec) {
     this.eph = eph; this.spec = spec; this.dt = LD.DT;
+    this.E = spec.engine ?? LE; this.G = { cgh: spec.geom?.cgh ?? LD.CGH, foot: spec.geom?.foot ?? LD.FOOT, ik: spec.geom?.inertiaPerKg ?? LD.I_K };
+    this.brakeFrac = spec.brakeFrac ?? 0.7; this.doiPeri = spec.doiPeri ?? LD.DOI_PERI;
     this.t = s.t; const rm = eph.moonAt(s.t), vm = eph.moonVelAt(s.t);
     this.r = sub(s.r, rm); this.v = sub(s.v, vm);
     this.dry = spec.payloadMass - spec.landerProp; this.prop0 = this.prop = spec.landerProp; this.mass = this.dry + this.prop; this.hasRover = !!spec.hasRover;
@@ -132,16 +137,16 @@ export class LanderSim {
   }
   basis(F = this.F) { const S = this.site; return { U: this.fromMF(S.U, F), E: this.fromMF(S.E, F), N: this.fromMF(S.N, F) }; }
   feet() {                                                                 // inertial positions of the four foot soles
-    const out = []; for (let k = 0; k < 4; k++) { const a = (k * Math.PI) / 2, b = [Math.cos(a) * LD.FOOT, -LD.CGH, Math.sin(a) * LD.FOOT]; out.push(add(this.r, qrot(this.q, b))); }
+    const out = []; for (let k = 0; k < 4; k++) { const a = (k * Math.PI) / 2, b = [Math.cos(a) * this.G.foot, -this.G.cgh, Math.sin(a) * this.G.foot]; out.push(add(this.r, qrot(this.q, b))); }
     return out;
   }
   periAlt() { return P.elements(this.r, this.v, MU_M, [0, 0, 1]).rp - R_MOON; }
-  dvLeft() { return LE.isp * G0 * Math.log(this.mass / this.dry); }
+  dvLeft() { return this.E.isp * G0 * Math.log(this.mass / this.dry); }
 
   // approximate ground arc (rad) between perilune and the end of the braking phase for a lander of this spec, deorbiting from a circular orbit at altAbove (m)
   static brakeArc(spec, altAbove = 100e3) {
-    const ra = R_MOON + altAbove, rp = R_MOON + LD.DOI_PERI, vp = Math.sqrt(MU_M * (2 / rp - 2 / (ra + rp))), m0 = spec.payloadMass - 60;
-    const mEnd = m0 * Math.exp(-(vp + 350) / (LE.isp * G0)), aD = (0.7 * LE.tMax) / (0.5 * (m0 + mEnd)); return (vp * vp) / (2 * aD) / R_MOON;
+    const E = spec.engine ?? LE, ra = R_MOON + altAbove, rp = R_MOON + (spec.doiPeri ?? LD.DOI_PERI), vp = Math.sqrt(MU_M * (2 / rp - 2 / (ra + rp))), m0 = spec.payloadMass - 60;
+    const mEnd = m0 * Math.exp(-(vp + 350) / (E.isp * G0)), aD = ((spec.brakeFrac ?? 0.7) * E.tMax) / (0.5 * (m0 + mEnd)); return (vp * vp) / (2 * aD) / R_MOON;
   }
   // ------------------------------------------------------------------ plan: descent orbit → perilune → site → terrain
   planDescent() {
@@ -153,7 +158,7 @@ export class LanderSim {
     }
     if (!found) return null;
     // braking arc: distance covered while decelerating from perilune speed at ~70 % of the available thrust
-    const vp = norm(found.v), mEnd = this.mass * Math.exp(-(vp + 350) / (LE.isp * G0)), aD = (0.7 * LE.tMax) / (0.5 * (this.mass + mEnd)), dist = (vp * vp) / (2 * aD), ang = dist / R_MOON;
+    const vp = norm(found.v), mEnd = this.mass * Math.exp(-(vp + 350) / (this.E.isp * G0)), aD = (this.brakeFrac * this.E.tMax) / (0.5 * (this.mass + mEnd)), dist = (vp * vp) / (2 * aD), ang = dist / R_MOON;
     const rh = unit(found.r), th = unit(found.v), siteDir = add(scale(rh, Math.cos(ang)), scale(th, Math.sin(ang))), tdir = add(scale(rh, -Math.sin(ang)), scale(th, Math.cos(ang)));
     const tL = found.t + vp / aD, F = this.eph.moonFrame(tL), toMF = (x) => [dot(x, F.x), dot(x, F.y), dot(x, F.z)];
     const mf = toMF(siteDir), { lat, lon } = mfToLL(mf), reg = regionAt(lat / DEG, lon / DEG), B = siteBasis(lat, lon);
@@ -163,6 +168,43 @@ export class LanderSim {
     this.terrain = new Terrain({ seed, mare: reg.mare }); this.map = new HazardMap(this.terrain); this.targets = pickTargets(this.map, this.terrain); this.tgt = [0, 0];
     this.plan = { tPDI: found.t, hPDI: norm(found.r) - R_MOON, vPDI: vp, range: dist, site: this.site, pred: null };
     return this.plan;
+  }
+  // Descent to a chosen site from the orbit the lander is already in. Powered descent starts when the ground distance
+  // still to go equals the braking distance; the guidance then takes out the cross-track offset on the way down.
+  // Returns null if the orbit does not pass within `reach` metres of the site in the next `horizon` seconds.
+  planTo(lat, lon, name = 'Landing site', reach = 60e3, horizon = 4 * 3600) {
+    const B = siteBasis(lat, lon), E = this.E;
+    const look = (r, v, t) => {
+      const F = this.eph.moonFrame(t), sd = this.fromMF(B.U, F), vr = sub(v, cross(this.eph.moonSpin(t), r)), vp = norm(vr);
+      const mEnd = this.mass * Math.exp(-(vp + 350) / (E.isp * G0)), aD = (this.brakeFrac * E.tMax) / (0.5 * (this.mass + mEnd)), dist = (vp * vp) / (2 * aD);
+      const ang = Math.acos(clamp(dot(unit(r), sd), -1, 1));
+      return { gap: ang * R_MOON - dist, dist, vp, aD, sd, closing: dot(vr, sd) > 0 && ang < 1.2 };
+    };
+    let r = this.r.slice(), v = this.v.slice(), t = this.t, prev = look(r, v, t), found = null;
+    for (let i = 0; i * 5 < horizon && !found; i++) {
+      const [r1, v1] = rk4(r, v, [0, 0, 0], 5), now = look(r1, v1, t + 5);
+      if (prev.closing && now.closing && prev.gap > 0 && now.gap <= 0) {
+        let lo = 0, hi = 5, a = [r1, v1];
+        for (let k = 0; k < 24; k++) { const mid = (lo + hi) / 2, [rm, vm] = rk4(r, v, [0, 0, 0], mid); if (look(rm, vm, t + mid).gap > 0) lo = mid; else { hi = mid; a = [rm, vm]; } }
+        const L = look(a[0], a[1], t + hi), cr = Math.asin(clamp(dot(L.sd, unit(cross(a[0], a[1]))), -1, 1)) * R_MOON;
+        if (Math.abs(cr) <= reach) found = { t: t + hi, r: a[0], v: a[1], ...L, cross: cr };
+      }
+      r = r1; v = v1; t += 5; prev = now;
+    }
+    if (!found) return null;
+    const rh = this.toMF(unit(found.r), this.eph.moonFrame(found.t)), tm = unit(sub(scale(B.U, dot(rh, B.U)), rh)), ap = [dot(tm, B.E), dot(tm, B.N)], an = Math.hypot(ap[0], ap[1]) || 1;
+    const reg = regionAt(lat / DEG, lon / DEG);
+    this.site = { lat, lon, ...B, appr: [ap[0] / an, ap[1] / an], name, mare: reg.mare, label: `${name} · ${fmtLatLon(lat / DEG, lon / DEG)}` };
+    const seed = (Math.round(lat / DEG * 20) * 73856093) ^ (Math.round(lon / DEG * 20) * 19349663);
+    this.terrain = new Terrain({ seed, mare: reg.mare }); this.map = new HazardMap(this.terrain); this.targets = pickTargets(this.map, this.terrain); this.tgt = [0, 0];
+    this.plan = { tPDI: found.t, hPDI: norm(found.r) - R_MOON, vPDI: found.vp, range: found.dist, site: this.site, pred: null, cross: found.cross };
+    return this.plan;
+  }
+  // Skip the deorbit burn: the lander is already in its descent orbit and coasts to powered descent at the given site.
+  beginDescentTo(lat, lon, name) {
+    this.frame(); if (!this.planTo(lat, lon, name)) return false;
+    this.phase = 'COAST'; this.tPhase = this.t; this.planned = true; this.dCmd = scale(unit(this.v), -1);
+    this.say(`DESCENT ORBIT · TARGET ${this.site.label}`, 'ok'); return true;
   }
   clone() {
     const c = Object.create(LanderSim.prototype); Object.assign(c, this);
@@ -176,7 +218,7 @@ export class LanderSim {
       c.advance(1); if (performance.now() - t0 > 30) { await sleep(0); t0 = performance.now(); }
     }
     const ok = c.phase === 'LANDED', res = ok ? { ...c.landing, ok: true, t: c.t - this.plan.tPDI } : { ok: false, reason: c.reason || (c.prop <= 0 ? 'propellant exhausted before touchdown' : 'no touchdown within 30 minutes of PDI'), t: c.t - this.plan.tPDI, propLeft: c.prop };
-    res.dvMargin = ok ? LE.isp * G0 * Math.log(c.mass / c.dry) : 0; res.x = c.landing?.x; res.y = c.landing?.y;
+    res.dvMargin = ok ? this.E.isp * G0 * Math.log(c.mass / c.dry) : 0; res.x = c.landing?.x; res.y = c.landing?.y;
     this.plan.pred = res; if (onDone) onDone(res); return res;
   }
 
@@ -200,7 +242,7 @@ export class LanderSim {
   }
   setThrustCmd(aT) {                                                     // thrust acceleration → throttle + pointing
     const need = norm(aT) * this.mass; this.dCmd = need > 1e-6 ? unit(aT) : this.dCmd;
-    this.cmdThr = need <= 1 ? LE.minThrottle : clamp(need / LE.tMax, LE.minThrottle, 1);
+    this.cmdThr = need <= 1 ? this.E.minThrottle : clamp(need / this.E.tMax, this.E.minThrottle, 1);
   }
   retarget() {                                                            // hazard detection & avoidance: nearest footprint that is flat and boulder-free
     this.hda = true; const [tx, ty] = this.tgt, k = this.map.idx(tx, ty);
@@ -211,7 +253,7 @@ export class LanderSim {
     this.tgt = sp; this.say(`HAZARD AVOIDANCE · RETARGET ${d.toFixed(0)} m ${c}`, 'am');
   }
   autoGuide(h) {
-    const alt = this.alt(), l = this.local(this.r), ground = this.terrain.ground(l.x, l.y); this.agl = l.h - ground - LD.CGH;
+    const alt = this.alt(), l = this.local(this.r), ground = this.terrain.ground(l.x, l.y); this.agl = l.h - ground - this.G.cgh;
     if (this.phase === 'BRAKE') {
       const { d, T } = this.timeToGo(LD.HG);
       if (d < 500 || (T < 8 && d < 4000)) { this.phase = 'APPROACH'; this.tPhase = this.t; this.say('HIGH GATE · APPROACH PHASE', 'ok'); }
@@ -235,11 +277,11 @@ export class LanderSim {
   }
   manualGuide(dt) {
     const I = this.input; this.level = clamp(this.level + I.thr * 0.5 * dt, 0, 1);
-    this.cmdThr = this.level > 0.02 && this.prop > 0 ? clamp(this.level, LE.minThrottle, 1) : 0;
+    this.cmdThr = this.level > 0.02 && this.prop > 0 ? clamp(this.level, this.E.minThrottle, 1) : 0;
     const active = Math.abs(I.pitch) + Math.abs(I.roll) > 0.01;
     this.rateCmd = active; if (active) this.hold = null;
     if (!active && this.hold) { const vr = this.vrel(); this.dCmd = this.hold === 'RETRO' ? (norm(vr) > 0.5 ? scale(unit(vr), -1) : unit(this.r)) : unit(this.r); } else if (!active) this.dCmd = null;
-    if (this.site) { const l = this.local(this.r), ground = this.terrain.ground(l.x, l.y); this.agl = l.h - ground - LD.CGH; }
+    if (this.site) { const l = this.local(this.r), ground = this.terrain.ground(l.x, l.y); this.agl = l.h - ground - this.G.cgh; }
   }
   guidance(dt) {
     const mu = this.phase;
@@ -250,18 +292,18 @@ export class LanderSim {
     }
     if (mu === 'DOI') {
       this.dCmd = scale(unit(this.v), -1);
-      if (this.periAlt() <= LD.DOI_PERI + 150 || this.prop <= 0) {
+      if (this.periAlt() <= this.doiPeri + 150 || this.prop <= 0) {
         this.cmdThr = 0; this.engine = false; this.thr = 0; this.say(`DEORBIT BURN COMPLETE · PERILUNE ${(this.periAlt() / 1000).toFixed(1)} km`, 'ok');
         if (!this.planDescent()) { this.phase = 'CRASHED'; this.reason = 'Descent orbit could not be established'; return; }
         this.phase = 'COAST'; this.tPhase = this.t; this.say(`DESCENT ORBIT SET · TARGET ${this.site.label}`, 'ok'); this.planned = true;
-      } else this.cmdThr = clamp(0.2 + (this.periAlt() - LD.DOI_PERI) / 1.5e5, LE.minThrottle, 0.6);
+      } else this.cmdThr = clamp(0.2 + (this.periAlt() - this.doiPeri) / 1.5e5, this.E.minThrottle, 0.6);
       return;
     }
     if (mu === 'COAST') {
       const left = this.plan.tPDI - this.t;
       if (this.mode === 'AUTO') {
         this.dCmd = scale(unit(this.v), -1); this.cmdThr = 0;
-        if (left <= 1e-6) { this.phase = 'BRAKE'; this.tPhase = this.t; this.say('POWERED DESCENT INITIATED', 'ok'); this.cmdThr = LE.minThrottle; }
+        if (left <= 1e-6) { this.phase = 'BRAKE'; this.tPhase = this.t; this.say('POWERED DESCENT INITIATED', 'ok'); this.cmdThr = this.E.minThrottle; }
       } else { this.manualGuide(dt); if (this.cmdThr > 0) { this.phase = 'BRAKE'; this.tPhase = this.t; this.say('ENGINE START · POWERED DESCENT (MANUAL)', 'ok'); } }
       return;
     }
@@ -318,18 +360,18 @@ export class LanderSim {
   stepOnce(h) {
     this.frame(); this.guidance(h);
     // engine: ignition at minimum throttle, first-order throttle response, flame-out when the tank is empty
-    if (this.cmdThr > 0 && this.prop > 0) { if (!this.engine) { this.engine = true; this.thr = LE.minThrottle; } this.thr += (this.cmdThr - this.thr) * (1 - Math.exp(-h / LD.TAU)); this.thr = clamp(this.thr, LE.minThrottle, 1); }
+    if (this.cmdThr > 0 && this.prop > 0) { if (!this.engine) { this.engine = true; this.thr = this.E.minThrottle; } this.thr += (this.cmdThr - this.thr) * (1 - Math.exp(-h / LD.TAU)); this.thr = clamp(this.thr, this.E.minThrottle, 1); }
     else { if (this.engine && this.prop <= 0 && !this.dryTold) { this.dryTold = true; this.say('PROPELLANT DEPLETED', 'bad'); } this.engine = false; this.thr = 0; }
-    const thrust = this.thr * LE.tMax, by = qrot(this.q, [0, 1, 0]), aT = scale(by, thrust / this.mass), up0 = unit(this.r);
+    const thrust = this.thr * this.E.tMax, by = qrot(this.q, [0, 1, 0]), aT = scale(by, thrust / this.mass), up0 = unit(this.r);
     [this.r, this.v] = rk4(this.r, this.v, aT, h);
     if (this.mode === 'MANUAL' && !this.rateCmd && !this.dCmd) this.followVertical(up0);
-    if (thrust > 0) { const dm = (thrust / (LE.isp * G0)) * h; this.prop = Math.max(0, this.prop - dm); this.mass = this.dry + this.prop; this.dvUsed += (thrust / this.mass) * h; if (!this.warnedLow && this.prop < 0.1 * this.prop0) { this.warnedLow = true; this.say('LOW PROPELLANT', 'bad'); } }
+    if (thrust > 0) { const dm = (thrust / (this.E.isp * G0)) * h; this.prop = Math.max(0, this.prop - dm); this.mass = this.dry + this.prop; this.dvUsed += (thrust / this.mass) * h; if (!this.warnedLow && this.prop < 0.1 * this.prop0) { this.warnedLow = true; this.say('LOW PROPELLANT', 'bad'); } }
     this.attitude(h); this.t += h;
     if (this.alt() < 6000) this.contact();
   }
   attitude(h) {
     if (h > 0.5) { if (this.dCmd) this.q = qFromY(this.dCmd, unit(this.v)); this.w = [0, 0, 0]; this.slewing = false; return; }       // coarse coast step: snap to the commanded pointing (an RCS slew takes seconds, the coast an hour)
-    const by = qrot(this.q, [0, 1, 0]), amax = LE.rcsTorque / (this.mass * LD.I_K); let wDes = [0, 0, 0];
+    const by = qrot(this.q, [0, 1, 0]), amax = this.E.rcsTorque / (this.mass * this.G.ik); let wDes = [0, 0, 0];
     if (this.mode === 'MANUAL' && this.rateCmd) { const up = unit(this.r), f = this.heading(up); wDes = add(scale(cross(up, f), this.input.pitch * LD.W_MAN), scale(f, this.input.roll * LD.W_MAN)); this.slewing = true; }
     else if (this.dCmd) {
       const ax = cross(by, this.dCmd), s = norm(ax), ang = Math.atan2(s, dot(by, this.dCmd)), mag = Math.min(LD.W_MAX, Math.sqrt(1.4 * amax * ang), 2.5 * ang);
@@ -342,15 +384,15 @@ export class LanderSim {
 
   // ------------------------------------------------------------------ contact, touchdown, rest
   contact() {
-    if (!this.site) { if (norm(this.r) - R_MOON < LD.CGH) this.crash(`Impact before a landing site was established (${(norm(this.vrel())).toFixed(0)} m/s)`); return; }
-    const l = this.local(this.r); if (Math.abs(l.x) > 40000 || Math.abs(l.y) > 40000) { if (l.h < LD.CGH) this.crash('Impact'); return; }
-    this.agl = l.h - this.terrain.ground(l.x, l.y) - LD.CGH;
+    if (!this.site) { if (norm(this.r) - R_MOON < this.G.cgh) this.crash(`Impact before a landing site was established (${(norm(this.vrel())).toFixed(0)} m/s)`); return; }
+    const l = this.local(this.r); if (Math.abs(l.x) > 40000 || Math.abs(l.y) > 40000) { if (l.h < this.G.cgh) this.crash('Impact'); return; }
+    this.agl = l.h - this.terrain.ground(l.x, l.y) - this.G.cgh;
     let hmin = 1e9; const F = this.F;
     for (const f of this.feet()) { const fl = this.local(f, F); hmin = Math.min(hmin, fl.h - this.terrain.ground(fl.x, fl.y)); }
     this.hFoot = hmin; if (hmin <= 0) this.touchdown(l);
   }
   touchdown(l) {
-    const vr = this.vrel(), up = unit(this.r), vv = dot(vr, up), vh = norm(sub(vr, scale(up, vv))), B = this.basis(), nl = this.terrain.normal(l.x, l.y, LD.FOOT);
+    const vr = this.vrel(), up = unit(this.r), vv = dot(vr, up), vh = norm(sub(vr, scale(up, vv))), B = this.basis(), nl = this.terrain.normal(l.x, l.y, this.G.foot);
     const n = unit(add(add(scale(B.E, nl[0]), scale(B.N, nl[1])), scale(B.U, nl[2]))), by = qrot(this.q, [0, 1, 0]);
     const tilt = Math.acos(clamp(dot(by, n), -1, 1)) / DEG, slope = Math.acos(clamp(dot(n, up), -1, 1)) / DEG, down = -vv, miss = Math.hypot(l.x - this.tgt[0], l.y - this.tgt[1]);
     const m = { vv: down, vh, tilt, slope, miss, x: l.x, y: l.y, propLeft: this.prop, mass: this.mass, hda: this.hda, t: this.t, dvUsed: this.dvUsed };
@@ -358,7 +400,7 @@ export class LanderSim {
     if (down > LD.LIM.vv) bad.push(`vertical speed ${down.toFixed(1)} m/s (limit ${LD.LIM.vv})`); if (vh > LD.LIM.vh) bad.push(`horizontal speed ${vh.toFixed(1)} m/s (limit ${LD.LIM.vh})`);
     if (tilt > LD.LIM.tilt) bad.push(`tilt ${tilt.toFixed(0)}° from the surface normal (limit ${LD.LIM.tilt}°)`); if (slope > LD.LIM.slope) bad.push(`${slope.toFixed(0)}° slope (limit ${LD.LIM.slope}°)`);
     // settle: align the body with the ground plane, centre of gravity one leg-length above it
-    const gC = this.terrain.ground(l.x, l.y), cgPos = add(this.inertialAt(l.x, l.y, gC), scale(n, LD.CGH)), xRef = qrot(this.q, [1, 0, 0]);
+    const gC = this.terrain.ground(l.x, l.y), cgPos = add(this.inertialAt(l.x, l.y, gC), scale(n, this.G.cgh)), xRef = qrot(this.q, [1, 0, 0]);
     this.pose = { pMF: this.toMF(cgPos), nMF: this.toMF(n), xMF: this.toMF(xRef), x: l.x, y: l.y };
     this.engine = false; this.thr = 0; this.cmdThr = 0; this.w = [0, 0, 0];
     if (bad.length) { m.destroyed = true; this.landing = m; this.reason = 'LANDER DESTROYED ON IMPACT — ' + bad.join('; '); this.phase = 'CRASHED'; this.say('IMPACT', 'bad'); }
@@ -387,7 +429,7 @@ export class LanderSim {
   telemetry() {
     const vr = this.vrel(), up = unit(this.r), vv = dot(vr, up), vh = norm(sub(vr, scale(up, vv))), by = qrot(this.q, [0, 1, 0]), g = MU_M / norm(this.r) ** 2, out = {
       phase: this.phase, mode: this.mode, alt: this.alt(), agl: this.site && this.alt() < 6000 ? this.agl : null, vv, vh, speed: norm(vr), prop: this.prop, propPct: this.prop / this.prop0, mass: this.mass, thr: this.thr, level: this.level,
-      tiltF: 0, tiltR: 0, twr: (this.thr * LE.tMax) / (this.mass * g), pitch: Math.asin(clamp(dot(by, up), -1, 1)) / DEG, dv: this.dvLeft(), engine: this.engine, w: norm(this.w), hold: this.hold,
+      tiltF: 0, tiltR: 0, twr: (this.thr * this.E.tMax) / (this.mass * g), pitch: Math.asin(clamp(dot(by, up), -1, 1)) / DEG, dv: this.dvLeft(), engine: this.engine, w: norm(this.w), hold: this.hold,
       toPDI: this.plan && this.phase === 'COAST' ? this.plan.tPDI - this.t : null, peri: this.periAlt(), site: this.site ? this.site.label : null, hazard: null, range: null, x: 0, y: 0,
     };
     { const f = this.heading(up), rt = cross(f, up); out.tiltF = Math.asin(clamp(dot(by, f), -1, 1)) / DEG; out.tiltR = Math.asin(clamp(dot(by, rt), -1, 1)) / DEG; }

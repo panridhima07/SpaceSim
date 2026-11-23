@@ -1,13 +1,13 @@
 # Astra — system design
 
-Written 21 Nov 2026. This is the target design for the finished project and the list of rounds that get there. Each round is one opencode prompt in `docs/opencode/`.
+Written 21 Nov 2026. Status updated 23 Nov 2026. This is the target design for the finished project and the list of rounds that get there. Each round is one opencode prompt in `docs/opencode/`.
 
 ## What exists today
 
 | Piece | Where it lives now | State |
 |---|---|---|
-| Space Flight Builder web app (`.ork` import, 3D, 6-DOF model-rocket sim, flaw report, replay, solar system, Android shell) | worktree `space-flight-builder-plan-975db2`, repo root | 211 tests pass, typecheck clean. **Nothing committed.** |
-| Orbital launch physics library (`rocket-physics/`: 6-DOF ascent, guidance, staging, orbits, LVM3 / Chandrayaan-3 preset) | worktree `pensive-margulis-f3e2f3` | 200 tests pass. **Nothing committed.** No rendering. |
+| Space Flight Builder web app (`.ork` import, 3D, 6-DOF model-rocket sim, flaw report, replay, solar system, Android shell) | main checkout, branch `app`, repo root | 1183 tests pass in 84 files, typecheck clean (23 Nov 2026). Partly committed on `app`; the working tree has uncommitted changes. |
+| Orbital launch physics library (`rocket-physics/`: 6-DOF ascent, guidance, staging, orbits, LVM3 / Chandrayaan-3 preset) | main checkout, branch `app`, `rocket-physics/` | 280 tests pass in 45 suites (23 Nov 2026). Partly committed on `app`; the working tree has uncommitted changes. No rendering in this folder. |
 | Single-file OpenRocket 3D viewer with internal systems (`rocket-viewer/index.html`) | branch `claude/3d-texture-visualization-91ee2f` | Committed on its branch. Separate from the app. |
 | Godot project (`space-flight-godot/`) | main checkout, untracked | Abandoned. Not part of the design. |
 
@@ -18,7 +18,7 @@ Written 21 Nov 2026. This is the target design for the finished project and the 
 One app, two modes, one 3D world.
 
 1. **Design mode** (built). Drop an `.ork` file, see it on the pad at Sriharikota, fly it, read the flaw report, scrub the replay.
-2. **Mission mode** (to build). Pick an ISRO vehicle (LVM3 with Chandrayaan-3 first), watch it fly from Sriharikota to orbit in the same 3D world, with an event timeline compared against the real flight of 14 July 2023. This is what ties the project to ASTRA Domain 01 (Indian space missions).
+2. **Mission mode** (built for LVM3, PSLV-C61 and Falcon 9; see Remaining work). Pick an ISRO vehicle (LVM3 with Chandrayaan-3 first), watch it fly from Sriharikota to orbit in the same 3D world, with an event timeline compared against the real flight of 14 July 2023. This is what ties the project to ASTRA Domain 01 (Indian space missions).
 
 Design mode answers "will my rocket fail?". Mission mode answers "how does a real launch work?". They share the scene, cameras, HUD, time warp and replay.
 
@@ -142,16 +142,16 @@ Vector conversion is a fixed rotation: `app = (x, z, −y)` (determinant +1, so 
 
 ## Remaining work, in round order
 
-| Round | Scope | Done when |
-|---|---|---|
-| 1 | Consolidate both codebases into one committed branch. Wire `rocket-physics` into the app build. `FlightRecord` type. Frame adapter with tests. Fix the bundled sample's 18 mm motor in a 17 mm mount. | Both test suites and the build pass from one tree; adapter tests pass |
-| 2 | Mission worker + headless test: LVM3 flight comes back as a `FlightRecord` with markers and reference times | A Vitest test receives the full record |
-| 3 | Mission mode in the scene: launcher mesh, staging, rotating Earth, cameras, timeline panel | LVM3 flies to orbit in the browser |
-| 4 | Phone layout for mission mode, Android build, service worker caches the worker bundle | APK runs the mission on the emulator |
-| 5 | Model accuracy: fin CNα is ~20 % low (stability margin reads 0.5–1 calibre high), dry mass 3.4 % high, validate on a second and third OpenRocket design | Margin within 0.3 calibre on three designs |
-| 6 | Multi-stage `.ork` flight (currently stacked into one rocket with a warning) | The two-stage example flies with separation |
-| 7 | ISRO content: RH-200 sounding rocket sample, a second mission vehicle, lunar transfer view using the library's Lambert example | — |
-| 8 | Polish and submission: planets aligned to real sky, transonic drag, README, demo script, deploy the site | — |
+| Round | Scope | Done when | Status |
+|---|---|---|---|
+| 1 | Consolidate both codebases into one committed branch. Wire `rocket-physics` into the app build. `FlightRecord` type. Frame adapter with tests. Fix the bundled sample's 18 mm motor in a 17 mm mount. | Both test suites and the build pass from one tree; adapter tests pass | done |
+| 2 | Mission worker + headless test: LVM3 flight comes back as a `FlightRecord` with markers and reference times | A Vitest test receives the full record | done |
+| 3 | Mission mode in the scene: launcher mesh, staging, rotating Earth, cameras, timeline panel | LVM3 flies to orbit in the browser | done |
+| 4 | Phone layout for mission mode, Android build, service worker caches the worker bundle | APK runs the mission on the emulator | partly done: phone layout for the mission HUD is in place (TASK-04 Part E); a debug APK was built 23 Nov 2026 and the service worker caches same-origin assets, the worker bundle included. Open: not verified that the APK runs the mission on the emulator. |
+| 5 | Model accuracy: fin CNα is ~20 % low (stability margin reads 0.5–1 calibre high), dry mass 3.4 % high, validate on a second and third OpenRocket design | Margin within 0.3 calibre on three designs | mostly done (23 Nov 2026): CNα within 3.6 % and CP within 0.14 calibre of OpenRocket's stored values on three designs (`src/validate/aeroOpenRocket.test.ts`). Margin within 0.24 and 0.31 calibre on the two single-stage designs; the rest is CG 4 to 9 mm forward. Open: dry mass 2.6 % high on the simple rocket, three-stage CNα at high angle of attack. |
+| 6 | Multi-stage `.ork` flight (currently stacked into one rocket with a warning) | The two-stage example flies with separation | done |
+| 7 | ISRO content: RH-200 sounding rocket sample, a second mission vehicle, lunar transfer view using the library's Lambert example | — | partly done: RH-200 sample, real-flight reference times, and PSLV-C61 and Falcon 9 missions exist. Open: no lunar transfer view in the app (the Lambert solver is in `rocket-physics/src/orbit/lambert.ts`). |
+| 8 | Polish and submission: planets aligned to real sky, transonic drag, README, demo script, deploy the site | — | partly done: planets aligned to the real sky; README updated 23 Nov 2026. Open: transonic drag is an uncalibrated placeholder; no demo script found; deploy script ready (`npm run deploy`) but no live URL recorded. |
 
 Rounds 5–8 are independent of each other and can be reordered by what the judges need. The single-file viewer's internal-systems visuals are a possible source for round 8 cutaway polish; the file itself is not merged.
 

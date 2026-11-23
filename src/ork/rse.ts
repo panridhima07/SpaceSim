@@ -6,6 +6,7 @@
 import type { Motor } from '../types';
 import { parseEng, type MotorCurve } from './motors';
 import { DOMParser as XmldomParser } from '@xmldom/xmldom';
+import { assertSafeXmlText } from '../io/limits';
 
 interface XEl {
   nodeType: number;
@@ -109,9 +110,10 @@ function engineToMotor(engine: XEl): Motor | null {
 
 /**
  * Every <engine> in an RSE document as a Motor. Returns [] for malformed or
- * unrecognised input; never throws.
+ * unrecognised input. Throws only for oversized text or a DOCTYPE / ENTITY declaration.
  */
 export function parseRse(xml: string): Motor[] {
+  assertSafeXmlText(xml); // the one case that throws: oversized input or a DOCTYPE / ENTITY declaration
   try {
     const doc = parseXml(xml);
     const motors: Motor[] = [];

@@ -125,6 +125,29 @@ describe('buildTrajectoryLine', () => {
     expect(arr[10]).toBeCloseTo(180, 5);
   });
 
+  it('identical setFromLog + update does not re-upload the buffer', () => {
+    const tr = buildTrajectoryLine(20);
+    const log = Array.from({ length: 6 }, (_, i) => ({
+      t: i,
+      pos: [i, 0, 0] as [number, number, number],
+    }));
+    const origin: [number, number, number] = [0, 0, 0];
+    tr.setFromLog(log);
+    tr.update(origin);
+    const attr = tr.line.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const v = attr.version;
+    tr.setFromLog(log);
+    tr.update([0, 0, 0]);
+    expect(attr.version).toBe(v);
+    tr.update([1, 0, 0]); // origin moved -> rewrite
+    expect(attr.version).toBe(v + 1);
+    log.push({ t: 6, pos: [6, 0, 0] });
+    tr.setFromLog(log);
+    tr.update([1, 0, 0]);
+    expect(attr.version).toBe(v + 2);
+    expect(tr.line.geometry.drawRange.count).toBe(7);
+  });
+
   it('setFromLog with maxT shows no point later than t', () => {
     const tr = buildTrajectoryLine(20);
     const log = Array.from({ length: 6 }, (_, i) => ({

@@ -4,12 +4,15 @@
 
 import type { GravityOptions } from '../env/gravity.ts';
 import { AU, DEG, OMEGA_EARTH, RE, SOLAR_PRESSURE } from '../constants.ts';
-import { atmosphere } from '../env/atmosphere.ts';
+import { atmosphereInto, type AtmosphereState } from '../env/atmosphere.ts';
 import { moonPosition, sunPosition } from '../env/ephemeris.ts';
-import { gmst, groundVelocity, toGeodetic } from '../env/earth.ts';
-import { gravityAccel } from '../env/gravity.ts';
+import { geodeticAltitude, gmst, toGeodetic } from '../env/earth.ts';
+import { gravityInto } from '../env/gravity.ts';
 import { integrateAdaptive } from '../math/integrators.ts';
-import { addScaled, dot, norm, sub, unit, type Vec3 } from '../math/vec.ts';
+import { dot, norm, sub, unit, type Vec3 } from '../math/vec.ts';
+
+const DRAG_RADIUS2 = (RE + 1.0e6) ** 2;
+const AIR: AtmosphereState = { temperature: 0, pressure: 0, density: 0, speedOfSound: 0, viscosity: 0, meanFreePath: 0 };
 
 export interface ForceModel {
   /** Julian Date that corresponds to t = 0. Needed for Sun / Moon positions. */
@@ -38,21 +41,32 @@ export function accelAt(t: number, r: Vec3, v: Vec3, fm: ForceModel): Vec3 {
   const sun = needSun ? sunPosition(jd) : undefined;
   const moon = needMoon ? moonPosition(jd) : undefined;
 
-  let a = gravityAccel(r, fm.gravity, { sun, moon });
+  const a: Vec3 = [0, 0, 0];
+  gravityInto(a, r[0], r[1], r[2], fm.gravity, sun, moon);
 
-  if (fm.drag) {
-    const alt = toGeodetic(r).alt;
+  // The ellipsoid lies inside the sphere of radius RE, so height above it is at least
+  // |r| - RE. Past 1000 km on that measure there is no air and the geodetic solve is skipped.
+  if (fm.drag && r[0] * r[0] + r[1] * r[1] + r[2] * r[2] <= DRAG_RADIUS2) {
+    const alt = geodeticAltitude(r[0], r[1], r[2]);
     if (alt <= 1.0e6) {
-      const rho = atmosphere(alt).density;
-      const vRel = sub(v, groundVelocity(r));
-      a = addScaled(a, vRel, -0.5 * rho * norm(vRel) * fm.drag.cdAOverM);
+      const rho = atmosphereInto(AIR, alt).density;
+      const ux = v[0] + OMEGA_EARTH * r[1];
+      const uy = v[1] - OMEGA_EARTH * r[0];
+      const uz = v[2];
+      const k = -0.5 * rho * Math.sqrt(ux * ux + uy * uy + uz * uz) * fm.drag.cdAOverM;
+      a[0] += ux * k;
+      a[1] += uy * k;
+      a[2] += uz * k;
     }
   }
 
   if (fm.srp && sun && !inShadow(r, sun)) {
     const d = sub(r, sun); // Sun -> spacecraft: pushes away from the Sun
     const dn = norm(d);
-    a = addScaled(a, unit(d), SOLAR_PRESSURE * fm.srp.crAOverM * (AU / dn) ** 2);
+    const k = (SOLAR_PRESSURE * fm.srp.crAOverM * (AU / dn) ** 2) / dn;
+    a[0] += d[0] * k;
+    a[1] += d[1] * k;
+    a[2] += d[2] * k;
   }
 
   return a;
@@ -121,7 +135,7 @@ export function propagateToImpact(
   fm: ForceModel,
   tMax: number = t0 + 86400,
 ): { r: Vec3; v: Vec3; t: number; latDeg: number; lonDeg: number } | null {
-  const altOf = (x: Vec3): number => toGeodetic(x).alt;
+  const altOf = (x: Vec3): number => geodeticAltitude(x[0], x[1], x[2]);
   if (altOf(r) <= 0) return impactRecord(r, v, t0, fm.epochJD);
 
   // Track the last above-ground state and the time of the first below-ground step.

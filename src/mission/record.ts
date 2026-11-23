@@ -25,6 +25,8 @@ export interface FlightSample {
   phase?: string;             // autopilot phase string
   propellant?: number[];      // kg remaining per vehicle stage, 0 once gone
   health?: Record<string, number>;
+  /** After payload separation: payload position minus vehicle position, app frame, metres. */
+  payloadOffset?: Vec3;
 }
 
 export interface FlightMarker {  // an event or a flaw, shown on the timeline
@@ -72,6 +74,8 @@ export interface FlightRecord {
   /** Earth rotation: angle (rad) of the prime meridian from the inertial X axis at liftoff, and rate (rad/s). */
   earth?: { angleAtLiftoff: number; rate: number };
   reachedTarget?: boolean;
+  /** Seconds since liftoff when the payload left the upper stage; null or absent if it never did. */
+  payloadSeparation?: number | null;
   faults?: FlightFault[];
   scenario?: string;
   epochJD?: number;

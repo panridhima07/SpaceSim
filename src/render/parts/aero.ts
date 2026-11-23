@@ -12,6 +12,8 @@ import {
   TIER_ACCENT,
   mixColor,
   partMaterial,
+  radialSegments,
+  scopedPart,
   seeded,
   type PartBuilder,
   type PartContext,
@@ -35,8 +37,8 @@ function allFinite(g: THREE.BufferGeometry): boolean {
 
 function addMesh(group: THREE.Group, geo: THREE.BufferGeometry, mat: THREE.Material, name: string): void {
   if (!allFinite(geo)) {
+    // The material may be shared with other meshes of the part, so it is left alone.
     geo.dispose();
-    mat.dispose();
     return;
   }
   const m = new THREE.Mesh(geo, mat);
@@ -46,11 +48,7 @@ function addMesh(group: THREE.Group, geo: THREE.BufferGeometry, mat: THREE.Mater
 
 /** Detail material: a hair of polygon offset so thin decoration never z-fights the skin. */
 function detailMat(color: number, ctx: PartContext): THREE.MeshStandardMaterial {
-  const m = partMaterial(color, ctx);
-  m.polygonOffset = true;
-  m.polygonOffsetFactor = -2;
-  m.polygonOffsetUnits = -2;
-  return m;
+  return partMaterial(color, ctx, { offset: true });
 }
 
 // ---------- revolved parts (nose cone, transition) ----------
@@ -141,7 +139,7 @@ function buildRevolved(
   const group = new THREE.Group();
   const color = c.color ?? baseColor;
   const L = c.length;
-  const seg = RADIAL[tier];
+  const seg = radialSegments(RADIAL[tier], 'outer');
   addMesh(group, lathe(prof, c.x, seg), partMaterial(color, ctx, { shell: true }), 'shell');
 
   if (tier === 'best') {
@@ -197,15 +195,15 @@ function buildRevolved(
   return group;
 }
 
-export const buildNoseCone: PartBuilder<NoseCone> = (c, tier, ctx) => {
+export const buildNoseCone: PartBuilder<NoseCone> = scopedPart((c, tier, ctx) => {
   if (!(isNum(c.length) && c.length > 0 && isNum(c.baseRadius) && c.baseRadius > 0 && isNum(c.x))) {
     return new THREE.Group();
   }
   const prof = cleanProfile(noseConeProfile(c, PROFILE_N[tier]));
   return buildRevolved(c, prof, tier, ctx, PART_COLORS.nose, [c.flipped ? 'fore' : 'aft'], true, true);
-};
+});
 
-export const buildTransition: PartBuilder<Transition> = (c, tier, ctx) => {
+export const buildTransition: PartBuilder<Transition> = scopedPart((c, tier, ctx) => {
   if (
     !(
       isNum(c.length) && c.length > 0 && isNum(c.x) &&
@@ -218,7 +216,7 @@ export const buildTransition: PartBuilder<Transition> = (c, tier, ctx) => {
   }
   const prof = cleanProfile(transitionProfile(c, PROFILE_N[tier]));
   return buildRevolved(c, prof, tier, ctx, PART_COLORS.transition, ['fore', 'aft']);
-};
+});
 
 // ---------- fins ----------
 
@@ -456,7 +454,7 @@ function pointInPoly(poly: Pt[], a: number, r: number): boolean {
  * (bodyRadius, -c.x), chord running toward -Y, span toward +X, thickness along Z, cant
  * applied. The caller clones it `count` times around the axis.
  */
-export const buildFin: PartBuilder<FinSet> = (c, tier, ctx) => {
+export const buildFin: PartBuilder<FinSet> = scopedPart((c, tier, ctx) => {
   const group = new THREE.Group();
   if (
     !(
@@ -612,7 +610,7 @@ export const buildFin: PartBuilder<FinSet> = (c, tier, ctx) => {
     addMesh(group, e.geo, e.mat, e.name);
   }
   return group;
-};
+});
 
 // ---------- icons ----------
 

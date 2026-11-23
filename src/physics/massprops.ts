@@ -74,8 +74,30 @@ interface NoseIntegrals {
   cgVolume: number;
 }
 
+interface NoseIntegralsMemo {
+  shape: NoseCone['shape'];
+  R: number;
+  L: number;
+  param: number;
+  value: NoseIntegrals;
+}
+
+// The 400-step integral is a pure function of these four fields and the sim asks for it on every
+// mass and aero cache miss, so keep the last result per nose cone and re-check the inputs.
+const noseMemo = new WeakMap<NoseCone, NoseIntegralsMemo>();
+
 /** Numerical lateral area, volume and centroids of a nose cone profile. */
 function noseIntegrals(c: NoseCone): NoseIntegrals {
+  const hit = noseMemo.get(c);
+  if (hit && hit.shape === c.shape && hit.R === c.baseRadius && hit.L === c.length && hit.param === c.shapeParam) {
+    return hit.value;
+  }
+  const value = computeNoseIntegrals(c);
+  noseMemo.set(c, { shape: c.shape, R: c.baseRadius, L: c.length, param: c.shapeParam, value });
+  return value;
+}
+
+function computeNoseIntegrals(c: NoseCone): NoseIntegrals {
   const R = c.baseRadius;
   const L = c.length;
   const zero: NoseIntegrals = { lateral: 0, volume: 0, cgLateral: L / 2, cgVolume: L / 2 };

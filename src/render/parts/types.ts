@@ -58,29 +58,129 @@ export const PART_COLORS = {
 
 const CUTAWAY_OPACITY = 0.25;
 
+// ---------------------------------------------------------------------------------------
+// per-part sharing
+//
+// One drawn part (one builder call) often makes many meshes of the same colour, and many
+// identical small pieces (glue blobs, screws, rails). Within one call they share one
+// material per set of parameters and one geometry per shape.
+//
+// The scope is ONE part, never the whole rocket: the builder view highlights the selected
+// part by writing `emissive` on the materials of the meshes named after it, so a material
+// shared between two parts would light both. Nothing outlives the call either: the rocket
+// is disposed with `disposeGroup`, and the builder rocket and the pad rocket live side by
+// side, so a cache that outlived a build would hand out entries another rocket disposed.
+// ---------------------------------------------------------------------------------------
+
+interface PartScope {
+  materials: Map<string, THREE.MeshStandardMaterial>;
+  geometries: Map<string, THREE.BufferGeometry>;
+}
+
+/** Sharing scopes, keyed by the context copy `scopedPart` hands one builder call. */
+const scopes = new WeakMap<PartContext, PartScope>();
+
+/**
+ * Wrap a part builder so each call draws with its own sharing scope: `partMaterial` and
+ * `sharedGeometry` reuse entries within that call only. Same signature and output.
+ */
+export function scopedPart<C>(build: PartBuilder<C>): PartBuilder<C> {
+  return (c, tier, ctx) => {
+    const own: PartContext = { ...ctx };
+    scopes.set(own, { materials: new Map(), geometries: new Map() });
+    return build(c, tier, own);
+  };
+}
+
+/**
+ * A geometry shared by every mesh of the current part that asks with the same `key`.
+ * Callers place each mesh with its own transform and must never edit the geometry after
+ * it is returned. Outside a `scopedPart` call it simply builds a new one.
+ */
+export function sharedGeometry<G extends THREE.BufferGeometry>(ctx: PartContext, key: string, make: () => G): G {
+  const scope = scopes.get(ctx);
+  if (!scope) return make();
+  const hit = scope.geometries.get(key);
+  if (hit) return hit as G;
+  const g = make();
+  scope.geometries.set(key, g);
+  return g;
+}
+
 /**
  * The only material part designs use. The app later swaps it for a flat Lambert
  * material, so roughness and metalness never reach the screen: express a tier with
  * shape and colour. `shell: true` marks an outer skin, which turns see-through in
- * cutaway view.
+ * cutaway view. `offset: true` adds a little polygon offset so thin decoration never
+ * z-fights the skin under it.
+ *
+ * Inside a `scopedPart` call, equal arguments return the same material: never modify
+ * the result (ask for what you need through `opts`).
  */
 export function partMaterial(
   color: number,
   ctx: PartContext,
-  opts: { shell?: boolean } = {},
+  opts: { shell?: boolean; offset?: boolean } = {},
 ): THREE.MeshStandardMaterial {
+  const see = !!opts.shell && ctx.cutaway;
+  const scope = scopes.get(ctx);
+  const key = `${color}|${see ? 1 : 0}|${opts.offset ? 1 : 0}`;
+  const hit = scope?.materials.get(key);
+  if (hit) return hit;
   const m = new THREE.MeshStandardMaterial({
     color,
     roughness: 0.45,
     metalness: 0.05,
     side: THREE.DoubleSide,
   });
-  if (opts.shell && ctx.cutaway) {
+  if (see) {
     m.transparent = true;
     m.opacity = CUTAWAY_OPACITY;
     m.depthWrite = false;
   }
+  if (opts.offset) {
+    m.polygonOffset = true;
+    m.polygonOffsetFactor = -2;
+    m.polygonOffsetUnits = -2;
+  }
+  scope?.materials.set(key, m);
   return m;
+}
+
+// ---------------------------------------------------------------------------------------
+// radial detail
+// ---------------------------------------------------------------------------------------
+
+/**
+ * What a radial segment count is for: `outer` skins seen from outside, `inner` parts seen
+ * only in cutaway, `small` hardware (lugs, buttons, bells, bolts).
+ */
+export type SegmentRole = 'outer' | 'inner' | 'small';
+
+/** Most radial segments per role on a touch (phone / tablet) device. All multiples of 4. */
+const COARSE_SEGMENT_CAP: Record<SegmentRole, number> = { outer: 32, inner: 24, small: 16 };
+
+let coarsePointer: boolean | undefined;
+
+/** True on a device whose main pointer is a finger. False without a DOM (tests, workers). */
+function isCoarsePointer(): boolean {
+  if (coarsePointer === undefined) {
+    try {
+      coarsePointer = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    } catch {
+      coarsePointer = false;
+    }
+  }
+  return coarsePointer;
+}
+
+/**
+ * Radial segments to draw: `n` as the tier asks, capped on touch devices (phone GPUs).
+ * The cap only ever lowers the count and keeps it a multiple of 4, so shapes that pin
+ * vertices on the four axis directions stay exact. Unchanged where there is no DOM.
+ */
+export function radialSegments(n: number, role: SegmentRole): number {
+  return isCoarsePointer() ? Math.min(n, COARSE_SEGMENT_CAP[role]) : n;
 }
 
 /** Mix a colour toward another by t in [0, 1]. */

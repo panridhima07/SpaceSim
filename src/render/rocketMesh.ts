@@ -9,6 +9,7 @@ import type { Component, FinSet, InnerTube, Ring, RocketModel } from '../types';
 import { buildFin, buildNoseCone, buildTransition } from './parts/aero';
 import { buildBodyTube, buildBoosterPod, buildLaunchLug, buildMotor, buildRailButton } from './parts/airframe';
 import { buildInnerTube, buildMass, buildPackedChute, buildRing } from './parts/internals';
+import { buildBallast, buildCamera, buildFlightComputer, buildStreamer, cargoKind, isStreamer } from './parts/cargo';
 import { gradeRocket, isPod, sideBodyModel, type PartGrade } from './parts/grade';
 import { airframeOutline, surfaceRadiusAt } from './parts/profile';
 import { PART_COLORS, partMaterial, type PartContext, type PartTier } from './parts/types';
@@ -213,10 +214,15 @@ export function buildRocketMesh(rocket: RocketModel, opts: RocketMeshOptions = {
         break;
       }
       case 'mass':
-        if (cutaway) group.add(draw(buildMass, c, tier));
+        if (cutaway) {
+          // A camera, a flight computer and a balance weight each get their own model.
+          const kind = cargoKind(c);
+          const build = kind === 'camera' ? buildCamera : kind === 'computer' ? buildFlightComputer : kind === 'ballast' ? buildBallast : buildMass;
+          group.add(draw(build, c, tier));
+        }
         break;
       case 'parachute':
-        if (cutaway) group.add(draw(buildPackedChute, c, tier));
+        if (cutaway) group.add(draw(isStreamer(c) ? buildStreamer : buildPackedChute, c, tier));
         break;
     }
   });
@@ -284,7 +290,13 @@ export function disposeGroup(g: THREE.Object3D): void {
     const mesh = o as THREE.Mesh;
     if (mesh.geometry) mesh.geometry.dispose();
     const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
-    if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-    else if (mat) mat.dispose();
+    const disposeMat = (m: THREE.Material): void => {
+      // Only textures flagged userData.owned are per-call; shared/cached ones are left alone.
+      const map = (m as THREE.Material & { map?: THREE.Texture | null }).map;
+      if (map && map.userData?.owned === true) map.dispose();
+      m.dispose();
+    };
+    if (Array.isArray(mat)) mat.forEach(disposeMat);
+    else if (mat) disposeMat(mat);
   });
 }

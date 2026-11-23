@@ -10,12 +10,21 @@ export function cachedDeps(deps: PhysicsDeps): PhysicsDeps {
   let motorRef: Motor | null = null;
   const mass = new Map<number, MassProps>();
   const aero = new Map<number, AeroProps>();
+  // The four RK4 stages of a step mostly land on the same quantised key, so check the last hit first.
+  let lastMassKey = NaN;
+  let lastMass: MassProps | undefined;
+  let lastAeroKey = NaN;
+  let lastAero: AeroProps | undefined;
 
   const reset = (rocket: RocketModel, motor: Motor | null): void => {
     rocketRef = rocket;
     motorRef = motor;
     mass.clear();
     aero.clear();
+    lastMassKey = NaN;
+    lastMass = undefined;
+    lastAeroKey = NaN;
+    lastAero = undefined;
   };
 
   return {
@@ -26,12 +35,15 @@ export function cachedDeps(deps: PhysicsDeps): PhysicsDeps {
       const burn = motor ? motor.burnTime : 0;
       const t = tBurn <= 0 ? 0 : Math.min(tBurn, burn);
       const key = Math.round(t * 1000);
+      if (key === lastMassKey && lastMass) return lastMass;
       let v = mass.get(key);
       if (!v) {
         if (mass.size > MAX_ENTRIES) mass.clear();
         v = deps.massProps(rocket, motor, key / 1000);
         mass.set(key, v);
       }
+      lastMassKey = key;
+      lastMass = v;
       return v;
     },
     aeroProps(rocket, mach, cgX) {
@@ -39,12 +51,15 @@ export function cachedDeps(deps: PhysicsDeps): PhysicsDeps {
       const m = Math.round(mach * 2000);
       const c = Math.round(cgX * 1e5);
       const key = m * 1e6 + c;
+      if (key === lastAeroKey && lastAero) return lastAero;
       let v = aero.get(key);
       if (!v) {
         if (aero.size > MAX_ENTRIES) aero.clear();
         v = deps.aeroProps(rocket, m / 2000, c / 1e5);
         aero.set(key, v);
       }
+      lastAeroKey = key;
+      lastAero = v;
       return v;
     },
   };

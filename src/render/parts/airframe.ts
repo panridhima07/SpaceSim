@@ -13,7 +13,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { BodyTube, InnerTube, Ring } from '../../types';
-import { PART_COLORS, TIER_ACCENT, mixColor, partMaterial, seeded } from './types';
+import { PART_COLORS, TIER_ACCENT, mixColor, partMaterial, radialSegments, scopedPart, seeded, sharedGeometry } from './types';
 import type { PartBuilder, PartContext, PartIconSet, PartTier } from './types';
 
 // ---------------------------------------------------------------------------------------
@@ -185,7 +185,7 @@ const SEG_SMALL: Record<PartTier, number> = { best: 32, ok: 24, bad: 8 };
 // body tube (and interstage decoupler)
 // ---------------------------------------------------------------------------------------
 
-export const buildBodyTube: PartBuilder<BodyTube> = (c, tier, ctx) => {
+export const buildBodyTube: PartBuilder<BodyTube> = scopedPart((c, tier, ctx) => {
   const g = new THREE.Group();
   const r = c.outerRadius;
   const L = c.length;
@@ -194,7 +194,7 @@ export const buildBodyTube: PartBuilder<BodyTube> = (c, tier, ctx) => {
   const rnd = (i: number) => seeded(key, i);
   const y1 = -c.x;
   const y0 = -(c.x + L);
-  const segs = SEG_TUBE[tier];
+  const segs = radialSegments(SEG_TUBE[tier], 'outer');
   const base = c.color ?? (c.isDecoupler ? PART_COLORS.decoupler : PART_COLORS.tube);
   const skinColor =
     tier === 'bad' ? mixColor(base, PART_COLORS.bare, 0.18 + 0.14 * rnd(0)) : base;
@@ -208,7 +208,8 @@ export const buildBodyTube: PartBuilder<BodyTube> = (c, tier, ctx) => {
   if (ctx.cutaway && fin(t) && t > 0 && t < r) {
     const ri = r - t;
     const wallColor = mixColor(base, 0x000000, 0.2);
-    const wall = mesh(cyl(ri, y0, y1, segs), wallColor, ctx);
+    // See-through like the skin, or the wall hides everything packed inside the tube.
+    const wall = mesh(cyl(ri, y0, y1, segs), wallColor, ctx, true);
     wall.name = 'wall';
     g.add(wall);
     addMerged(g, [annulus(ri, r, y0, segs), annulus(ri, r, y1, segs)], wallColor, ctx, 'ends');
@@ -280,13 +281,13 @@ export const buildBodyTube: PartBuilder<BodyTube> = (c, tier, ctx) => {
   }
   if (d.children.length) g.add(d);
   return g;
-};
+});
 
 // ---------------------------------------------------------------------------------------
 // launch lug
 // ---------------------------------------------------------------------------------------
 
-export const buildLaunchLug: PartBuilder<Ring> = (c, tier, ctx) => {
+export const buildLaunchLug: PartBuilder<Ring> = scopedPart((c, tier, ctx) => {
   const g = new THREE.Group();
   const R = c.outerRadius;
   const L = c.length;
@@ -321,7 +322,7 @@ export const buildLaunchLug: PartBuilder<Ring> = (c, tier, ctx) => {
   const pivot = new THREE.Group();
   pivot.name = 'lug';
   pivot.position.set(mount + R, yc, 0);
-  pivot.add(mesh(lathe(pts, SEG_SMALL[tier]), color, ctx));
+  pivot.add(mesh(lathe(pts, radialSegments(SEG_SMALL[tier], 'small')), color, ctx));
   if (tier === 'bad') {
     const ang = ((1 + rnd(1)) * Math.PI) / 180;
     pivot.rotation.x = rnd(2) < 0.5 ? -ang : ang;
@@ -350,13 +351,13 @@ export const buildLaunchLug: PartBuilder<Ring> = (c, tier, ctx) => {
     g.add(d);
   }
   return g;
-};
+});
 
 // ---------------------------------------------------------------------------------------
 // rail button
 // ---------------------------------------------------------------------------------------
 
-export const buildRailButton: PartBuilder<Ring> = (c, tier, ctx) => {
+export const buildRailButton: PartBuilder<Ring> = scopedPart((c, tier, ctx) => {
   const g = new THREE.Group();
   const R = c.outerRadius;
   const L = c.length;
@@ -389,7 +390,7 @@ export const buildRailButton: PartBuilder<Ring> = (c, tier, ctx) => {
   }
   const base = c.color ?? (tier === 'best' ? PART_COLORS.metal : PART_COLORS.ring);
   const color = tier === 'bad' ? mixColor(base, PART_COLORS.bare, 0.2 + 0.15 * rnd(2)) : base;
-  const geo = lathe(pts, SEG_SMALL[tier]);
+  const geo = lathe(pts, radialSegments(SEG_SMALL[tier], 'small'));
   geo.rotateZ(-Math.PI / 2); // radial axis along +X, height t becomes x
   geo.translate(mount, yc, 0);
   g.add(mesh(geo, color, ctx));
@@ -406,7 +407,7 @@ export const buildRailButton: PartBuilder<Ring> = (c, tier, ctx) => {
     g.add(d);
   }
   return g;
-};
+});
 
 // ---------------------------------------------------------------------------------------
 // motor and nozzle
@@ -425,7 +426,7 @@ const BELL_PTS: [number, number][] = [
 const STAGE_R = 1.85;
 const BELL_STEEL = 0x6d7480;
 
-export const buildMotor: PartBuilder<InnerTube> = (c, tier, ctx) => {
+export const buildMotor: PartBuilder<InnerTube> = scopedPart((c, tier, ctx) => {
   const g = new THREE.Group();
   if (!pos(c.length) || !fin(c.x)) return g;
   const dia = c.motor?.diameter;
@@ -449,7 +450,7 @@ export const buildMotor: PartBuilder<InnerTube> = (c, tier, ctx) => {
   if (pos(mlen)) lcase = Math.min(lcase, mlen);
   if (!(lcase > 0)) return g;
   const yTop = yAft + lcase;
-  const segs = tier === 'best' ? 48 : tier === 'ok' ? 32 : 8;
+  const segs = radialSegments(tier === 'best' ? 48 : tier === 'ok' ? 32 : 8, 'outer');
   const skirt =
     c.color ?? (tier === 'bad' ? mixColor(PART_COLORS.motor, PART_COLORS.bare, 0.25 + 0.15 * rnd(0)) : PART_COLORS.motor);
 
@@ -475,12 +476,15 @@ export const buildMotor: PartBuilder<InnerTube> = (c, tier, ctx) => {
   const maxH = Math.max(...layout.map(([, , k]) => 1.45 * k));
   const s = Math.min(1, (0.95 * rc) / (reach * u), (0.85 * (yTop - yAft)) / (maxH * u));
   const bellColor = tier === 'bad' ? mixColor(BELL_STEEL, PART_COLORS.bare, 0.3) : BELL_STEEL;
-  const bsegs = tier === 'bad' ? 8 : 28;
+  const bsegs = radialSegments(tier === 'bad' ? 8 : 28, 'small');
   layout.forEach(([x, z, k], i) => {
     const kk = k * u * s;
-    const geo = lathe(BELL_PTS.map(([r, y]) => [r * kk, yAft + y * kk]), bsegs);
-    geo.translate(x * u * s, 0, z * u * s);
+    // Bells of one size share one geometry; each mesh is placed at its own spot.
+    const geo = sharedGeometry(ctx, `bell|${kk}|${yAft}|${bsegs}`, () =>
+      lathe(BELL_PTS.map(([r, y]) => [r * kk, yAft + y * kk]), bsegs),
+    );
     const bell = mesh(geo, bellColor, ctx);
+    bell.position.set(x * u * s, 0, z * u * s);
     bell.name = 'bell';
     bell.userData.bell = true;
     bell.userData.index = i;
@@ -494,13 +498,13 @@ export const buildMotor: PartBuilder<InnerTube> = (c, tier, ctx) => {
     g.add(d);
   }
   return g;
-};
+});
 
 // ---------------------------------------------------------------------------------------
 // strap-on booster pod
 // ---------------------------------------------------------------------------------------
 
-export const buildBoosterPod: PartBuilder<InnerTube> = (c, tier, ctx) => {
+export const buildBoosterPod: PartBuilder<InnerTube> = scopedPart((c, tier, ctx) => {
   const g = new THREE.Group();
   const r = c.outerRadius;
   const L = c.length;
@@ -510,7 +514,7 @@ export const buildBoosterPod: PartBuilder<InnerTube> = (c, tier, ctx) => {
   const y1 = -c.x;
   const y0 = -(c.x + L);
   const capH = 2.4 * r;
-  const segs = tier === 'best' ? 48 : tier === 'ok' ? 24 : 8;
+  const segs = radialSegments(tier === 'best' ? 48 : tier === 'ok' ? 24 : 8, 'outer');
   const base = c.color ?? PART_COLORS.tube;
   let capColor = c.color ?? PART_COLORS.nose;
   let bodyColor = base;
@@ -591,7 +595,7 @@ export const buildBoosterPod: PartBuilder<InnerTube> = (c, tier, ctx) => {
   }
   if (d.children.length) g.add(d);
   return g;
-};
+});
 
 // ---------------------------------------------------------------------------------------
 // icons (48 x 48, outline in currentColor, tier accent on the defining detail)

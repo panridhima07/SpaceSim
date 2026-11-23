@@ -1,15 +1,18 @@
-// DOM UI for Build Mode: parts palette, snap banner, rocket stack, live part
-// inspector (sliders + number boxes), undo/redo, and Go to Pad.
+// DOM UI for Build Mode: parts palette (search, category rail, "fits" filter, drag onto
+// the rocket), snap banner, rocket stack, live part inspector (sliders + number boxes),
+// floating view bar (zoom, centre, see inside, mirror), undo/redo, and Launch.
 // Works in both desktop layout and .sfb-mobile phone layout (44px+ touch targets).
 
 import {
+  aftRadiusOf,
   findPart,
+  foreRadiusOf,
+  innerRadiusOf,
   mapFlawsToParts,
   type Design,
   type PartPatch,
 } from '../builder/design';
 import {
-  CATEGORY_LABELS,
   MATERIALS,
   PART_CATEGORIES,
   PART_PRESETS,
@@ -17,9 +20,21 @@ import {
   type PartCategory,
   type PartPreset,
 } from '../builder/parts';
+import {
+  CATEGORY_HELP,
+  FRIENDLY_CATEGORY,
+  friendlyName,
+  friendlyPart,
+  iconSvg,
+  matchesSearch,
+  type FriendlyPart,
+} from '../builder/friendly';
 import type { SnapPoint } from '../builder/snap';
+import { partThumbSvg } from '../builder/partThumb';
 import type { SavedDesign } from '../builder/storage';
 import { CHALLENGES } from '../builder/challenges';
+import { IMPORT_ACCEPT } from '../io/importer';
+import { EXPORT_FORMATS, type ExportFormat } from '../io/exporter';
 import type {
   BodyTube,
   Component,
@@ -55,6 +70,12 @@ export interface BuilderUICallbacks {
   onChooseSnap(snap: SnapPoint, addTransition?: boolean): void;
   onDragStartPreset(preset: PartPreset): void;
   onDragEndPreset(): void;
+  /** Pointer drag of a palette card: called on every move with client coordinates. */
+  onDragMovePreset?(clientX: number, clientY: number, overStage: boolean): void;
+  /** Card released. `overStage` is false when it was dropped back on a panel. */
+  onDropPreset?(clientX: number, clientY: number, overStage: boolean): void;
+  onToggleMirror?(on: boolean): void;
+  onZoom?(factor: number): void;
   onSelectPart(partId: string | null): void;
   onUpdatePart(partId: string, patch: PartPatch, commit: boolean): void;
   onMovePart(partId: string, delta: number): void;
@@ -71,8 +92,8 @@ export interface BuilderUICallbacks {
   onSaveDesign(): void;
   onLoadSavedDesign(design: Design): void;
   onDeleteSavedDesign(id: string): void;
-  onExportJson(): void;
-  onExportOrk(): void;
+  onExport(format: ExportFormat): void;
+  onCopyShareLink(): void;
   onImportFile(file: File): void;
 }
 
@@ -85,6 +106,8 @@ export interface BuilderRenderState {
   motors: Motor[];
   savedDesigns: SavedDesign[];
   completedChallenges: Set<string>;
+  /** True when `preset` can be added to the current rocket without an adapter. */
+  fits?(preset: PartPreset): boolean;
   /** Pass true when design changed externally (undo/redo/load) so inspector inputs refresh. */
   forceInspectorRefresh?: boolean;
 }
@@ -96,11 +119,18 @@ export interface BuilderUI {
   setPlacing(preset: PartPreset | null, snaps: SnapPoint[]): void;
   setTransitionPrompt(prompt: TransitionPrompt | null): void;
   setCutaway(on: boolean): void;
+  setMirror(on: boolean): void;
+  /** Show a small label that follows the pointer while a part is dragged; null hides it. */
+  setDragGhost(text: string | null, clientX?: number, clientY?: number): void;
 }
 
-const MOBILE_QUERY = '(max-width: 760px), (max-height: 500px)';
+// A short window on a laptop (browser zoomed, or 125-150 % display scaling) is still a
+// laptop: only treat a short viewport as a phone when the pointer is a finger.
+const MOBILE_QUERY = '(max-width: 760px), (max-height: 500px) and (pointer: coarse)';
 const NOSE_SHAPES: readonly NoseShape[] = ['ogive', 'conical', 'ellipsoid', 'parabolic', 'power', 'haack'];
-const TUTORIAL_KEY = 'sfb.builder.tutorial.v1';
+const TUTORIAL_KEY = 'sfb.builder.tutorial.v2';
+const FITS_KEY = 'sfb.builder.fitsOnly.v1';
+const DRAG_START_PX = 6;
 const PART_SWATCHES: readonly { label: string; hex: number }[] = [
   { label: 'White', hex: 0xf2f1ec },
   { label: 'Rocket Red', hex: 0xe2552f },
@@ -121,6 +151,13 @@ function h<K extends keyof HTMLElementTagNameMap>(
   if (cls) e.className = cls;
   if (text !== undefined) e.textContent = text;
   return e;
+}
+
+function stabilityWord(cal: number): string {
+  if (cal < 1) return 'Unstable';
+  if (cal <= 1.5) return 'Wobbly';
+  if (cal > 3) return 'Too stiff';
+  return 'Stable';
 }
 
 function stabilityClass(cal: number): string {
@@ -167,10 +204,15 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
     statsEl.append(wrap);
     return { el: wrap, val };
   };
-  const sLen = makeStat('LEN');
-  const sMass = makeStat('MASS');
-  const sStab = makeStat('STAB');
-  const sTwr = makeStat('TWR');
+  const sLen = makeStat('Height');
+  sLen.el.title = 'How tall the rocket is, nose tip to tail';
+  const sMass = makeStat('Weight');
+  sMass.el.title = 'Total weight on the pad, engine included';
+  const sStab = makeStat('Flies straight?');
+  sStab.el.title =
+    'Stable rockets fly straight. Wobbly or unstable? Add bigger fins at the bottom or weight in the nose.';
+  const sTwr = makeStat('Engine power');
+  sTwr.el.title = 'How many times its own weight the engine can lift. Under 5× is too weak to leave the pad safely.';
 
   const topActions = h('div', 'sfb-b-top-actions');
 
@@ -185,8 +227,9 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   redoBtn.addEventListener('click', () => cb.onRedo());
 
   let cutawayOn = false;
-  const cutawayBtn = h('button', 'sfb-btn', 'Cutaway');
+  const cutawayBtn = h('button', 'sfb-btn', 'See inside');
   cutawayBtn.type = 'button';
+  cutawayBtn.title = 'Cut the rocket open to see and pick the parts inside';
   cutawayBtn.addEventListener('click', () => {
     cutawayOn = !cutawayOn;
     cutawayBtn.classList.toggle('is-active', cutawayOn);
@@ -194,92 +237,341 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
     cb.onToggleCutaway(cutawayOn);
   });
 
-  const fitBtn = h('button', 'sfb-btn', 'Fit');
+  const fitBtn = h('button', 'sfb-btn', 'Center');
   fitBtn.type = 'button';
-  fitBtn.title = 'Frame rocket in view';
+  fitBtn.title = 'Bring the whole rocket back into view';
   fitBtn.addEventListener('click', () => cb.onFrameCamera());
 
-  const filesBtn = h('button', 'sfb-btn', 'Save / Load');
+  const filesBtn = h('button', 'sfb-btn', 'Save / Open');
   filesBtn.type = 'button';
   filesBtn.addEventListener('click', () => toggleFilesModal());
+
+  const exportBtn = h('button', 'sfb-btn', 'Export');
+  exportBtn.type = 'button';
+  exportBtn.title = 'Export rocket (.ork, .json, 3D) or copy share link';
+  exportBtn.addEventListener('click', () => openFilesModal(true));
 
   const chalBtn = h('button', 'sfb-btn', 'Challenges');
   chalBtn.type = 'button';
   chalBtn.addEventListener('click', () => chalModal.classList.toggle('sfb-hidden'));
 
-  const msnBtn = h('button', 'sfb-btn', 'LVM3 Mission');
+  const msnBtn = h('button', 'sfb-btn', 'Moon mission');
   msnBtn.type = 'button';
   msnBtn.title = 'Fly the Chandrayaan-3 / LVM3-M4 mission';
   msnBtn.addEventListener('click', () => cb.onMission?.());
 
-  const padBtn = h('button', 'sfb-btn sfb-btn-primary sfb-b-pad-btn', 'Go to Pad');
+  const padBtn = h('button', 'sfb-btn sfb-btn-primary sfb-b-pad-btn', 'Launch it ▸');
   padBtn.type = 'button';
+  padBtn.title = 'Take this rocket to the launch pad';
   padBtn.addEventListener('click', () => cb.onGoToPad());
 
-  topActions.append(undoBtn, redoBtn, cutawayBtn, fitBtn, filesBtn, chalBtn, msnBtn, padBtn);
+  topActions.append(undoBtn, redoBtn, filesBtn, exportBtn, chalBtn, msnBtn, padBtn);
+
+  // ===== Floating view bar (bottom centre): everything a trackpad cannot do easily =====
+  const viewBar = h('div', 'sfb-panel sfb-b-viewbar');
+  const zoomOutBtn = h('button', 'sfb-btn sfb-b-view-icon', '−');
+  zoomOutBtn.type = 'button';
+  zoomOutBtn.title = 'Zoom out (−)';
+  zoomOutBtn.setAttribute('aria-label', 'Zoom out');
+  zoomOutBtn.addEventListener('click', () => cb.onZoom?.(1.25));
+  const zoomInBtn = h('button', 'sfb-btn sfb-b-view-icon', '+');
+  zoomInBtn.type = 'button';
+  zoomInBtn.title = 'Zoom in (+)';
+  zoomInBtn.setAttribute('aria-label', 'Zoom in');
+  zoomInBtn.addEventListener('click', () => cb.onZoom?.(0.8));
+
+  let mirrorOn = false;
+  const mirrorBtn = h('button', 'sfb-btn', 'Mirror');
+  mirrorBtn.type = 'button';
+  mirrorBtn.title =
+    'Mirror (M): side parts like fins go on as a matching left-and-right pair. Also mirrors the selected fins.';
+  mirrorBtn.addEventListener('click', () => {
+    mirrorOn = !mirrorOn;
+    mirrorBtn.classList.toggle('is-active', mirrorOn);
+    cb.onToggleMirror?.(mirrorOn);
+  });
+
+  const viewHint = h('span', 'sfb-b-view-hint', 'Drag a part to move it · drag empty space to turn');
+  viewBar.append(zoomOutBtn, zoomInBtn, fitBtn, cutawayBtn, mirrorBtn, viewHint);
+
+  // Label that follows the pointer while a part is being dragged.
+  const dragGhost = h('div', 'sfb-b-drag-ghost sfb-hidden');
   topBar.append(nameInput, statsEl, topActions);
 
   // ===== Left panel: Parts Palette =====
+  // Search on top, category rail down the side, part cards on the right. Cards can be
+  // clicked (adds at the obvious spot, or shows where it can go) or dragged onto the rocket.
   const palettePanel = h('aside', 'sfb-panel sfb-b-palette');
-  palettePanel.append(h('h2', 'sfb-section-title', 'Parts'));
+
+  const friendlyCache = new Map<string, FriendlyPart>();
+  const friendlyOf = (preset: PartPreset): FriendlyPart => {
+    let f = friendlyCache.get(preset.presetId);
+    if (!f) {
+      f = friendlyPart(preset);
+      friendlyCache.set(preset.presetId, f);
+    }
+    return f;
+  };
+
+  const searchWrap = h('div', 'sfb-b-search');
+  const searchInput = h('input', 'sfb-input sfb-b-search-input');
+  searchInput.type = 'search';
+  searchInput.placeholder = 'Search parts…';
+  searchInput.setAttribute('aria-label', 'Search parts');
+  searchInput.autocomplete = 'off';
+  searchInput.spellcheck = false;
+  let searchQuery = '';
+  searchInput.addEventListener('input', () => {
+    searchQuery = searchInput.value.trim();
+    renderPalette();
+  });
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      searchInput.value = '';
+      searchQuery = '';
+      searchInput.blur();
+      renderPalette();
+    }
+  });
+  searchWrap.append(searchInput);
 
   let activeCat: PartCategory | 'all' = 'all';
   const catBar = h('div', 'sfb-b-cats');
+  catBar.setAttribute('role', 'tablist');
   const catButtons = new Map<PartCategory | 'all', HTMLButtonElement>();
 
-  const addCatBtn = (key: PartCategory | 'all', label: string): void => {
-    const btn = h('button', 'sfb-b-cat', label);
+  const addCatBtn = (key: PartCategory | 'all', label: string, help: string): void => {
+    const btn = h('button', 'sfb-b-cat');
     btn.type = 'button';
+    btn.title = help;
+    btn.setAttribute('role', 'tab');
+    const ico = h('span', 'sfb-b-cat-ico');
+    ico.innerHTML = iconSvg(key, 18);
+    btn.append(ico, h('span', 'sfb-b-cat-label', label));
     btn.addEventListener('click', () => {
       activeCat = key;
+      partList.scrollTop = 0;
       renderPalette();
     });
     catButtons.set(key, btn);
     catBar.append(btn);
   };
-  addCatBtn('all', 'All');
-  for (const c of PART_CATEGORIES) addCatBtn(c, CATEGORY_LABELS[c]);
+  addCatBtn('all', 'All', 'Every part');
+  for (const c of PART_CATEGORIES) addCatBtn(c, FRIENDLY_CATEGORY[c], CATEGORY_HELP[c]);
+
+  // "Fits my rocket": hide parts that are the wrong width for what is already built.
+  let fitsOnly = true;
+  try {
+    fitsOnly = globalThis.localStorage?.getItem(FITS_KEY) !== '0';
+  } catch {
+    /* ignore */
+  }
+  let fitsFn: ((preset: PartPreset) => boolean) | null = null;
+  // presetId -> fits, valid for the current rocket signature (cleared in render()).
+  const fitCache = new Map<string, boolean>();
+  const fitsBtn = h('button', 'sfb-b-fits');
+  fitsBtn.type = 'button';
+  fitsBtn.title = 'Only show parts that are the right width for your rocket';
+  fitsBtn.setAttribute('role', 'switch');
+  fitsBtn.append(h('span', 'sfb-b-fits-box'), h('span', '', 'Only parts that fit'));
+  const setFitsOnly = (on: boolean): void => {
+    fitsOnly = on;
+    try {
+      globalThis.localStorage?.setItem(FITS_KEY, on ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+    renderPalette();
+  };
+  fitsBtn.addEventListener('click', () => setFitsOnly(!fitsOnly));
 
   const partList = h('div', 'sfb-b-part-list');
+  const paletteNote = h('div', 'sfb-b-pal-note sfb-hidden');
   let activePlacingId: string | null = null;
+  let suppressCardClick = false;
+
+  function isOverStage(clientX: number, clientY: number): boolean {
+    const el = typeof document.elementFromPoint === 'function' ? document.elementFromPoint(clientX, clientY) : null;
+    return !(el && el.closest('.sfb-panel, .sfb-b-modal-backdrop, .auth-chip'));
+  }
+
+  /** Mouse / trackpad drag of a card onto the rocket. Touch keeps tap-to-place. */
+  function armCardDrag(preset: PartPreset, down: PointerEvent): void {
+    const startX = down.clientX;
+    const startY = down.clientY;
+    let dragging = false;
+    const name = friendlyOf(preset).name;
+
+    const onMove = (e: PointerEvent): void => {
+      if (!dragging) {
+        if (Math.hypot(e.clientX - startX, e.clientY - startY) < DRAG_START_PX) return;
+        dragging = true;
+        root.classList.add('is-dragging-part');
+        cb.onDragStartPreset(preset);
+      }
+      const over = isOverStage(e.clientX, e.clientY);
+      setDragGhost(over ? `Add ${name}` : name, e.clientX, e.clientY);
+      cb.onDragMovePreset?.(e.clientX, e.clientY, over);
+    };
+    const finish = (): void => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+      window.removeEventListener('keydown', onKey, true);
+      root.classList.remove('is-dragging-part');
+      setDragGhost(null);
+    };
+    const onUp = (e: PointerEvent): void => {
+      finish();
+      if (!dragging) return;
+      // The browser still sends a click to the card after the drag; ignore that one.
+      suppressCardClick = true;
+      setTimeout(() => {
+        suppressCardClick = false;
+      }, 0);
+      if (cb.onDropPreset) cb.onDropPreset(e.clientX, e.clientY, isOverStage(e.clientX, e.clientY));
+      else cb.onDragEndPreset();
+    };
+    const onCancel = (): void => {
+      finish();
+      if (dragging) cb.onDragEndPreset();
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      onCancel();
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    window.addEventListener('keydown', onKey, true);
+  }
+
+  function makeCard(preset: PartPreset, fits: boolean): HTMLButtonElement {
+    const f = friendlyOf(preset);
+    const card = h(
+      'button',
+      `sfb-b-part-card${activePlacingId === preset.presetId ? ' is-placing' : ''}${fits ? '' : ' is-misfit'}`,
+    );
+    card.type = 'button';
+    card.dataset.presetId = preset.presetId;
+    card.title = `${preset.label} — ${preset.subtitle}\n${
+      fits ? 'Click to add it, or drag it onto the rocket.' : 'Wrong width for this rocket: it will need an adapter.'
+    }`;
+    const ico = h('span', 'sfb-b-part-ico');
+    ico.innerHTML = partThumbSvg(preset, 26);
+    const text = h('span', 'sfb-b-part-text');
+    text.append(h('span', 'sfb-b-part-name', f.name), h('span', 'sfb-b-part-sub', f.detail));
+    card.append(ico, text);
+    if (f.size) {
+      const badge = h('span', 'sfb-b-part-size', f.size);
+      badge.title = preset.diameterMm ? `${preset.diameterMm} mm wide` : '';
+      card.append(badge);
+    }
+    card.addEventListener('click', () => {
+      if (suppressCardClick) return;
+      if (activePlacingId === preset.presetId) {
+        cb.onCancelPlace();
+      } else {
+        setMobileDrawer('none');
+        cb.onStartPlace(preset);
+      }
+    });
+    card.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || e.pointerType === 'touch') return;
+      armCardDrag(preset, e);
+    });
+    // The pointer drag above replaces the browser's own drag-and-drop.
+    card.addEventListener('dragstart', (e) => e.preventDefault());
+    return card;
+  }
 
   function renderPalette(): void {
     for (const [k, btn] of catButtons) {
       btn.classList.toggle('is-active', k === activeCat);
+      btn.setAttribute('aria-selected', String(k === activeCat));
     }
+    fitsBtn.classList.toggle('is-on', fitsOnly);
+    fitsBtn.setAttribute('aria-checked', String(fitsOnly));
+
+    const keepScroll = partList.scrollTop;
     partList.textContent = '';
-    const items = activeCat === 'all' ? PART_PRESETS : PART_PRESETS.filter((p) => p.category === activeCat);
-    for (const preset of items) {
-      const card = h(
-        'button',
-        `sfb-b-part-card${activePlacingId === preset.presetId ? ' is-placing' : ''}`,
-      );
-      card.type = 'button';
-      card.draggable = true;
-      card.dataset.presetId = preset.presetId;
-      card.append(
-        h('span', 'sfb-b-part-name', preset.label),
-        h('span', 'sfb-b-part-sub', preset.subtitle),
-      );
-      card.addEventListener('click', () => {
-        if (activePlacingId === preset.presetId) {
-          cb.onCancelPlace();
-        } else {
-          setMobileDrawer('none');
-          cb.onStartPlace(preset);
-        }
-      });
-      card.addEventListener('dragstart', (e) => {
-        e.dataTransfer?.setData('text/plain', preset.presetId);
-        if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy';
-        cb.onDragStartPreset(preset);
-      });
-      card.addEventListener('dragend', () => cb.onDragEndPreset());
-      partList.append(card);
+
+    // Typing a search looks through every category, not just the open one.
+    const inCat = PART_PRESETS.filter(
+      (p) =>
+        (searchQuery !== '' || activeCat === 'all' || p.category === activeCat) &&
+        matchesSearch(friendlyOf(p), searchQuery),
+    );
+    const fitMap = new Map<string, boolean>();
+    for (const p of inCat) {
+      let fit = true;
+      if (fitsFn) {
+        const cached = fitCache.get(p.presetId);
+        fit = cached ?? fitsFn(p);
+        if (cached === undefined) fitCache.set(p.presetId, fit);
+      }
+      fitMap.set(p.presetId, fit);
     }
+    const shown = fitsOnly ? inCat.filter((p) => fitMap.get(p.presetId)) : inCat;
+    const hiddenByFit = inCat.length - shown.length;
+
+    const grouped = searchQuery !== '' || activeCat === 'all';
+    let lastCat: PartCategory | null = null;
+    for (const preset of shown) {
+      if (grouped && preset.category !== lastCat) {
+        lastCat = preset.category;
+        partList.append(h('div', 'sfb-b-part-group', CATEGORY_HELP[preset.category].split(' — ')[0]));
+      }
+      partList.append(makeCard(preset, fitMap.get(preset.presetId) ?? true));
+    }
+
+    if (shown.length === 0) {
+      const empty = h('div', 'sfb-b-pal-empty');
+      empty.append(
+        h(
+          'p',
+          'sfb-hint',
+          searchQuery
+            ? `Nothing found for "${searchQuery}".`
+            : hiddenByFit > 0
+              ? 'Nothing here is the right width for your rocket yet.'
+              : 'No parts here.',
+        ),
+      );
+      if (searchQuery) {
+        const clear = h('button', 'sfb-btn sfb-b-mini-btn', 'Clear search');
+        clear.type = 'button';
+        clear.addEventListener('click', () => {
+          searchInput.value = '';
+          searchQuery = '';
+          renderPalette();
+        });
+        empty.append(clear);
+      }
+      partList.append(empty);
+    }
+
+    paletteNote.textContent = '';
+    paletteNote.classList.toggle('sfb-hidden', hiddenByFit === 0);
+    if (hiddenByFit > 0) {
+      const showAll = h('button', 'sfb-b-link', 'Show them');
+      showAll.type = 'button';
+      showAll.addEventListener('click', () => setFitsOnly(false));
+      paletteNote.append(
+        h('span', '', `${hiddenByFit} more ${hiddenByFit === 1 ? 'part is' : 'parts are'} the wrong width. `),
+        showAll,
+      );
+    }
+    partList.scrollTop = keepScroll;
   }
   renderPalette();
-  palettePanel.append(catBar, partList);
+
+  const palBody = h('div', 'sfb-b-pal-body');
+  const palMain = h('div', 'sfb-b-pal-main');
+  palMain.append(fitsBtn, partList, paletteNote);
+  palBody.append(catBar, palMain);
+  palettePanel.append(searchWrap, palBody);
 
   // ===== Floating snap placement / transition banner =====
   const snapBanner = h('div', 'sfb-panel sfb-b-snap-banner sfb-hidden');
@@ -288,29 +580,34 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   const rightPanel = h('aside', 'sfb-panel sfb-b-right');
 
   const stackHead = h('div', 'sfb-b-stack-head');
-  stackHead.append(h('h2', 'sfb-section-title', 'Rocket Stack'));
+  stackHead.append(h('h2', 'sfb-section-title', 'Your rocket'));
   const stackHeadBtns = h('div', 'sfb-b-insp-actions');
-  const mFilesBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Save/Load');
+  const mFilesBtn = h('button', 'sfb-btn sfb-b-mini-btn sfb-b-mobile-only', 'Save/Open');
   mFilesBtn.type = 'button';
   mFilesBtn.addEventListener('click', () => toggleFilesModal());
+  const mExportBtn = h('button', 'sfb-btn sfb-b-mini-btn sfb-b-mobile-only', 'Export');
+  mExportBtn.type = 'button';
+  mExportBtn.addEventListener('click', () => openFilesModal(true));
   // The top bar's Challenges button is hidden on phones; this one sits in the Edit drawer.
-  const mChalBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Challenges');
+  const mChalBtn = h('button', 'sfb-btn sfb-b-mini-btn sfb-b-mobile-only', 'Challenges');
   mChalBtn.type = 'button';
   mChalBtn.addEventListener('click', () => chalModal.classList.toggle('sfb-hidden'));
-  const clearBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Clear');
+  const clearBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Start over');
   clearBtn.type = 'button';
+  clearBtn.title = 'Remove every part (Undo brings them back)';
   clearBtn.addEventListener('click', () => cb.onClear());
-  stackHeadBtns.append(mFilesBtn, mChalBtn, clearBtn);
+  stackHeadBtns.append(mFilesBtn, mExportBtn, mChalBtn, clearBtn);
   stackHead.append(stackHeadBtns);
 
   const stackList = h('ul', 'sfb-b-stack');
-  const stackEmpty = h('p', 'sfb-hint', 'Tap a part in the palette to start building.');
+  const stackEmpty = h('p', 'sfb-hint', 'Nothing here yet. Click a nose cone on the left, or drag one onto the stage.');
+  const stackHint = h('p', 'sfb-b-stack-hint', 'Top to bottom. Click a part to change it; drag ⋮⋮ to reorder.');
 
   const inspectorWrap = h('div', 'sfb-b-inspector sfb-hidden');
 
   const flawsWrap = h('div', 'sfb-b-flaws sfb-hidden');
 
-  rightPanel.append(stackHead, stackEmpty, stackList, inspectorWrap, flawsWrap);
+  rightPanel.append(stackHead, stackHint, stackEmpty, stackList, inspectorWrap, flawsWrap);
 
   // ===== Mobile bottom bar =====
   const mobileBar = h('div', 'sfb-panel sfb-b-mobile-bar');
@@ -326,9 +623,9 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   const mRedoBtn = h('button', 'sfb-btn', '↷');
   mRedoBtn.type = 'button';
   mRedoBtn.setAttribute('aria-label', 'Redo');
-  const mCutawayBtn = h('button', 'sfb-btn', 'X-Ray');
+  const mCutawayBtn = h('button', 'sfb-btn', 'Inside');
   mCutawayBtn.type = 'button';
-  const mPadBtn = h('button', 'sfb-btn sfb-btn-primary', 'Pad');
+  const mPadBtn = h('button', 'sfb-btn sfb-btn-primary', 'Launch');
   mPadBtn.type = 'button';
 
   function setMobileDrawer(next: 'none' | 'parts' | 'stack'): void {
@@ -357,7 +654,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   const filesModal = h('div', 'sfb-b-modal-backdrop sfb-hidden');
   const filesCard = h('section', 'sfb-panel sfb-b-modal');
   const filesHead = h('div', 'sfb-b-stack-head');
-  filesHead.append(h('h2', 'sfb-section-title', 'Designs & Files'));
+  filesHead.append(h('h2', 'sfb-section-title', 'Save / open a rocket'));
   const filesClose = h('button', 'sfb-btn sfb-b-mini-btn', 'Close');
   filesClose.type = 'button';
   filesClose.addEventListener('click', () => filesModal.classList.add('sfb-hidden'));
@@ -365,8 +662,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
 
   const importInput = h('input', 'sfb-hidden');
   importInput.type = 'file';
-  // Android's picker only lists .ork files when the generic MIME type is included too.
-  importInput.accept = '.json,.ork,.xml,application/json,application/zip,application/octet-stream';
+  importInput.accept = IMPORT_ACCEPT;
   importInput.addEventListener('change', () => {
     const file = importInput.files?.[0];
     importInput.value = '';
@@ -377,32 +673,56 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   });
 
   const fileActions = h('div', 'sfb-b-file-actions');
-  const saveBtn = h('button', 'sfb-btn sfb-btn-primary', 'Save Current');
+  const saveBtn = h('button', 'sfb-btn sfb-btn-primary', 'Save this rocket');
   saveBtn.type = 'button';
   saveBtn.addEventListener('click', () => cb.onSaveDesign());
 
-  const expOrkBtn = h('button', 'sfb-btn', 'Export .ork');
-  expOrkBtn.type = 'button';
-  expOrkBtn.addEventListener('click', () => cb.onExportOrk());
-
-  const expJsonBtn = h('button', 'sfb-btn', 'Export .json');
-  expJsonBtn.type = 'button';
-  expJsonBtn.addEventListener('click', () => cb.onExportJson());
-
-  const impBtn = h('button', 'sfb-btn', 'Import .json / .ork');
+  const impBtn = h('button', 'sfb-btn', 'Import (.ork / .rkt / .json / .eng)…');
   impBtn.type = 'button';
+  impBtn.title = 'Import OpenRocket (.ork), RockSim (.rkt), Astra (.json), or motor (.eng / .rse) file';
   impBtn.addEventListener('click', () => importInput.click());
 
-  fileActions.append(saveBtn, expOrkBtn, expJsonBtn, impBtn, importInput);
+  fileActions.append(saveBtn, impBtn, importInput);
+
+  const exportSection = h('div', 'sfb-b-export-section');
+  const exportHead = h('div', 'sfb-b-export-head');
+  exportHead.append(h('h3', 'sfb-section-title', 'Export & Share'));
+  const shareBtn = h('button', 'sfb-btn sfb-b-mini-btn sfb-b-share-btn', 'Copy share link');
+  shareBtn.type = 'button';
+  shareBtn.title = 'Copy a shareable link to this rocket';
+  shareBtn.addEventListener('click', () => cb.onCopyShareLink());
+  exportHead.append(shareBtn);
+
+  const exportGrid = h('div', 'sfb-b-export-grid');
+  for (const fmt of EXPORT_FORMATS) {
+    const btn = h('button', 'sfb-btn sfb-b-export-btn');
+    btn.type = 'button';
+    btn.dataset.exportFormat = fmt.id;
+    btn.title = fmt.description;
+    btn.append(
+      h('span', 'sfb-b-export-label', fmt.label),
+      h('span', 'sfb-b-export-desc', fmt.description),
+    );
+    btn.addEventListener('click', () => cb.onExport(fmt.id));
+    exportGrid.append(btn);
+  }
+  exportSection.append(exportHead, exportGrid);
 
   const savedGrid = h('div', 'sfb-b-saved-grid');
-  const savedEmpty = h('p', 'sfb-hint', 'No saved designs yet. Click "Save Current" to store this rocket.');
+  const savedEmpty = h('p', 'sfb-hint', 'No saved rockets yet. Click "Save this rocket" to keep this one.');
 
-  filesCard.append(filesHead, fileActions, savedEmpty, savedGrid);
+  filesCard.append(filesHead, fileActions, exportSection, savedEmpty, savedGrid);
   filesModal.append(filesCard);
   filesModal.addEventListener('click', (e) => {
     if (e.target === filesModal) filesModal.classList.add('sfb-hidden');
   });
+
+  function openFilesModal(scrollToExport = false): void {
+    filesModal.classList.remove('sfb-hidden');
+    if (scrollToExport) {
+      exportSection.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    }
+  }
 
   function toggleFilesModal(): void {
     filesModal.classList.toggle('sfb-hidden');
@@ -433,7 +753,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
         filesModal.classList.add('sfb-hidden');
         cb.onLoadSavedDesign(item.design);
       });
-      const delBtn = h('button', 'sfb-btn sfb-b-mini-btn sfb-b-warn-btn', 'Del');
+      const delBtn = h('button', 'sfb-btn sfb-b-mini-btn sfb-b-warn-btn', 'Delete');
       delBtn.type = 'button';
       delBtn.addEventListener('click', () => cb.onDeleteSavedDesign(item.id));
       row.append(openBtn, delBtn);
@@ -446,7 +766,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   const chalModal = h('div', 'sfb-b-modal-backdrop sfb-hidden');
   const chalCard = h('section', 'sfb-panel sfb-b-modal');
   const chalHead = h('div', 'sfb-b-stack-head');
-  chalHead.append(h('h2', 'sfb-section-title', 'Engineering Challenges'));
+  chalHead.append(h('h2', 'sfb-section-title', 'Challenges'));
   const chalClose = h('button', 'sfb-btn sfb-b-mini-btn', 'Close');
   chalClose.type = 'button';
   chalClose.addEventListener('click', () => chalModal.classList.add('sfb-hidden'));
@@ -474,10 +794,10 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   // ===== Short dismissible first-run tutorial =====
   const tutorial = h('div', 'sfb-panel sfb-b-tutorial sfb-hidden');
   tutorial.append(
-    h('h3', 'sfb-section-title', 'Quick Start'),
-    h('p', 'sfb-hint', '1. Pick a part from the palette, then tap a glowing snap ring on the rocket.'),
-    h('p', 'sfb-hint', '2. Select any part to adjust dimensions, fins, motor, or colour — watch CG (blue) & CP (red) update live.'),
-    h('p', 'sfb-hint', '3. Press Go to Pad to launch and review flight flaws.'),
+    h('h3', 'sfb-section-title', 'How to build'),
+    h('p', 'sfb-hint', '1. Drag a part from the left onto the rocket and let go — it snaps to the nearest glowing ring. Or just click a part.'),
+    h('p', 'sfb-hint', '2. Click any part of the rocket to resize or recolour it. Drag it up or down to move it.'),
+    h('p', 'sfb-hint', '3. Keep "Flies straight?" green, then press Launch it.'),
   );
   const tutBtn = h('button', 'sfb-btn sfb-btn-primary sfb-b-mini-btn', 'Got it');
   tutBtn.type = 'button';
@@ -500,7 +820,38 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
     tutorial.classList.remove('sfb-hidden');
   }
 
-  root.append(topBar, snapBanner, palettePanel, rightPanel, mobileBar, tutorial, filesModal, chalModal);
+  const dropOverlay = h('div', 'sfb-drop sfb-b-drop', 'Drop .ork / .rkt / .json / .eng to import');
+  let fileDragDepth = 0;
+  const isExternalFileDrag = (e: DragEvent): boolean =>
+    !root.classList.contains('sfb-hidden') &&
+    Array.from(e.dataTransfer?.types ?? []).includes('Files');
+  window.addEventListener('dragenter', (e) => {
+    if (!isExternalFileDrag(e)) return;
+    e.preventDefault();
+    fileDragDepth++;
+    root.classList.add('is-dragging');
+  });
+  window.addEventListener('dragover', (e) => {
+    if (!isExternalFileDrag(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+  window.addEventListener('dragleave', (e) => {
+    if (fileDragDepth === 0) return;
+    if (!Array.from(e.dataTransfer?.types ?? []).includes('Files')) return;
+    fileDragDepth = Math.max(0, fileDragDepth - 1);
+    if (fileDragDepth === 0) root.classList.remove('is-dragging');
+  });
+  window.addEventListener('drop', (e) => {
+    if (!isExternalFileDrag(e)) return;
+    e.preventDefault();
+    fileDragDepth = 0;
+    root.classList.remove('is-dragging');
+    const file = e.dataTransfer?.files?.[0];
+    if (file) cb.onImportFile(file);
+  });
+
+  root.append(topBar, snapBanner, palettePanel, rightPanel, viewBar, mobileBar, tutorial, dragGhost, filesModal, chalModal, dropOverlay);
   container.append(root);
 
   // Sync .sfb-mobile class with viewport width/height.
@@ -553,8 +904,32 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
     if (e.key === 'Escape') {
       if (activePlacingId) cb.onCancelPlace();
       else if (lastSelectedId) cb.onSelectPart(null);
+      return;
+    }
+    if (mod || e.altKey) return;
+    if (e.key === '/') {
+      e.preventDefault();
+      searchInput.focus();
+    } else if (e.key === 'm' || e.key === 'M') {
+      mirrorBtn.click();
+    } else if (e.key === '+' || e.key === '=') {
+      cb.onZoom?.(0.8);
+    } else if (e.key === '-' || e.key === '_') {
+      cb.onZoom?.(1.25);
     }
   });
+
+  function setDragGhost(text: string | null, clientX?: number, clientY?: number): void {
+    if (text === null) {
+      dragGhost.classList.add('sfb-hidden');
+      return;
+    }
+    dragGhost.textContent = text;
+    dragGhost.classList.remove('sfb-hidden');
+    if (clientX !== undefined && clientY !== undefined) {
+      dragGhost.style.transform = `translate(${Math.round(clientX + 14)}px, ${Math.round(clientY + 16)}px)`;
+    }
+  }
 
   // ===== Inspector builders =====
 
@@ -645,7 +1020,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
       options.unshift({ value: 'custom', label: `Custom (${Math.round(density)} kg/m³)` });
     }
     return selectControl({
-      label: 'Material',
+      label: 'Made of',
       value: current,
       options,
       onChange: (v) => {
@@ -678,7 +1053,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   function anchorControls(partId: string, anchor: AnchorMode, offset: number): HTMLElement[] {
     return [
       selectControl({
-        label: 'Position Reference',
+        label: 'Measure from',
         value: anchor,
         options: [
           { value: 'top', label: 'Top of tube' },
@@ -688,7 +1063,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
         onChange: (v) => cb.onUpdatePart(partId, { anchor: v as AnchorMode }, true),
       }),
       sliderControl({
-        label: 'Axial Offset',
+        label: 'Slide up / down',
         unit: 'cm',
         value: offset * 100,
         min: -30,
@@ -701,6 +1076,8 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   }
 
   let lastInspectorKey = '';
+  let lastPaletteSig = '';
+  let lastScrolledSelection: string | null = null;
 
   function renderInspector(state: BuilderRenderState): void {
     const { design, selectedId, motors, forceInspectorRefresh } = state;
@@ -723,35 +1100,35 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
 
     const part = found.part;
     const head = h('div', 'sfb-b-insp-head');
-    head.append(h('h3', 'sfb-section-title', `Edit ${part.name}`));
+    head.append(h('h3', 'sfb-section-title', `Edit: ${friendlyName(part.name)}`));
 
     const acts = h('div', 'sfb-b-insp-actions');
     if (found.parentId === null) {
-      const upBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Move ▲');
+      const upBtn = h('button', 'sfb-btn sfb-b-mini-btn', '▲ Up');
       upBtn.type = 'button';
-      upBtn.title = 'Move forward in stack';
+      upBtn.title = 'Move this part up the rocket';
       upBtn.disabled = found.stackIndex <= 0;
       upBtn.addEventListener('click', () => cb.onMovePart(part.id, -1));
 
-      const dnBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Move ▼');
+      const dnBtn = h('button', 'sfb-btn sfb-b-mini-btn', '▼ Down');
       dnBtn.type = 'button';
-      dnBtn.title = 'Move aft in stack';
+      dnBtn.title = 'Move this part down the rocket';
       dnBtn.disabled = found.stackIndex >= design.stack.length - 1;
       dnBtn.addEventListener('click', () => cb.onMovePart(part.id, 1));
       acts.append(upBtn, dnBtn);
     } else {
       const curOffset = found.offset ?? 0;
-      const foreBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Move ▲');
+      const foreBtn = h('button', 'sfb-btn sfb-b-mini-btn', '▲ Up');
       foreBtn.type = 'button';
-      foreBtn.title = 'Nudge 2 cm forward along tube';
+      foreBtn.title = 'Slide 2 cm up the tube';
       foreBtn.addEventListener('click', () => {
         lastInspectorKey = '';
         cb.onUpdatePart(part.id, { offset: Math.max(-0.3, Number((curOffset - 0.02).toFixed(4))) }, true);
       });
 
-      const aftBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Move ▼');
+      const aftBtn = h('button', 'sfb-btn sfb-b-mini-btn', '▼ Down');
       aftBtn.type = 'button';
-      aftBtn.title = 'Nudge 2 cm aft along tube';
+      aftBtn.title = 'Slide 2 cm down the tube';
       aftBtn.addEventListener('click', () => {
         lastInspectorKey = '';
         cb.onUpdatePart(part.id, { offset: Math.min(0.3, Number((curOffset + 0.02).toFixed(4))) }, true);
@@ -759,14 +1136,14 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
       acts.append(foreBtn, aftBtn);
     }
 
-    const dupBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Dup');
+    const dupBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Copy');
     dupBtn.type = 'button';
-    dupBtn.title = 'Duplicate (Ctrl+D)';
+    dupBtn.title = 'Make a copy (Ctrl+D)';
     dupBtn.addEventListener('click', () => cb.onDuplicatePart(part.id));
 
-    const delBtn = h('button', 'sfb-btn sfb-b-mini-btn sfb-b-warn-btn', 'Del');
+    const delBtn = h('button', 'sfb-btn sfb-b-mini-btn sfb-b-warn-btn', 'Delete');
     delBtn.type = 'button';
-    delBtn.title = 'Delete (Del)';
+    delBtn.title = 'Remove this part (Del)';
     delBtn.addEventListener('click', () => cb.onDeletePart(part.id));
 
     acts.append(dupBtn, delBtn);
@@ -798,7 +1175,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
             onChange: (cm, commit) => patch({ length: cm / 100 }, commit),
           }),
           sliderControl({
-            label: 'Base Diameter',
+            label: 'Width',
             unit: 'mm',
             value: nc.baseRadius * 2000,
             min: 10,
@@ -808,7 +1185,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
             onChange: (mm, commit) => patch({ baseRadius: mm / 2000 } as Partial<NoseCone>, commit),
           }),
           sliderControl({
-            label: 'Wall Thickness',
+            label: 'Wall thickness',
             unit: 'mm',
             value: nc.thickness * 1000,
             min: 0,
@@ -836,7 +1213,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
             onChange: (cm, commit) => patch({ length: cm / 100 }, commit),
           }),
           sliderControl({
-            label: 'Outer Diameter',
+            label: 'Width',
             unit: 'mm',
             value: bt.outerRadius * 2000,
             min: 12,
@@ -846,7 +1223,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
             onChange: (mm, commit) => patch({ outerRadius: mm / 2000 } as Partial<BodyTube>, commit),
           }),
           sliderControl({
-            label: 'Wall Thickness',
+            label: 'Wall thickness',
             unit: 'mm',
             value: bt.thickness * 1000,
             min: 0.2,
@@ -874,7 +1251,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
             onChange: (cm, commit) => patch({ length: cm / 100 }, commit),
           }),
           sliderControl({
-            label: 'Fore Diameter',
+            label: 'Top width',
             unit: 'mm',
             value: tr.foreRadius * 2000,
             min: 10,
@@ -884,7 +1261,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
             onChange: (mm, commit) => patch({ foreRadius: mm / 2000 } as Partial<Transition>, commit),
           }),
           sliderControl({
-            label: 'Aft Diameter',
+            label: 'Bottom width',
             unit: 'mm',
             value: tr.aftRadius * 2000,
             min: 10,
@@ -895,6 +1272,14 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
           }),
           materialControl(part.id, tr.density),
         );
+        const flipBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Flip upside down');
+        flipBtn.type = 'button';
+        flipBtn.title = 'Swap the wide end and the narrow end';
+        flipBtn.addEventListener('click', () => {
+          lastInspectorKey = '';
+          patch({ foreRadius: tr.aftRadius, aftRadius: tr.foreRadius } as Partial<Transition>, true);
+        });
+        fields.append(flipBtn);
         break;
       }
 
@@ -902,11 +1287,12 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
         const fn = part as FinSet;
         // Quick symmetry buttons for 3 / 4 / 6 fins + full count slider
         const symRow = h('div', 'sfb-b-sym-row');
-        symRow.append(h('span', 'sfb-b-ctrl-label', 'Fin Count (Symmetry)'));
+        symRow.append(h('span', 'sfb-b-ctrl-label', 'How many fins'));
         const symBtns = h('div', 'sfb-b-sym-btns');
-        for (const n of [3, 4, 5, 6]) {
+        for (const n of [2, 3, 4, 5, 6]) {
           const b = h('button', `sfb-btn sfb-b-mini-btn${fn.count === n ? ' is-active' : ''}`, `${n}×`);
           b.type = 'button';
+          b.title = n === 2 ? 'Mirrored pair: one fin left, one fin right' : `${n} fins spaced evenly around the body`;
           b.addEventListener('click', () => {
             lastInspectorKey = '';
             patch({ count: n } as Partial<FinSet>, true);
@@ -918,7 +1304,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
         fields.append(
           symRow,
           selectControl({
-            label: 'Fin Shape',
+            label: 'Fin shape',
             value: fn.finShape === 'elliptical' ? 'elliptical' : 'trapezoid',
             options: [
               { value: 'trapezoid', label: 'Trapezoid' },
@@ -930,7 +1316,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
             },
           }),
           sliderControl({
-            label: 'Root Chord',
+            label: 'Length at the body',
             unit: 'mm',
             value: fn.rootChord * 1000,
             min: 10,
@@ -943,7 +1329,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
           ...(fn.finShape !== 'elliptical'
             ? [
                 sliderControl({
-                  label: 'Tip Chord',
+                  label: 'Length at the tip',
                   unit: 'mm',
                   value: fn.tipChord * 1000,
                   min: 0,
@@ -953,7 +1339,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
                   onChange: (mm, commit) => patch({ tipChord: mm / 1000 } as Partial<FinSet>, commit),
                 }),
                 sliderControl({
-                  label: 'Sweep',
+                  label: 'Lean back',
                   unit: 'mm',
                   value: fn.sweepLength * 1000,
                   min: -40,
@@ -965,7 +1351,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
               ]
             : []),
           sliderControl({
-            label: 'Span',
+            label: 'Sticks out',
             unit: 'mm',
             value: fn.span * 1000,
             min: 10,
@@ -994,7 +1380,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
         const it = part as InnerTube;
         if (it.radialCount && it.radialCount >= 2) {
           const symRow = h('div', 'sfb-b-sym-row');
-          symRow.append(h('span', 'sfb-b-ctrl-label', 'Booster Symmetry'));
+          symRow.append(h('span', 'sfb-b-ctrl-label', 'How many boosters'));
           const symBtns = h('div', 'sfb-b-sym-btns');
           for (const n of [2, 3, 4]) {
             const b = h('button', `sfb-btn sfb-b-mini-btn${it.radialCount === n ? ' is-active' : ''}`, `${n}×`);
@@ -1010,7 +1396,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
         }
         const currentMotorKey = it.motor ? `${it.motor.manufacturer} ${it.motor.designation}`.trim() : '';
         const motorOptions = [
-          { value: '', label: 'None (empty tube)' },
+          { value: '', label: 'No engine (empty holder)' },
           ...motors.map((m) => ({
             value: motorKey(m),
             label: `${motorKey(m)} (${(m.diameter * 1000).toFixed(0)}mm · ${Math.round(m.totalImpulse)} N·s)`,
@@ -1018,7 +1404,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
         ];
         fields.append(
           selectControl({
-            label: 'Installed Motor',
+            label: 'Engine',
             value: motorOptions.some((o) => o.value === currentMotorKey) ? currentMotorKey : '',
             options: motorOptions,
             onChange: (val) => {
@@ -1044,7 +1430,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
             },
           }),
           sliderControl({
-            label: 'Ejection Delay',
+            label: 'Wait before parachute pops',
             unit: 's',
             value: Number.isFinite(it.motor?.delay) ? (it.motor!.delay as number) : 5,
             min: 0,
@@ -1057,7 +1443,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
             },
           }),
           sliderControl({
-            label: 'Outer Diameter',
+            label: 'Width',
             unit: 'mm',
             value: it.outerRadius * 2000,
             min: 10,
@@ -1067,7 +1453,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
             onChange: (mm, commit) => patch({ outerRadius: mm / 2000 } as Partial<InnerTube>, commit),
           }),
           sliderControl({
-            label: 'Mount Length',
+            label: 'Holder length',
             unit: 'cm',
             value: it.length * 100,
             min: 3,
@@ -1085,7 +1471,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
         const ch = part as Parachute;
         fields.append(
           sliderControl({
-            label: 'Canopy Diameter',
+            label: 'Parachute size',
             unit: 'cm',
             value: ch.diameter * 100,
             min: 10,
@@ -1095,7 +1481,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
             onChange: (cm, commit) => patch({ diameter: cm / 100 } as Partial<Parachute>, commit),
           }),
           sliderControl({
-            label: 'Drag Cd',
+            label: 'Braking strength',
             unit: '—',
             value: ch.cd,
             min: 0.4,
@@ -1105,12 +1491,12 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
             onChange: (v, commit) => patch({ cd: v } as Partial<Parachute>, commit),
           }),
           selectControl({
-            label: 'Deploy Event',
+            label: 'Opens when',
             value: ch.deployEvent,
             options: [
-              { value: 'ejection', label: 'Motor ejection charge' },
-              { value: 'apogee', label: 'At apogee (altimeter)' },
-              { value: 'altitude', label: 'Descending altitude' },
+              { value: 'ejection', label: 'The engine pops it out' },
+              { value: 'apogee', label: 'At the highest point' },
+              { value: 'altitude', label: 'On the way down, at a set height' },
             ],
             onChange: (v) => {
               lastInspectorKey = '';
@@ -1120,7 +1506,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
           ...(ch.deployEvent === 'altitude'
             ? [
                 sliderControl({
-                  label: 'Deploy Altitude',
+                  label: 'Open at height',
                   unit: 'm',
                   value: ch.deployAltitude || 150,
                   min: 30,
@@ -1178,7 +1564,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
         const rg = part as Ring;
         fields.append(
           sliderControl({
-            label: 'Outer Diameter',
+            label: 'Width',
             unit: 'mm',
             value: rg.outerRadius * 2000,
             min: 4,
@@ -1188,7 +1574,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
             onChange: (mm, commit) => patch({ outerRadius: mm / 2000 } as Partial<Ring>, commit),
           }),
           sliderControl({
-            label: 'Inner Diameter',
+            label: 'Hole width',
             unit: 'mm',
             value: rg.innerRadius * 2000,
             min: 0,
@@ -1228,7 +1614,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
       return;
     }
     flawsWrap.classList.remove('sfb-hidden');
-    flawsWrap.append(h('h3', 'sfb-section-title', `Design Checks (${flaws.length})`));
+    flawsWrap.append(h('h3', 'sfb-section-title', `Things to fix (${flaws.length})`));
     const ul = h('ul', 'sfb-flaws');
     for (const f of flaws) {
       const li = h('li', `sfb-flaw sev-${f.severity}`);
@@ -1258,13 +1644,35 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
     sLen.val.textContent = stats.length > 0 ? `${(stats.length * 100).toFixed(1)} cm` : '—';
     sMass.val.textContent = stats.mass > 0 ? `${(stats.mass * 1000).toFixed(0)} g` : '—';
     if (stats.length > 0 && Number.isFinite(stats.stabilityCal)) {
-      sStab.val.textContent = `${stats.stabilityCal.toFixed(2)} cal`;
+      sStab.val.textContent = `${stabilityWord(stats.stabilityCal)} · ${stats.stabilityCal.toFixed(1)}`;
       sStab.val.className = `sfb-b-stat-v ${stabilityClass(stats.stabilityCal)}`;
     } else {
       sStab.val.textContent = '—';
       sStab.val.className = 'sfb-b-stat-v';
     }
-    sTwr.val.textContent = stats.twr !== null && Number.isFinite(stats.twr) ? `${stats.twr.toFixed(1)}×` : '—';
+    if (stats.twr !== null && Number.isFinite(stats.twr)) {
+      sTwr.val.textContent = `${stats.twr < 5 ? 'Too weak' : 'Good'} · ${stats.twr.toFixed(0)}× weight`;
+      sTwr.val.className = `sfb-b-stat-v ${stats.twr < 5 ? 'sfb-stab-critical' : 'sfb-stab-good'}`;
+    } else {
+      sTwr.val.textContent = stats.length > 0 ? 'No engine' : '—';
+      sTwr.val.className = `sfb-b-stat-v${stats.length > 0 ? ' sfb-stab-warning' : ''}`;
+    }
+
+    // The "fits my rocket" filter depends on the rocket's widths; redraw the palette
+    // only when those change, not on every slider tick.
+    fitsFn = state.fits ?? null;
+    // computeSnapPoints decides diameterMatch / snap existence only from each stack part's
+    // kind and fore/aft/inner radii (plus stack order and node ids); lengths, masses,
+    // colours, names and children never affect it.
+    const sig = design.stack
+      .map((n) => `${n.id}:${n.part.kind}:${foreRadiusOf(n.part)}:${aftRadiusOf(n.part)}:${innerRadiusOf(n.part)}`)
+      .join('|');
+    if (sig !== lastPaletteSig) {
+      lastPaletteSig = sig;
+      fitCache.clear();
+      renderPalette();
+    }
+    stackHint.classList.toggle('sfb-hidden', design.stack.length === 0);
 
     stackList.textContent = '';
     const empty = design.stack.length === 0;
@@ -1287,8 +1695,21 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
 
     let draggedStackPart: { id: string; index: number } | null = null;
 
+    // A multi-stage rocket gets a heading where each stage begins.
+    const startsStage = (n: (typeof design.stack)[number], i: number): boolean =>
+      i === 0 || !!n.stage || (n.part.kind === 'bodytube' && !!n.part.isDecoupler);
+    const stageTotal = design.stack.filter(startsStage).length;
+    let stageNo = 0;
+
     for (let stackIdx = 0; stackIdx < design.stack.length; stackIdx++) {
       const node = design.stack[stackIdx];
+      if (stageTotal > 1 && startsStage(node, stackIdx)) {
+        stageNo++;
+        const label = node.stage?.name || (stageNo === 1 ? 'Top stage' : `Booster ${stageNo - 1}`);
+        const head = h('li', 'sfb-b-stage-head', `Stage ${stageNo} of ${stageTotal} · ${label}`);
+        head.title = stageNo === 1 ? 'The part that flies highest.' : 'Drops away when its engine burns out.';
+        stackList.append(head);
+      }
       const li = h('li', 'sfb-b-stack-item');
       const row = h('div', `sfb-b-stack-row${node.id === selectedId ? ' is-selected' : ''}`);
       row.dataset.partId = node.id;
@@ -1335,7 +1756,8 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
       grip.title = 'Drag to reorder block';
       grip.setAttribute('aria-hidden', 'true');
 
-      const labelBtn = h('button', 'sfb-b-stack-label', node.part.name);
+      const labelBtn = h('button', 'sfb-b-stack-label', friendlyName(node.part.name));
+      labelBtn.title = node.part.name;
       labelBtn.type = 'button';
       labelBtn.addEventListener('click', () => cb.onSelectPart(node.id));
 
@@ -1378,7 +1800,8 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
         for (const ch of node.children) {
           const cli = h('li', `sfb-b-stack-row sfb-b-child-row${ch.id === selectedId ? ' is-selected' : ''}`);
           cli.dataset.partId = ch.id;
-          const clabel = h('button', 'sfb-b-stack-label', ch.part.name);
+          const clabel = h('button', 'sfb-b-stack-label', friendlyName(ch.part.name));
+          clabel.title = ch.part.name;
           clabel.type = 'button';
           clabel.addEventListener('click', () => cb.onSelectPart(ch.id));
 
@@ -1424,6 +1847,14 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
     }
 
     renderInspector(state);
+    // On a short laptop screen the editor can sit below the fold: bring it up when the
+    // selection changes (not on every redraw, which would fight the user's scrolling).
+    if (selectedId !== lastScrolledSelection) {
+      lastScrolledSelection = selectedId;
+      if (selectedId && typeof inspectorWrap.scrollIntoView === 'function') {
+        inspectorWrap.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+    }
     renderFlaws(stats.flaws);
     renderSavedDesigns(state.savedDesigns);
     renderChallenges(state.completedChallenges);
@@ -1442,8 +1873,8 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
       'div',
       'sfb-b-snap-msg',
       snaps.length > 0
-        ? `Tap a glowing ring to place ${preset.label}`
-        : `No valid snap point for ${preset.label}`,
+        ? `Click a glowing ring to put the ${friendlyOf(preset).name} there`
+        : `The ${friendlyOf(preset).name} cannot go on this rocket`,
     );
     const actions = h('div', 'sfb-b-snap-actions');
     for (const s of snaps.slice(0, 4)) {
@@ -1474,14 +1905,14 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
     const msg = h(
       'div',
       'sfb-b-snap-msg',
-      `Diameter mismatch (${prompt.snap.warning ?? ''}). Insert an automatic transition?`,
+      `This part is a different width (${prompt.snap.warning ?? ''}). Add an adapter so it fits?`,
     );
     const actions = h('div', 'sfb-b-snap-actions');
-    const withTr = h('button', 'sfb-btn sfb-btn-primary sfb-b-mini-btn', 'Place + Transition');
+    const withTr = h('button', 'sfb-btn sfb-btn-primary sfb-b-mini-btn', 'Add with adapter');
     withTr.type = 'button';
     withTr.addEventListener('click', () => cb.onChooseSnap(prompt.snap, true));
 
-    const plain = h('button', 'sfb-btn sfb-b-mini-btn', 'Place Without');
+    const plain = h('button', 'sfb-btn sfb-b-mini-btn', 'Add anyway');
     plain.type = 'button';
     plain.addEventListener('click', () => cb.onChooseSnap(prompt.snap, false));
 
@@ -1498,7 +1929,11 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
     setVisible(visible: boolean) {
       root.classList.toggle('sfb-hidden', !visible);
       if (visible) maybeShowTutorial();
-      else setMobileDrawer('none');
+      else {
+        fileDragDepth = 0;
+        root.classList.remove('is-dragging');
+        setMobileDrawer('none');
+      }
     },
     render,
     setPlacing,
@@ -1508,5 +1943,10 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
       cutawayBtn.classList.toggle('is-active', on);
       mCutawayBtn.classList.toggle('is-active', on);
     },
+    setMirror(on: boolean) {
+      mirrorOn = on;
+      mirrorBtn.classList.toggle('is-active', on);
+    },
+    setDragGhost,
   };
 }

@@ -23,12 +23,12 @@
   left: 0;
   top: 0;
   white-space: nowrap;
-  font-family: inherit;
+  font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
   font-size: 10px;
   line-height: 1;
   text-transform: uppercase;
-  letter-spacing: 0.32em;
-  color: #9fb4d6;
+  letter-spacing: 0.14em;
+  color: #8a8a90;
   padding-left: 10px;
   margin-top: -0.5em;
   visibility: hidden;
@@ -40,22 +40,22 @@
 }
 
 .auth-label--body {
-  color: #cfdcf2;
+  color: #d6d6d9;
   font-size: 12px;
 }
 
 .auth-label--earth {
   font-size: 14px;
-  letter-spacing: 0.4em;
+  letter-spacing: 0.14em;
 }
 
 .auth-label--star {
-  color: #dbe9ff;
+  color: #ededee;
 }
 
 .auth-label--here,
 .auth-label--site {
-  color: #7fd7ff;
+  color: #f5a65b;
   padding-left: 18px;
 }
 
@@ -70,7 +70,7 @@
   height: 10px;
   margin-top: -5px;
   box-sizing: border-box;
-  border: 1px solid #7fd7ff;
+  border: 1px solid #f5a65b;
   border-radius: 50%;
   animation: auth-label-pulse 2.4s ease-in-out infinite;
 }

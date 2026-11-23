@@ -196,6 +196,20 @@ export interface SideBody {
   angle: number;
   /** The copy's own parts on its own axis; every x is an absolute station. */
   components: Component[];
+  /**
+   * Builder only: the body part this side body hangs on, so it follows that part when
+   * the rocket is edited. Without it the side body stays at its absolute station.
+   */
+  mount?: SideMount;
+}
+
+export interface SideMount {
+  /** Id of the stack part in the editable design. */
+  parentId: string;
+  /** Side body's aft end minus the parent's aft end, metres (negative = further forward). */
+  aftOffset: number;
+  /** Side body's axis distance minus the parent's outer radius, metres. */
+  gap: number;
 }
 
 export interface RocketModel {
@@ -267,6 +281,12 @@ export interface AeroProps {
   /** Sum over components of cnAlpha_i * (x_i - cgX)^2, m^2. Pitch damping torque =
    *  -0.5 * rho * v * refArea * dampSum * omega_transverse. */
   dampSum: number;
+  /** Body lift factor K * A_planform / refArea: the body adds CN = bodyLift * sin²(alpha).
+   *  Absent: the sim falls back to the bounding rectangle 2 * maxRadius * length. */
+  bodyLift?: number;
+  /** Station the body lift acts at (body planform centroid), m from the nose tip.
+   *  Absent: body lift acts at cpX. */
+  bodyLiftX?: number;
 }
 
 export type AtmosphereFn = (altitude: number) => Atmosphere;
@@ -282,6 +302,16 @@ export interface PhysicsDeps {
   thrust: ThrustFn;
 }
 
+/** Wind at one height above the launch site. */
+export interface WindLayer {
+  /** Height above the site, m. */
+  altitude: number;
+  /** m/s */
+  speed: number;
+  /** Compass direction the wind blows FROM, rad clockwise from north. */
+  direction: number;
+}
+
 export interface SimConfig {
   railLength: number;
   /** Tilt from vertical, rad. */
@@ -295,6 +325,12 @@ export interface SimConfig {
   gust: number;
   /** Launch site altitude above mean radius, m. */
   launchAltitude: number;
+  /** Air temperature at the pad, K. Standard atmosphere when unset. */
+  groundTemperature?: number;
+  /** Air pressure at the pad, Pa. Standard atmosphere when unset. */
+  groundPressure?: number;
+  /** Winds above the 10 m surface wind, lowest first. */
+  windLayers?: WindLayer[];
   /** Overrides the motor's ejection delay if set. */
   ejectionDelay?: number;
   /** Optional multi-stage motors in firing order (booster first, sustainer last). */
@@ -321,7 +357,10 @@ export interface SimState {
   mass: number;
   /** Height above the launch site, m. */
   altitude: number;
+  /** Speed over the ground frame, m/s. */
   speed: number;
+  /** Speed through the air (wind removed), m/s. Mach and dynamic pressure use this. */
+  airspeed?: number;
   mach: number;
   /** Angle of attack, rad. */
   alpha: number;

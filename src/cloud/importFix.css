@@ -1,0 +1,133 @@
+/* The "fix my import" bar: sits above the builder's bottom toolbar. */
+.sfb-fix-bar {
+  position: fixed;
+  left: 50%;
+  bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: max-content;
+  max-width: min(680px, calc(100vw - 24px));
+  padding: 10px 12px 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(14, 16, 22, 0.94);
+  color: #e8e6e1;
+  font: 13px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+}
+
+.sfb-fix-bar[hidden] {
+  display: none;
+}
+
+.sfb-fix-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sfb-fix-text strong {
+  font-weight: 600;
+  color: #fff;
+}
+
+.sfb-fix-text span {
+  color: #b9b6ae;
+}
+
+.sfb-fix-list {
+  margin: 6px 0;
+  padding-left: 18px;
+  color: #b9b6ae;
+  font-size: 12px;
+}
+
+.sfb-fix-note {
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font: inherit;
+}
+
+.sfb-fix-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.sfb-fix-btn {
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms ease, transform 80ms ease;
+}
+
+.sfb-fix-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.sfb-fix-btn:active {
+  transform: scale(0.97);
+}
+
+.sfb-fix-btn.is-primary {
+  border-color: transparent;
+  background: var(--sfb-accent, #f2a65a);
+  color: #14110c;
+}
+
+.sfb-fix-btn.is-primary:hover {
+  filter: brightness(1.08);
+}
+
+.sfb-fix-btn:focus-visible,
+.sfb-fix-note:focus-visible {
+  outline: 2px solid var(--sfb-accent, #f2a65a);
+  outline-offset: 2px;
+}
+
+.sfb-fix-close {
+  min-width: 36px;
+  padding: 0;
+  border-color: transparent;
+  font-size: 18px;
+  font-weight: 400;
+}
+
+@media (max-width: 640px) {
+  .sfb-fix-bar {
+    flex-direction: column;
+    align-items: stretch;
+    width: auto;
+    left: 12px;
+    right: 12px;
+    transform: none;
+    bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .sfb-fix-btn {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sfb-fix-btn {
+    transition: none;
+  }
+}

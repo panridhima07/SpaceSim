@@ -13,14 +13,14 @@
 // criterion, and throttling to respect acceleration and dynamic-pressure limits.
 
 import { G0, MU_EARTH, RE } from '../constants.ts';
-import { add, angleBetween, clamp, cross, dot, norm, scale, unit, type Vec3 } from '../math/vec.ts';
+import { add, angleBetween, clamp, cross, dot, norm, scale, sub, unit, type Vec3 } from '../math/vec.ts';
 import { engineOutput } from '../propulsion/engine.ts';
 import { stageMass, usablePropellant } from '../vehicle/massprops.ts';
 import { boosterCount } from '../vehicle/types.ts';
 import { elementsFromState, timeToApoapsis, timeToPeriapsis } from '../orbit/kepler.ts';
 import { burnTime, launchAzimuth } from '../orbit/maneuvers.ts';
 import { propagate } from '../orbit/propagate.ts';
-import { localFrame } from '../env/earth.ts';
+import { groundVelocity, localFrame } from '../env/earth.ts';
 import type { FlightComputer, Simulation } from '../sim/simulation.ts';
 import { solveSteering, type BurnSegment, type SteeringLaw } from './guidance.ts';
 
@@ -31,6 +31,11 @@ export interface AscentTarget {
   apogeeAltitude?: number;
   /** Orbit inclination, degrees. Defaults to the site latitude (launch due east). */
   inclinationDeg?: number;
+  /**
+   * Fly the south-of-east launch azimuth for that inclination instead of the north-of-east one.
+   * Sriharikota launches go this way (the north-east track crosses land).
+   */
+  southward?: boolean;
   /**
    * By default the target is met in osculating (instantaneous Keplerian) elements at cutoff,
    * which is how injection orbits are normally quoted. The Earth's oblateness then pulls the
@@ -64,6 +69,12 @@ export interface AscentOptions {
   maxQ?: number;
   /** Closed-loop guidance takes over once dynamic pressure has fallen below this, Pa. */
   closedLoopQ?: number;
+  /**
+   * In wind, the turn follows the velocity over the ground below this dynamic pressure and
+   * leans into the air-relative velocity above it (fully at 2.5 times this). Pa, default 10 000.
+   * Infinity turns load relief off.
+   */
+  loadReliefQ?: number;
   closedLoopMinAltitude?: number;
   /** Drop the fairing when free-molecular heating falls below this, W/m^2. */
   fairingHeatFlux?: number;
@@ -158,6 +169,22 @@ export class AscentAutopilot implements FlightComputer {
   private guide(sim: Simulation): number | void {
     const veh = sim.vehicle;
     const d = sim.diag;
+    // Velocity over the ground, not through the air. The open-loop turn follows this one:
+    // `d.vRel` includes the wind, and early in the turn a few metres per second of wind is a
+    // large share of the horizontal speed, so following it would swing the whole trajectory
+    // off its azimuth (or, with a tailwind, tip the vehicle over backwards).
+    const vGround = sub(sim.v, groundVelocity(sim.r));
+    let turnDir = vGround;
+    if (sim.cfg.wind) {
+      // Load relief: where the air is thick, lean the nose toward the air-relative velocity so
+      // a jet stream does not bend the vehicle. Only there, because nose-into-wind steering
+      // pushes the vehicle further upwind the longer it is held; by then the speed is high,
+      // so the lean is a few degrees and closed-loop guidance removes the drift afterwards.
+      const lo = this.opts.loadReliefQ ?? 10e3;
+      const x = isFinite(lo) ? clamp((d.q - lo) / (1.5 * lo), 0, 1) : 0;
+      const relief = x * x * (3 - 2 * x);
+      turnDir = add(scale(vGround, 1 - relief), scale(d.vRel, relief));
+    }
     switch (this.phase) {
       case 'vertical':
         sim.cmd.attitude = d.up;
@@ -173,14 +200,14 @@ export class AscentAutopilot implements FlightComputer {
         const ang = Math.min(kick, rate * (sim.t - this.tKick));
         const az = add(scale(d.east, Math.sin(this.azimuth)), scale(d.north, Math.cos(this.azimuth)));
         sim.cmd.attitude = unit(add(scale(d.up, Math.cos(ang)), scale(az, Math.sin(ang))));
-        if (ang >= kick && angleBetween(d.vRel, d.up) >= kick) {
+        if (ang >= kick && angleBetween(vGround, d.up) >= kick) {
           this.phase = 'gravityTurn';
           sim.event('guidance', 'Gravity turn');
         }
         return;
       }
       case 'gravityTurn': {
-        if (d.speedRel > 1) sim.cmd.attitude = unit(d.vRel);
+        if (norm(vGround) > 1) sim.cmd.attitude = unit(turnDir);
         const boosters = veh.stages.some((s, i) => s.parallel && sim.rt.stages[i].attached);
         if (!boosters && d.q < (this.opts.closedLoopQ ?? 1000) && d.altitude > (this.opts.closedLoopMinAltitude ?? 40e3)) {
           this.phase = 'closedLoop';
@@ -204,7 +231,7 @@ export class AscentAutopilot implements FlightComputer {
     const lf = localFrame(sim.r);
     const lat = lf.lat;
     const inc = Math.max(((this.opts.target.inclinationDeg ?? 0) * Math.PI) / 180, Math.abs(lat) + 1e-9);
-    const az = launchAzimuth(lat, inc, this.targetState().speed);
+    const az = launchAzimuth(lat, inc, this.targetState().speed, this.opts.target.southward);
     this.azimuth = az.rotating;
     const heading = add(scale(lf.east, Math.sin(az.inertial)), scale(lf.north, Math.cos(az.inertial)));
     this.planeNormal = unit(cross(unit(sim.r), heading));

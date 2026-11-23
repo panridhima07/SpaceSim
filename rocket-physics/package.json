@@ -9,7 +9,9 @@
     "test": "node --test \"test/*.test.ts\"",
     "launch": "node examples/launch-to-orbit.ts",
     "lvm3": "node examples/lvm3-gto.ts",
-    "moon": "node examples/lunar-transfer.ts"
+    "moon": "node examples/lunar-transfer.ts",
+    "dispersions": "node examples/dispersions.ts",
+    "bench": "node bench/bench.ts"
   },
   "engines": { "node": ">=23.6" }
 }

@@ -212,58 +212,94 @@ export function buildTrajectoryLine(maxPoints = 5000): {
   geometry.setAttribute('position', attr);
   geometry.setDrawRange(0, 0);
 
-  const material = new THREE.LineBasicMaterial({ color: 0x4da3ff });
+  const material = new THREE.LineBasicMaterial({ color: 0xf5a65b });
   const line = new THREE.Line(geometry, material);
   line.name = 'trajectory';
   line.frustumCulled = false;
 
-  let points: Vec3[] = [];
+  // Absolute (float64) positions, packed xyz. Reused across calls.
+  const abs = new Float64Array(capacity * 3);
+  let count = 0;
+  let dirty = true; // abs changed since last update()
+  let lastOrigin: Vec3 | null = null;
+  // setFromLog memo: skip work when the same log yields the same selection.
+  let memoLog: ReadonlyArray<{ t: number; pos: Vec3 }> | null = null;
+  let memoEnd = -2;
+  let memoLen = -1;
 
-  function decimate<T>(
+  function invalidateMemo(): void {
+    memoLog = null;
+    memoEnd = -2;
+    memoLen = -1;
+  }
+
+  // Same selection as before: all items if they fit, otherwise capacity points
+  // evenly spaced by index (first and last kept).
+  function decimateInto<T>(
     items: ReadonlyArray<T>,
     endIdx: number,
     pick: (item: T) => Vec3,
-  ): Vec3[] {
-    const count = endIdx + 1;
-    if (count <= 0) return [];
-    if (count <= capacity) {
-      const out: Vec3[] = new Array(count);
-      for (let i = 0; i < count; i++) {
+  ): void {
+    const n = endIdx + 1;
+    if (n <= 0) {
+      count = 0;
+      return;
+    }
+    if (n <= capacity) {
+      for (let i = 0; i < n; i++) {
         const p = pick(items[i]);
-        out[i] = [p[0], p[1], p[2]];
+        abs[i * 3] = p[0];
+        abs[i * 3 + 1] = p[1];
+        abs[i * 3 + 2] = p[2];
       }
-      return out;
+      count = n;
+      return;
     }
-    const out: Vec3[] = new Array(capacity);
     for (let i = 0; i < capacity; i++) {
-      const idx = Math.round((i * (count - 1)) / (capacity - 1));
+      const idx = Math.round((i * (n - 1)) / (capacity - 1));
       const p = pick(items[idx]);
-      out[i] = [p[0], p[1], p[2]];
+      abs[i * 3] = p[0];
+      abs[i * 3 + 1] = p[1];
+      abs[i * 3 + 2] = p[2];
     }
-    return out;
+    count = capacity;
   }
 
   return {
     line,
 
     push(worldPos) {
-      if (points.length >= capacity) points.shift();
-      points.push([worldPos[0], worldPos[1], worldPos[2]]);
+      invalidateMemo();
+      if (count >= capacity) {
+        abs.copyWithin(0, 3, capacity * 3);
+        count = capacity - 1;
+      }
+      abs[count * 3] = worldPos[0];
+      abs[count * 3 + 1] = worldPos[1];
+      abs[count * 3 + 2] = worldPos[2];
+      count++;
+      dirty = true;
     },
 
     setAll(all) {
-      points = decimate(all, all.length - 1, (p) => p);
+      invalidateMemo();
+      decimateInto(all, all.length - 1, (p) => p);
+      dirty = true;
     },
 
     setFromLog(log, maxT) {
       if (log.length === 0) {
-        points = [];
+        if (count !== 0) dirty = true;
+        count = 0;
+        invalidateMemo();
         return;
       }
       let endIdx = log.length - 1;
       if (maxT !== undefined && maxT < log[endIdx].t) {
         if (maxT < log[0].t) {
-          points = [];
+          if (count !== 0) dirty = true;
+          count = 0;
+          invalidateMemo();
           return;
         }
         let lo = 0;
@@ -275,23 +311,42 @@ export function buildTrajectoryLine(maxPoints = 5000): {
         }
         endIdx = lo;
       }
-      points = decimate(log, endIdx, (s) => s.pos);
+      if (log === memoLog && endIdx === memoEnd && log.length === memoLen) return;
+      memoLog = log;
+      memoEnd = endIdx;
+      memoLen = log.length;
+      decimateInto(log, endIdx, (s) => s.pos);
+      dirty = true;
     },
 
     update(origin) {
-      const n = points.length;
-      for (let i = 0; i < n; i++) {
-        const p = points[i];
-        positions[i * 3] = p[0] - origin[0];
-        positions[i * 3 + 1] = p[1] - origin[1];
-        positions[i * 3 + 2] = p[2] - origin[2];
+      if (
+        !dirty &&
+        lastOrigin !== null &&
+        lastOrigin[0] === origin[0] &&
+        lastOrigin[1] === origin[1] &&
+        lastOrigin[2] === origin[2]
+      ) {
+        return;
+      }
+      const ox = origin[0];
+      const oy = origin[1];
+      const oz = origin[2];
+      for (let i = 0; i < count; i++) {
+        positions[i * 3] = abs[i * 3] - ox;
+        positions[i * 3 + 1] = abs[i * 3 + 1] - oy;
+        positions[i * 3 + 2] = abs[i * 3 + 2] - oz;
       }
       attr.needsUpdate = true;
-      geometry.setDrawRange(0, n);
+      geometry.setDrawRange(0, count);
+      lastOrigin = [ox, oy, oz];
+      dirty = false;
     },
 
     clear() {
-      points = [];
+      invalidateMemo();
+      count = 0;
+      dirty = true;
       geometry.setDrawRange(0, 0);
     },
   };

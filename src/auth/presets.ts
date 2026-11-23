@@ -1,5 +1,6 @@
-// The three real flights shown on the landing page. Each one also names the launch site
-// the 3D Earth turns to when the card is hovered or opened.
+// The real flights shown on the landing page (Chandrayaan-3, the Starship booster catch,
+// Starlink, and PSLV-C61 / EOS-09). Each one also names the launch site the 3D Earth turns
+// to when the card is hovered or opened.
 
 import type { JourneySite } from './journey';
 
@@ -46,7 +47,7 @@ export const PRESETS: MissionPreset[] = [
       { t: 'Day 41', label: 'Powered descent and touchdown' },
     ],
     status: 'flyable',
-    statusText: 'In the simulator: the LVM3 ascent and the powered Moon landing.',
+    statusText: 'In the simulator: the LVM3 ascent, the flight to the Moon and the powered landing.',
   },
   {
     id: 'starship-catch',
@@ -102,7 +103,32 @@ export const PRESETS: MissionPreset[] = [
       { t: 'T+65:00', label: 'Satellites released' },
     ],
     timelineNote: 'A typical flight. Times vary by mission.',
-    status: 'brief',
-    statusText: 'Mission brief only. Not yet flyable in the simulator.',
+    status: 'flyable',
+    statusText: 'In the simulator: the Falcon 9 ascent to orbit and the release of the satellites.',
+  },
+  {
+    id: 'eos-09',
+    agency: 'ISRO',
+    vehicle: 'PSLV-C61',
+    name: 'EOS-09',
+    line: 'A PSLV carries the EOS-09 radar satellite from Sriharikota. The third stage fails and the satellite is lost.',
+    date: '18 May 2025',
+    site: { id: 'eos-09', label: 'SRIHARIKOTA', latDeg: 13.72, lonDeg: 80.23, kind: 'orbit' },
+    facts: [
+      { label: 'Vehicle', value: 'PSLV-XL, four stages and six strap-on boosters, 44.4 m, about 320 t at liftoff' },
+      { label: 'Launch site', value: 'First Launch Pad, Satish Dhawan Space Centre, Sriharikota' },
+      { label: 'Liftoff', value: '18 May 2025, 05:59 IST' },
+      { label: 'Payload', value: 'EOS-09, a radar imaging satellite of about 1,700 kg' },
+      { label: 'Planned orbit', value: 'Sun-synchronous polar orbit' },
+      { label: 'Result', value: 'Failed. The third stage lost chamber pressure, and the satellite was lost' },
+    ],
+    timeline: [
+      { t: '05:59 IST', label: 'Liftoff from the First Launch Pad' },
+      { t: 'Ascent', label: 'Planned climb through the four stages' },
+      { t: 'Third stage', label: 'Chamber pressure is lost. The mission fails' },
+    ],
+    timelineNote: 'Exact times after liftoff are not shown here.',
+    status: 'flyable',
+    statusText: 'In the simulator: the planned flight and the third-stage failure that ended the real one.',
   },
 ];

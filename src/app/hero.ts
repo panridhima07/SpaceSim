@@ -1,3 +1,4 @@
+import './motion.css';
 import './hero.css';
 
 export interface HeroOptions {

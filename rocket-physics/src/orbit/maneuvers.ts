@@ -119,21 +119,24 @@ export function sunSynchronousInclination(altitude: number, e = 0): number {
  * inclination `inclination` at burnout speed `orbitalSpeed` (inertial, relative to the Earth's centre).
  * inertial: the azimuth in inertial space, sin(beta) = cos(i)/cos(lat), NE (ascending) solution.
  * rotating: the azimuth to fly relative to the pad, which moves east at OMEGA_EARTH RE cos(lat).
+ * southward: take the SE (descending) solution instead, 180 deg - beta. Same inclination, but
+ * the orbit plane and the line of apsides are turned, which matters when aiming at the Moon.
  */
 export function launchAzimuth(
   latitude: number,
   inclination: number,
   orbitalSpeed: number,
+  southward = false,
 ): { inertial: number; rotating: number } {
   const ratio = Math.cos(inclination) / Math.cos(latitude);
   if (!(Math.abs(ratio) <= 1)) {
     throw new Error('launchAzimuth: inclination is below the site latitude; no launch azimuth exists');
   }
   const sinB = ratio;
-  const cosB = Math.sqrt(1 - sinB * sinB);
+  const cosB = (southward ? -1 : 1) * Math.sqrt(1 - sinB * sinB);
   const vGround = OMEGA_EARTH * RE * Math.cos(latitude);
   return {
-    inertial: Math.asin(sinB),
+    inertial: Math.atan2(sinB, cosB),
     rotating: Math.atan2(orbitalSpeed * sinB - vGround, orbitalSpeed * cosB),
   };
 }

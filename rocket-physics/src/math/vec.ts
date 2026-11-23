@@ -15,7 +15,9 @@ export const cross = (a: Vec3, b: Vec3): Vec3 => [
   a[2] * b[0] - a[0] * b[2],
   a[0] * b[1] - a[1] * b[0],
 ];
-export const norm = (a: Vec3): number => Math.hypot(a[0], a[1], a[2]);
+// Math.sqrt of the sum of squares, not Math.hypot: hypot guards against overflow at 1e154,
+// which no length here comes near, and costs several times as much.
+export const norm = (a: Vec3): number => Math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
 /** Unit vector; the zero vector stays zero (never NaN). */
 export function unit(a: Vec3): Vec3 {
   const l = norm(a);
@@ -67,18 +69,23 @@ export function qmul(a: Quat, b: Quat): Quat {
 }
 export const qconj = (q: Quat): Quat => [-q[0], -q[1], -q[2], q[3]];
 export function qnormalize(q: Quat): Quat {
-  const l = Math.hypot(q[0], q[1], q[2], q[3]);
+  const l = Math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
   return l > 0 ? [q[0] / l, q[1] / l, q[2] / l, q[3] / l] : [0, 0, 0, 1];
 }
 /** Body -> world. */
 export function qrot(q: Quat, v: Vec3): Vec3 {
-  const u: Vec3 = [q[0], q[1], q[2]];
-  const t = scale(cross(u, v), 2);
-  return add(add(v, scale(t, q[3])), cross(u, t));
+  return rotateByQuat(q[0], q[1], q[2], q[3], v[0], v[1], v[2]);
 }
 /** World -> body. */
 export function qrotInv(q: Quat, v: Vec3): Vec3 {
-  return qrot(qconj(q), v);
+  return rotateByQuat(-q[0], -q[1], -q[2], q[3], v[0], v[1], v[2]);
+}
+/** v + 2 w (u x v) + 2 u x (u x v) for the unit quaternion (u, w), on plain numbers. */
+export function rotateByQuat(ux: number, uy: number, uz: number, w: number, vx: number, vy: number, vz: number): Vec3 {
+  const tx = (uy * vz - uz * vy) * 2;
+  const ty = (uz * vx - ux * vz) * 2;
+  const tz = (ux * vy - uy * vx) * 2;
+  return [vx + tx * w + (uy * tz - uz * ty), vy + ty * w + (uz * tx - ux * tz), vz + tz * w + (ux * ty - uy * tx)];
 }
 export function qFromAxisAngle(axis: Vec3, angle: number): Quat {
   const k = unit(axis);

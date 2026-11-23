@@ -1,0 +1,321 @@
+/* Data-collection consent popup. Everything is scoped under .sfb-consent.
+   Import this once from the code that wires showConsentDialog in. Self-contained:
+   the tokens are defined here (same values as the sign-in card), so it works on any page. */
+
+.sfb-consent {
+  --c-ink: #ededee;
+  --c-dim: #8a8a90;
+  --c-line: rgba(255, 255, 255, 0.08);
+  --c-line-strong: rgba(255, 255, 255, 0.16);
+  --c-acc: #f5a65b;
+  --c-ease: var(--o-ease-out, cubic-bezier(0.16, 1, 0.3, 1));
+  --c-t-enter: var(--o-t-enter, 240ms);
+  --c-t-press: var(--o-t-press, 120ms);
+  --c-t-fast: var(--o-t-fast, 160ms);
+
+  position: fixed;
+  inset: 0;
+  /* Same layer as the sign-in screen: above the builder and mission UI. */
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  color: var(--c-ink);
+  font: 14px/1.45 'Inter', 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+  background: rgba(5, 5, 6, 0.66);
+  animation: sfb-consent-fade var(--c-t-enter) var(--c-ease) backwards;
+}
+
+.sfb-consent *,
+.sfb-consent *::before,
+.sfb-consent *::after {
+  box-sizing: border-box;
+}
+
+.sfb-consent-card {
+  width: 100%;
+  max-width: 460px;
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 26px 26px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  border: 1px solid var(--c-line);
+  border-radius: 10px;
+  background: rgba(14, 14, 16, 0.96);
+  box-shadow:
+    0 14px 50px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  animation: sfb-consent-pop var(--c-t-enter) var(--c-ease) backwards;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+}
+
+.sfb-consent-card:focus {
+  outline: none;
+}
+
+.sfb-consent-card:focus-visible {
+  outline: 2px solid var(--c-acc);
+  outline-offset: 2px;
+}
+
+.sfb-consent-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: #ededee;
+  text-wrap: balance;
+}
+
+.sfb-consent-intro {
+  margin: 0;
+  color: #e4e4e6;
+  text-wrap: pretty;
+}
+
+.sfb-consent-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sfb-consent-h {
+  margin: 0;
+  font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--c-dim);
+}
+
+.sfb-consent-list {
+  margin: 0;
+  padding-left: 1.2em;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: #e4e4e6;
+}
+
+.sfb-consent-list li::marker {
+  color: var(--c-dim);
+}
+
+/* ---------- Switch ---------- */
+
+.sfb-consent-switch {
+  position: relative;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 15px;
+  color: #fff;
+}
+
+/* The real checkbox sits over the whole row, invisible, so it keeps native behaviour. */
+.sfb-consent-switch input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+.sfb-consent-track {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid var(--c-line-strong);
+  background: rgba(255, 255, 255, 0.08);
+  transition:
+    background var(--c-t-fast) var(--c-ease),
+    border-color var(--c-t-fast) var(--c-ease);
+}
+
+.sfb-consent-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #ededee;
+  transition: translate var(--c-t-fast) var(--c-ease);
+}
+
+.sfb-consent-switch input:checked + .sfb-consent-track {
+  background: var(--c-acc);
+  border-color: transparent;
+}
+
+.sfb-consent-switch input:checked + .sfb-consent-track .sfb-consent-thumb {
+  translate: 18px 0;
+  background: #0a0a0b;
+}
+
+.sfb-consent-switch input:focus-visible + .sfb-consent-track {
+  outline: 2px solid var(--c-acc);
+  outline-offset: 3px;
+}
+
+.sfb-consent-switch input:disabled ~ * {
+  opacity: 0.5;
+}
+
+.sfb-consent-switch:has(input:disabled) {
+  cursor: not-allowed;
+}
+
+.sfb-consent-detail {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--c-dim);
+}
+
+.sfb-consent-detail p,
+.sfb-consent-note,
+.sfb-consent-guest,
+.sfb-consent-foot {
+  margin: 0;
+}
+
+.sfb-consent-note {
+  font-size: 13px;
+  color: var(--c-acc);
+}
+
+.sfb-consent-guest {
+  font-size: 13px;
+  color: #e4e4e6;
+}
+
+/* ---------- Buttons ---------- */
+
+.sfb-consent-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.sfb-consent-btn {
+  min-height: 44px;
+  padding: 10px 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  font-weight: 600;
+  color: var(--c-ink);
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--c-line-strong);
+  border-radius: 8px;
+  transition:
+    background var(--c-t-fast) var(--c-ease),
+    border-color var(--c-t-fast) var(--c-ease),
+    transform var(--c-t-press) var(--c-ease);
+}
+
+.sfb-consent-btn:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.sfb-consent-btn:active {
+  transform: scale(0.97);
+}
+
+.sfb-consent-btn:focus-visible {
+  outline: 2px solid var(--c-acc);
+  outline-offset: 2px;
+}
+
+.sfb-consent-primary {
+  color: #0a0a0b;
+  border-color: transparent;
+  background: #f4f4f2;
+}
+
+.sfb-consent-primary:hover {
+  background: #fff;
+}
+
+.sfb-consent-foot {
+  font-size: 12px;
+  color: var(--c-dim);
+  text-align: center;
+}
+
+/* ---------- Motion ---------- */
+
+@keyframes sfb-consent-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes sfb-consent-pop {
+  from {
+    opacity: 0;
+    scale: 0.96;
+  }
+}
+
+/* ---------- Narrow screens: bottom sheet ---------- */
+
+@media (max-width: 599px) {
+  .sfb-consent {
+    padding: 0;
+    place-items: end stretch;
+  }
+
+  .sfb-consent-card {
+    max-width: none;
+    max-height: 92dvh;
+    padding: 22px 18px calc(16px + env(safe-area-inset-bottom, 0px));
+    padding-left: calc(18px + env(safe-area-inset-left, 0px));
+    padding-right: calc(18px + env(safe-area-inset-right, 0px));
+    border-radius: 14px 14px 0 0;
+    border-bottom: 0;
+    animation-name: sfb-consent-sheet;
+  }
+}
+
+@media (max-width: 359px) {
+  .sfb-consent-actions {
+    grid-template-columns: 1fr;
+  }
+}
+
+@keyframes sfb-consent-sheet {
+  from {
+    opacity: 0;
+    translate: 0 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sfb-consent,
+  .sfb-consent-card {
+    animation: none;
+  }
+
+  .sfb-consent-btn,
+  .sfb-consent-track,
+  .sfb-consent-thumb {
+    transition: none;
+  }
+}

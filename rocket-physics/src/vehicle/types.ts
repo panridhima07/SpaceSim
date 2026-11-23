@@ -58,7 +58,8 @@ export interface StageSpec {
   /** Fraction of the propellant that cannot be burned. Default 0.005. */
   residualFraction?: number;
   /** Strap-on boosters: `count` copies of this stage around the first core stage. */
-  parallel?: { count: number; radialOffset: number; attachStation: number };
+  /** `phase` turns the ring of boosters about the vehicle axis, rad (drawing only). */
+  parallel?: { count: number; radialOffset: number; attachStation: number; phase?: number };
   /**
    * 'liftoff'  light on the pad
    * 'stack'    light after the stage below separates (default for upper stages)

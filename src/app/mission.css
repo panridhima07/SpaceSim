@@ -1,11 +1,15 @@
 /* Mission mode HUD — built on the sfb-root variables, sfb-panel slabs, and sfb-btn keys. */
 
 .msn-root {
+  --msn-left: 310px;
+  --msn-right: 310px;
   display: grid;
-  grid-template-columns: 310px 1fr 310px;
+  grid-template-columns: var(--msn-left) 1fr var(--msn-right);
   grid-template-rows: auto 1fr auto;
   gap: 12px;
   padding: 12px;
+  overflow: hidden;
+  transition: grid-template-columns 240ms var(--sfb-ease-out);
 }
 
 .msn-header {
@@ -45,14 +49,27 @@
 
 .msn-root .msn-select,
 .msn-select {
-  background: rgba(8, 15, 28, 0.9);
+  background: rgba(14, 14, 16, 0.9);
   color: var(--sfb-text);
   border: 1px solid var(--sfb-line);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 7px 10px;
   font-family: inherit;
   font-size: 12px;
   min-height: 36px;
+}
+
+/* Both pickers keep to their own width so the header stays on one row. */
+.msn-header-right .msn-select {
+  width: auto;
+  flex: 0 1 200px;
+  min-width: 0;
+  max-width: 220px;
+}
+
+.msn-header-right {
+  justify-content: flex-end;
+  flex: 1 1 auto;
 }
 
 .msn-case-note {
@@ -94,6 +111,7 @@
 }
 
 .msn-stat-label {
+  font-family: var(--sfb-mono);
   font-size: 10px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -165,22 +183,33 @@
   gap: 2px;
   padding: 6px 8px;
   border-radius: 8px;
-  border: 1px solid rgba(150, 195, 255, 0.12);
+  border: 1px solid var(--sfb-line);
   background: rgba(255, 255, 255, 0.02);
   color: var(--sfb-text);
   text-align: left;
   cursor: pointer;
   font-family: inherit;
   font-size: 12px;
+  transition:
+    transform 120ms var(--sfb-ease-out),
+    background-color 150ms var(--sfb-ease-out),
+    border-color 150ms var(--sfb-ease-out);
 }
 
-.msn-event-row:hover {
-  background: rgba(127, 215, 255, 0.08);
+@media (hover: hover) {
+  .msn-event-row:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.16);
+  }
+}
+
+.msn-event-row:active {
+  transform: scale(0.97);
 }
 
 .msn-event-active {
-  border-color: var(--sfb-info);
-  background: rgba(127, 215, 255, 0.14);
+  border-color: #f5a65b;
+  background: rgba(245, 166, 91, 0.12);
 }
 
 .msn-event-top {
@@ -251,7 +280,16 @@
 .msn-btn-active {
   border-color: var(--sfb-accent);
   color: var(--sfb-accent);
-  background: rgba(127, 215, 255, 0.16);
+  background: rgba(245, 166, 91, 0.12);
+}
+
+.msn-scale {
+  font-family: var(--sfb-mono);
+  font-size: 12px;
+  min-width: 84px;
+  text-align: right;
+  color: var(--sfb-text-dim, rgba(255, 255, 255, 0.65));
+  white-space: nowrap;
 }
 
 .msn-iip {
@@ -273,9 +311,10 @@
 }
 
 .msn-outcome-badge {
+  font-family: var(--sfb-mono);
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--sfb-accent);
 }
@@ -293,7 +332,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(4, 8, 16, 0.55);
+  background: rgba(8, 8, 9, 0.55);
   backdrop-filter: blur(4px);
   pointer-events: auto;
 }
@@ -321,7 +360,8 @@
 
 @media (max-width: 760px) {
   .msn-root {
-    grid-template-columns: 1fr;
+    /* minmax(0, …): the column holds the screen width instead of growing to its widest row. */
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto 1fr auto;
     padding:
       calc(env(safe-area-inset-top, 0px) + 8px)
@@ -404,5 +444,316 @@
     grid-column: 1;
     grid-row: 4;
     gap: 6px;
+  }
+}
+
+/* ---------- Flight HUD polish ---------- */
+
+/* Panels sit over a bright sky at launch, so they are more opaque here than elsewhere. */
+.msn-root .sfb-panel {
+  background: rgba(12, 12, 14, 0.84);
+}
+
+.msn-col-left,
+.msn-col-right,
+.msn-timeline-panel {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+/* The headline readouts (time, altitude, speed, Mach) read at a glance. */
+.msn-telem-grid .msn-stat:nth-child(-n + 4) .msn-stat-val {
+  font-size: 18px;
+  font-weight: 300;
+  letter-spacing: -0.01em;
+}
+
+.msn-telem-grid .msn-stat:last-child .msn-stat-val {
+  color: var(--sfb-accent);
+}
+
+.msn-case-note {
+  flex: 0 1 300px;
+  min-width: 0;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.msn-event-active .msn-event-times {
+  color: var(--sfb-accent);
+}
+
+.msn-scrubber {
+  height: 20px;
+  cursor: pointer;
+}
+
+.msn-busy-card {
+  position: relative;
+  overflow: hidden;
+  padding-bottom: 16px;
+}
+
+/* Indeterminate progress under "Computing flight…" so the wait never looks frozen. */
+.msn-busy-card::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 40%;
+  height: 2px;
+  background: var(--sfb-accent);
+  animation: msn-busy-slide 1.1s linear infinite;
+}
+
+@keyframes msn-busy-slide {
+  from { translate: -100% 0; }
+  to { translate: 250% 0; }
+}
+
+@media (min-width: 761px) {
+  /* One row: title left, pickers and actions right. The account chip sits in the bar's left end. */
+  .msn-header {
+    flex-wrap: nowrap;
+    padding-left: 58px;
+    min-height: 56px;
+  }
+
+  .msn-header-right {
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+
+  .msn-header-right .sfb-btn {
+    flex: 0 0 auto;
+  }
+
+  body:has(.msn-root:not(.sfb-hidden)) .auth-chip {
+    top: 18px;
+    left: 20px;
+  }
+
+  /* Telemetry keeps its height; the timeline takes the rest and scrolls inside itself. */
+  .msn-col-left {
+    overflow: hidden;
+  }
+
+  .msn-telem-panel {
+    flex: 0 0 auto;
+  }
+
+  .msn-timeline-panel {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+  }
+}
+
+/* Each side closes on its own: its panels fade and its column gives the space back to the view. */
+.msn-left-off { --msn-left: 0px; }
+.msn-right-off { --msn-right: 0px; }
+
+.msn-col-left,
+.msn-col-right,
+.msn-outcome {
+  transition:
+    opacity 240ms var(--sfb-ease-out),
+    visibility 0s;
+}
+
+.msn-left-off .msn-col-left,
+.msn-right-off .msn-col-right,
+.msn-panels-off .msn-outcome {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 150ms var(--sfb-ease-in),
+    visibility 0s 150ms;
+}
+
+/* The handles stay on screen whether their panel is open or away. */
+.sfb-root .sfb-btn.msn-handle {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 56px;
+  min-height: 0;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--sfb-muted);
+  background: rgba(12, 12, 14, 0.84);
+}
+
+@media (hover: hover) {
+  .sfb-root .sfb-btn.msn-handle:hover {
+    color: var(--sfb-text);
+  }
+}
+
+.msn-handle-left,
+.msn-handle-right {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: center;
+}
+
+.msn-handle-left { justify-self: start; }
+.msn-handle-right { justify-self: end; }
+
+.sfb-root .sfb-btn.msn-handle-bottom {
+  width: 34px;
+  height: 34px;
+  margin-left: auto;
+  font-size: 13px;
+}
+
+/* Bar closed: only its handle is left, as a small tab at the bottom of the view. */
+.sfb-root.msn-bottom-off .msn-transport {
+  justify-self: center;
+  padding: 4px;
+}
+
+.msn-bottom-off .msn-transport > :not(.msn-handle-bottom) {
+  display: none;
+}
+
+@media (min-width: 761px) {
+  /* Fixed width, pinned to the outer edge: a closing column slides its panels off screen. */
+  .msn-col-left,
+  .msn-col-right {
+    width: 310px;
+  }
+
+  .msn-col-left { justify-self: end; }
+  .msn-col-right { justify-self: start; }
+}
+
+@media (pointer: coarse) {
+  .sfb-root .sfb-btn.msn-handle-left,
+  .sfb-root .sfb-btn.msn-handle-right {
+    width: 32px;
+    height: 64px;
+  }
+}
+
+@media (max-width: 760px) {
+  /* Phone: telemetry is the strip under the header, so its handle points up; health is in the sheet. */
+  .sfb-root .sfb-btn.msn-handle-left {
+    grid-column: 1;
+    grid-row: 3;
+    align-self: start;
+    width: 44px;
+    height: 44px;
+    rotate: 90deg;
+  }
+
+  .msn-handle-right {
+    display: none !important;
+  }
+
+  .msn-left-off .msn-col-left {
+    display: none;
+  }
+
+  .sfb-root .sfb-btn.msn-handle-bottom {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* ---------- Manual flight controls ---------- */
+
+.msn-pilot {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: end;
+  justify-self: center;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: o-rise 240ms var(--sfb-ease-out) backwards;
+}
+
+.msn-pilot-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 18px;
+}
+
+.msn-pilot-mode {
+  font-family: var(--sfb-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--sfb-line);
+  color: var(--sfb-muted);
+  transition: color 150ms var(--sfb-ease-out), border-color 150ms var(--sfb-ease-out), background-color 150ms var(--sfb-ease-out);
+}
+
+.msn-pilot-mode.is-manual {
+  color: var(--sfb-accent);
+  border-color: var(--sfb-accent);
+  background: rgba(245, 166, 91, 0.12);
+}
+
+.msn-pilot-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.msn-pilot-stat b {
+  font-family: var(--sfb-mono);
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--sfb-text);
+  min-width: 3ch;
+}
+
+.msn-pilot-stat b.is-warn { color: var(--sfb-accent); }
+.msn-pilot-stat b.is-danger { color: #ff6b5e; font-weight: 600; }
+
+.msn-pilot-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.msn-pilot-hint {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--sfb-muted);
+}
+
+/* The outcome card and the controls share the middle column; while flying, the card waits. */
+.msn-piloting .msn-outcome {
+  display: none;
+}
+
+@media (pointer: coarse) {
+  .msn-pilot-hint { display: none; }
+}
+
+@media (max-width: 760px) {
+  .msn-pilot {
+    position: fixed;
+    left: calc(env(safe-area-inset-left, 0px) + 8px);
+    right: calc(env(safe-area-inset-right, 0px) + 8px);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 124px);
+    max-width: none;
+    z-index: 24;
+  }
+
+  .msn-pilot-row .sfb-btn {
+    flex: 1 1 22%;
   }
 }

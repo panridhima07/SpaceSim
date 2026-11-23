@@ -202,3 +202,130 @@ describe('builder/design', () => {
     expect(types).toContain('apogee');
   });
 });
+
+describe('builder/design: stages of an imported rocket', () => {
+  const load = async (file: string) => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { parseOrkFile } = await import('../ork/parser');
+    return parseOrkFile(new Uint8Array(readFileSync(join(process.cwd(), 'fixtures', 'external', file))));
+  };
+
+  it.each(['Three_stage_low_power_rocket.ork', 'Two_stage_high_power_rocket.ork'])(
+    'keeps every stage of %s through the editable design',
+    async (file) => {
+      const model = await load(file);
+      const design = fromRocketModel(model);
+      const back = toRocketModel(design);
+      expect(back.stageCount).toBe(model.stageCount);
+      expect(back.stages!.map((s) => s.name)).toEqual(model.stages!.map((s) => s.name));
+      expect(back.stages!.map((s) => s.componentCount)).toEqual(model.stages!.map((s) => s.componentCount));
+      expect(back.components.length).toBe(model.components.length);
+      expect(back.length).toBeCloseTo(model.length, 6);
+      // Every part stays in the stage it came from.
+      const stageOf = (m: typeof model, name: string, kind: string): number =>
+        m.stages!.findIndex((s) =>
+          m.components.slice(s.startComponent, s.startComponent + s.componentCount).some((c) => c.name === name && c.kind === kind),
+        );
+      for (const c of model.components) {
+        expect(stageOf(back, c.name, c.kind)).toBeGreaterThanOrEqual(0);
+      }
+    },
+  );
+
+  it('keeps stages while tinkering: resize, remove the first part of a stage, save as JSON', async () => {
+    const model = await load('Three_stage_low_power_rocket.ork');
+    let design = fromRocketModel(model);
+    const starts = design.stack.filter((n) => n.stage);
+    expect(starts.length).toBe(3);
+
+    // Resizing a tube keeps the stage count and lengthens the rocket.
+    const tube = design.stack.find((n) => n.part.kind === 'bodytube')!;
+    design = updatePart(design, tube.id, { part: { length: tube.part.length + 0.05 } });
+    const longer = toRocketModel(design);
+    expect(longer.stageCount).toBe(3);
+    expect(longer.length).toBeCloseTo(model.length + 0.05, 6);
+
+    // Removing the first part of the last stage hands the boundary to the next part.
+    const last = starts[2];
+    const idx = design.stack.findIndex((n) => n.id === last.id);
+    if (idx < design.stack.length - 1) {
+      const after = removePart(design, last.id);
+      expect(toRocketModel(after).stageCount).toBe(3);
+      expect(after.stack[idx].stage?.name).toBe(last.stage!.name);
+    }
+
+    // A saved design file carries the stages.
+    const { importRocketFile } = await import('../io/importer');
+    const bytes = new TextEncoder().encode(JSON.stringify(design));
+    const reloaded = await importRocketFile(bytes, 'three.json');
+    expect(reloaded.model!.stageCount).toBe(3);
+  });
+
+  it('exports the stages back to OpenRocket', async () => {
+    const model = await load('Two_stage_high_power_rocket.ork');
+    const { exportOrkXml } = await import('./orkExport');
+    const again = parseOrkXml(exportOrkXml(fromRocketModel(model)));
+    expect(again.stageCount).toBe(2);
+    expect(again.stages!.map((s) => s.name)).toEqual(model.stages!.map((s) => s.name));
+  });
+});
+
+describe('builder/design: side bodies of an imported rocket', () => {
+  const load = async (name: string) => {
+    const { MOCK_CASES } = await import('../validate/mockOrk');
+    return parseOrkXml(MOCK_CASES.find((c) => c.name === name)!.xml);
+  };
+  const aftOf = (sb: { components: { x: number; length: number }[] }) =>
+    Math.max(...sb.components.map((c) => c.x + c.length));
+
+  it.each(['strap-on-boosters', 'pods', 'boosters-with-fins-and-gap', 'pods-free-radius', 'tube-fins-auto'])(
+    'leaves %s exactly where the file put them',
+    async (name) => {
+      const model = await load(name);
+      expect(model.sideBodies!.length).toBeGreaterThan(0);
+      const back = toRocketModel(fromRocketModel(model));
+      back.sideBodies!.forEach((sb, i) => {
+        const orig = model.sideBodies![i];
+        expect(sb.radialOffset).toBeCloseTo(orig.radialOffset, 9);
+        sb.components.forEach((c, k) => expect(c.x).toBeCloseTo(orig.components[k].x, 9));
+      });
+    },
+  );
+
+  it('carries boosters along when the tube they hang on is lengthened, widened or pushed down', async () => {
+    const model = await load('strap-on-boosters');
+    const design = fromRocketModel(model);
+    const sb0 = design.sideBodies![0];
+    const parent = design.stack.find((n) => n.id === sb0.mount!.parentId)!;
+    const before = toRocketModel(design);
+    const parentAftBefore = before.components.find((c) => c.id === parent.id)!;
+    const gapToAft = aftOf(before.sideBodies![0]) - (parentAftBefore.x + parentAftBefore.length);
+
+    // Longer tube: the boosters keep their place relative to its aft end.
+    const longer = toRocketModel(updatePart(design, parent.id, { part: { length: parent.part.length + 0.1 } }));
+    const pl = longer.components.find((c) => c.id === parent.id)!;
+    expect(aftOf(longer.sideBodies![0]) - (pl.x + pl.length)).toBeCloseTo(gapToAft, 9);
+    expect(aftOf(longer.sideBodies![0])).toBeCloseTo(aftOf(before.sideBodies![0]) + 0.1, 9);
+
+    // Wider tube: the boosters move out by the same amount, so they still touch the skin.
+    const r = (parent.part as BodyTube).outerRadius;
+    const wider = toRocketModel(updatePart(design, parent.id, { part: { outerRadius: r + 0.01 } }));
+    expect(wider.sideBodies![0].radialOffset).toBeCloseTo(before.sideBodies![0].radialOffset + 0.01, 9);
+
+    // A part added above pushes the tube, and the boosters with it, down the rocket.
+    const tube = findPreset('tube-bt50-140')!.create() as BodyTube;
+    const idx = design.stack.findIndex((n) => n.id === parent.id);
+    const pushed = toRocketModel(addExternalPart(design, tube, idx).design);
+    expect(aftOf(pushed.sideBodies![0])).toBeCloseTo(aftOf(before.sideBodies![0]) + tube.length, 9);
+
+    // The saved design keeps the tie.
+    const { importRocketFile } = await import('../io/importer');
+    const reloaded = await importRocketFile(new TextEncoder().encode(JSON.stringify(design)), 'b.json');
+    expect(reloaded.design!.sideBodies![0].mount?.parentId).toBe(parent.id);
+
+    // With its tube removed a side body stays put rather than vanishing or jumping.
+    const orphan = toRocketModel(removePart(design, parent.id));
+    expect(orphan.sideBodies!.length).toBe(before.sideBodies!.length);
+  });
+});

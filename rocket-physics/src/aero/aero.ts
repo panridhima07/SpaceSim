@@ -111,6 +111,7 @@ export interface AeroResult {
  * @param vb     velocity of the vehicle relative to the air, body axes, m/s
  * @param omega  body angular velocity, rad/s
  * @param cg     CG station from the stack base, m
+ * @param out    optional record to overwrite instead of allocating a new one
  */
 export function aeroForces(
   vb: Vec3,
@@ -120,15 +121,22 @@ export function aeroForces(
   meanFreePath: number,
   g: AeroGeometry,
   cg: number,
+  out?: AeroResult,
 ): AeroResult {
-  const V = Math.hypot(vb[0], vb[1], vb[2]);
+  const V = Math.sqrt(vb[0] * vb[0] + vb[1] * vb[1] + vb[2] * vb[2]);
   const mach = V / speedOfSound;
   const q = 0.5 * rho * V * V;
   const kn = meanFreePath / g.length;
   if (V < 1e-3 || rho <= 0) {
-    return { force: [0, 0, 0], moment: [0, 0, 0], mach, dynamicPressure: q, alpha: 0, cd: 0, knudsen: kn, cp: g.xNose };
+    const res = out ?? { force: [0, 0, 0], moment: [0, 0, 0], mach, dynamicPressure: q, alpha: 0, cd: 0, knudsen: kn, cp: g.xNose };
+    if (out) {
+      res.force[0] = 0; res.force[1] = 0; res.force[2] = 0;
+      res.moment[0] = 0; res.moment[1] = 0; res.moment[2] = 0;
+      res.mach = mach; res.dynamicPressure = q; res.alpha = 0; res.cd = 0; res.knudsen = kn; res.cp = g.xNose;
+    }
+    return res;
   }
-  const lat = Math.hypot(vb[1], vb[2]);
+  const lat = Math.sqrt(vb[1] * vb[1] + vb[2] * vb[2]);
   const cosA = vb[0] / V;
   const sinA = lat / V;
   const alpha = Math.atan2(lat, vb[0]);
@@ -148,7 +156,9 @@ export function aeroForces(
   let armMoment = nBody * lBody;
   // Pitch / yaw damping: rotation gives each station a local cross-flow of omega * arm.
   let damp = 0.5 * rho * V * g.planformArea * g.crossflowK * 0.025 * g.length * g.length;
-  for (const b of g.noseLift) {
+  const noseLift = g.noseLift;
+  for (let i = 0; i < noseLift.length; i++) {
+    const b = noseLift[i];
     const arm = b.x - cg;
     nTot += potential * b.cnA;
     armMoment += potential * b.cnA * arm;
@@ -158,25 +168,25 @@ export function aeroForces(
   const ny = lat > 1e-9 ? -vb[1] / lat : 0;
   const nz = lat > 1e-9 ? -vb[2] / lat : 0;
 
-  return {
-    force: [axial, nTot * ny, nTot * nz],
-    // (arm, 0, 0) x (0, Fy, Fz) = (0, -arm Fz, arm Fy)
-    moment: [0, -armMoment * nz - damp * omega[1], armMoment * ny - damp * omega[2]],
-    mach,
-    dynamicPressure: q,
-    alpha,
-    cd: cd0,
-    knudsen: kn,
-    cp: nTot > 1e-9 ? cg + armMoment / nTot : g.xNose,
-  };
+  // (arm, 0, 0) x (0, Fy, Fz) = (0, -arm Fz, arm Fy)
+  const my = -armMoment * nz - damp * omega[1];
+  const mz = armMoment * ny - damp * omega[2];
+  const cp = nTot > 1e-9 ? cg + armMoment / nTot : g.xNose;
+  if (out) {
+    out.force[0] = axial; out.force[1] = nTot * ny; out.force[2] = nTot * nz;
+    out.moment[0] = 0; out.moment[1] = my; out.moment[2] = mz;
+    out.mach = mach; out.dynamicPressure = q; out.alpha = alpha; out.cd = cd0; out.knudsen = kn; out.cp = cp;
+    return out;
+  }
+  return { force: [axial, nTot * ny, nTot * nz], moment: [0, my, mz], mach, dynamicPressure: q, alpha, cd: cd0, knudsen: kn, cp };
 }
 
 /** Stagnation-point convective heat flux, W/m^2 (Sutton-Graves, Earth air). */
 export function stagnationHeatFlux(rho: number, speed: number, noseRadius: number): number {
-  return 1.7415e-4 * Math.sqrt(rho / noseRadius) * speed ** 3;
+  return 1.7415e-4 * Math.sqrt(rho / noseRadius) * speed * speed * speed;
 }
 
 /** Free-molecular heat flux, W/m^2. Fairings are released when this falls below about 1135. */
 export function freeMolecularHeatFlux(rho: number, speed: number): number {
-  return 0.5 * rho * speed ** 3;
+  return 0.5 * rho * speed * speed * speed;
 }

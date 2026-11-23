@@ -14,28 +14,35 @@ import {
   add,
   clamp,
   cross,
-  dot,
-  norm,
   qPointing,
-  qderiv,
-  qnormalize,
   qrot,
   qrotInv,
+  rotateByQuat,
   scale,
   slerpToward,
-  sub,
   unit,
   type Quat,
   type Vec3,
 } from '../math/vec.ts';
-import { Dopri5, rk4Step } from '../math/integrators.ts';
-import { atmosphere, type WindModel } from '../env/atmosphere.ts';
-import { ecefToEci, geodeticToEcef, gmst, greatCircleDistance, groundVelocity, julianDate, localFrame, type LaunchSite } from '../env/earth.ts';
-import { gravityAccel, type GravityOptions, type ThirdBodies } from '../env/gravity.ts';
+import { Dopri5 } from '../math/integrators.ts';
+import { atmosphere, atmosphereInto, type AtmosphereState, type WindModel } from '../env/atmosphere.ts';
+import {
+  ecefToEci,
+  geodeticAltitude,
+  geodeticToEcef,
+  gmst,
+  greatCircleDistance,
+  groundVelocity,
+  julianDate,
+  localFrame,
+  type LaunchSite,
+  type LocalFrame,
+} from '../env/earth.ts';
+import { gravityInto, type GravityOptions, type ThirdBodies } from '../env/gravity.ts';
 import { moonPosition, sunPosition } from '../env/ephemeris.ts';
-import { engineOutput, thrustCurveAt } from '../propulsion/engine.ts';
-import { aeroForces, aeroGeometry, freeMolecularHeatFlux, stagnationHeatFlux, type AeroGeometry } from '../aero/aero.ts';
-import { massProperties, stageMass, type MassProps } from '../vehicle/massprops.ts';
+import { engineOutput, exitArea, thrustCurveAt } from '../propulsion/engine.ts';
+import { aeroForces, aeroGeometry, freeMolecularHeatFlux, stagnationHeatFlux, type AeroGeometry, type AeroResult } from '../aero/aero.ts';
+import { MassModel, massProperties, massSignature, stageMass, type MassProps } from '../vehicle/massprops.ts';
 import { boosterCount, initialPropellant, initialRuntime, tankOffsets, type VehicleRuntime, type VehicleSpec } from '../vehicle/types.ts';
 import { elementsFromState, type OrbitalElements } from '../orbit/kepler.ts';
 import { accelAt, type ForceModel } from '../orbit/propagate.ts';
@@ -189,6 +196,28 @@ export class Simulation {
   private nextLog = 0;
   private coastSolver: Dopri5;
   private coastModel: ForceModel;
+  /** State the coast solver last returned, kept so it can reuse its final derivative. */
+  private coastY: number[] | null = null;
+  private coastDrag = NaN;
+
+  // Work space for the equations of motion, sized once so a step allocates nothing.
+  private massModel: MassModel;
+  private readonly mp: MassProps = { mass: 0, cg: 0, inertia: [0, 0, 0], length: 0, top: 0, stageBase: [] };
+  private readonly mp2: MassProps = { mass: 0, cg: 0, inertia: [0, 0, 0], length: 0, top: 0, stageBase: [] };
+  private readonly grav: Vec3 = [0, 0, 0];
+  private readonly atm: AtmosphereState = { temperature: 0, pressure: 0, density: 0, speedOfSound: 0, viscosity: 0, meanFreePath: 0 };
+  private readonly aero: AeroResult = { force: [0, 0, 0], moment: [0, 0, 0], mach: 0, dynamicPressure: 0, alpha: 0, cd: 0, knudsen: 0, cp: 0 };
+  /** Simulation time the Sun and Moon positions in `bodies` were worked out for. */
+  private bodiesT = NaN;
+  private readonly vbody: Vec3 = [0, 0, 0];
+  private readonly wbody: Vec3 = [0, 0, 0];
+  private readonly y0: Float64Array;
+  private readonly yt: Float64Array;
+  private readonly k1: Float64Array;
+  private readonly k2: Float64Array;
+  private readonly k3: Float64Array;
+  private readonly k4: Float64Array;
+  private readonly propEps: Float64Array;
 
   constructor(vehicle: VehicleSpec, cfg: SimConfig, flightComputer?: FlightComputer) {
     this.vehicle = vehicle;
@@ -204,13 +233,22 @@ export class Simulation {
     this.prop = initialPropellant(vehicle);
     this.offs = tankOffsets(vehicle);
     this.geom = aeroGeometry(vehicle, this.rt);
+    this.massModel = new MassModel(vehicle, this.rt);
+    const n = IPROP + this.prop.length;
+    this.y0 = new Float64Array(n);
+    this.yt = new Float64Array(n);
+    this.k1 = new Float64Array(n);
+    this.k2 = new Float64Array(n);
+    this.k3 = new Float64Array(n);
+    this.k4 = new Float64Array(n);
+    this.propEps = new Float64Array(this.prop.length);
     this.coastModel = { epochJD: this.epochJD, gravity: cfg.gravity };
     this.coastSolver = new Dopri5(
       (t, y) => {
         const a = accelAt(t, [y[0], y[1], y[2]], [y[3], y[4], y[5]], this.coastModel);
         return [y[3], y[4], y[5], a[0], a[1], a[2]];
       },
-      { rtol: 1e-10, atol: 1e-6, hInit: 1, hMax: 60 },
+      { rtol: 1e-10, atol: 1e-6, hInit: 1, hMax: 60, fsal: true },
     );
     this.applyPadState();
     this.refresh();
@@ -312,7 +350,10 @@ export class Simulation {
 
   /** Index of the lowest core (non-booster) stage still attached, or -1. */
   lowestCore(): number {
-    return this.vehicle.stages.findIndex((s, i) => !s.parallel && this.rt.stages[i].attached);
+    const stages = this.vehicle.stages;
+    const rt = this.rt.stages;
+    for (let i = 0; i < stages.length; i++) if (!stages[i].parallel && rt[i].attached) return i;
+    return -1;
   }
 
   event(type: string, message: string): void {
@@ -364,15 +405,15 @@ export class Simulation {
       this.t += h;
       this.applyPadState();
     } else {
-      const burning = this.rt.stages.some((s) => s.attached && s.engineOn);
+      let burning = false;
+      for (const st of this.rt.stages) if (st.attached && st.engineOn) burning = true;
       if (!burning && this.diag.altitude > (this.cfg.coastAltitude ?? 150e3)) {
         this.coastStep(Math.min(remaining, hint));
       } else {
         const h = Math.max(1e-6, Math.min(this.dt, remaining, hint, this.timeToDepletion()));
         this.updateThrottles(h);
         this.control(h);
-        const y = rk4Step((t, yy) => this.evaluate(t, yy, false), this.t, this.pack(), h);
-        this.unpack(y);
+        this.rk4(h);
         this.t += h;
       }
     }
@@ -387,8 +428,22 @@ export class Simulation {
     // Do not step so far that a descending vehicle skips the atmosphere.
     const safe = d.verticalSpeed < 0 ? 1 + (0.5 * (d.altitude - floor)) / -d.verticalSpeed : Infinity;
     const H = Math.max(1e-3, Math.min(maxDt, safe));
-    this.coastModel.drag = { cdAOverM: (2.2 * this.geom.refArea) / d.mass };
-    const s = this.coastSolver.step(this.t, [...this.r, ...this.v], this.t + H);
+    const cdAOverM = (2.2 * this.geom.refArea) / d.mass;
+    if (cdAOverM !== this.coastDrag) {
+      this.coastDrag = cdAOverM;
+      this.coastModel.drag = { cdAOverM };
+      this.coastSolver.invalidate();
+    }
+    // Hand the solver back its own array when nothing has moved the vehicle since the last
+    // coast step: it then reuses the derivative it already has at this point.
+    const r = this.r;
+    const v = this.v;
+    let y = this.coastY;
+    if (!y || y[0] !== r[0] || y[1] !== r[1] || y[2] !== r[2] || y[3] !== v[0] || y[4] !== v[1] || y[5] !== v[2]) {
+      y = [r[0], r[1], r[2], v[0], v[1], v[2]];
+    }
+    const s = this.coastSolver.step(this.t, y, this.t + H);
+    this.coastY = s.y;
     this.r = [s.y[0], s.y[1], s.y[2]];
     this.v = [s.y[3], s.y[4], s.y[5]];
     this.t = s.t;
@@ -403,14 +458,45 @@ export class Simulation {
 
   // ---- internals -----------------------------------------------------------
 
-  private pack(): number[] {
-    return [...this.r, ...this.v, ...this.q, ...this.w, this.heatLoad, this.dvExpended, ...this.prop];
+  /** One classical Runge-Kutta step of the whole state, in place. */
+  private rk4(h: number): void {
+    const y = this.y0;
+    const yt = this.yt;
+    const k1 = this.k1;
+    const k2 = this.k2;
+    const k3 = this.k3;
+    const k4 = this.k4;
+    const n = y.length;
+    const t = this.t;
+    this.pack(y);
+    this.evaluate(t, y, k1, false);
+    for (let i = 0; i < n; i++) yt[i] = y[i] + 0.5 * h * k1[i];
+    this.evaluate(t + 0.5 * h, yt, k2, false);
+    for (let i = 0; i < n; i++) yt[i] = y[i] + 0.5 * h * k2[i];
+    this.evaluate(t + 0.5 * h, yt, k3, false);
+    for (let i = 0; i < n; i++) yt[i] = y[i] + h * k3[i];
+    this.evaluate(t + h, yt, k4, false);
+    for (let i = 0; i < n; i++) yt[i] = y[i] + (h / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]);
+    this.unpack(yt);
   }
 
-  private unpack(y: number[]): void {
+  private pack(y: Float64Array): void {
+    const r = this.r, v = this.v, q = this.q, w = this.w, prop = this.prop;
+    y[IR] = r[0]; y[IR + 1] = r[1]; y[IR + 2] = r[2];
+    y[IV] = v[0]; y[IV + 1] = v[1]; y[IV + 2] = v[2];
+    y[IQ] = q[0]; y[IQ + 1] = q[1]; y[IQ + 2] = q[2]; y[IQ + 3] = q[3];
+    y[IW] = w[0]; y[IW + 1] = w[1]; y[IW + 2] = w[2];
+    y[IHEAT] = this.heatLoad;
+    y[IDV] = this.dvExpended;
+    for (let k = 0; k < prop.length; k++) y[IPROP + k] = prop[k];
+  }
+
+  private unpack(y: Float64Array): void {
     this.r = [y[IR], y[IR + 1], y[IR + 2]];
     this.v = [y[IV], y[IV + 1], y[IV + 2]];
-    this.q = qnormalize([y[IQ], y[IQ + 1], y[IQ + 2], y[IQ + 3]]);
+    const qx = y[IQ], qy = y[IQ + 1], qz = y[IQ + 2], qw = y[IQ + 3];
+    const l = Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+    this.q = l > 0 ? [qx / l, qy / l, qz / l, qw / l] : [0, 0, 0, 1];
     this.w = [y[IW], y[IW + 1], y[IW + 2]];
     this.heatLoad = y[IHEAT];
     this.dvExpended = y[IDV];
@@ -439,26 +525,32 @@ export class Simulation {
   }
 
   private updateThrottles(h: number): void {
-    this.rt.stages.forEach((st, i) => {
-      if (!st.attached || !st.engineOn) return;
+    const stages = this.rt.stages;
+    for (let i = 0; i < stages.length; i++) {
+      const st = stages[i];
+      if (!st.attached || !st.engineOn) continue;
       const e = this.vehicle.stages[i].engine;
       if (e.thrustCurve) {
         st.throttle = thrustCurveAt(e.thrustCurve, this.t - st.ignitionTime);
-        return;
+        continue;
       }
       const target = clamp(this.cmd.throttle, e.minThrottle ?? 1, 1);
       const tau = (e.spoolTime ?? 1) / 3;
       st.throttle += (target - st.throttle) * (1 - Math.exp(-h / tau));
-    });
+    }
   }
 
   /** Shut down any stage whose propellant has run out. */
   private checkBurnout(): void {
-    this.rt.stages.forEach((st, i) => {
-      if (!st.attached || !st.engineOn) return;
+    const stages = this.rt.stages;
+    for (let i = 0; i < stages.length; i++) {
+      const st = stages[i];
+      if (!st.attached || !st.engineOn) continue;
       const s = this.vehicle.stages[i];
       const res = s.residualFraction ?? 0.005;
-      let dry = s.tanks.some((tk, k) => this.prop[this.offs[i] + k] <= res * tk.propellantMass + 1e-6);
+      const off = this.offs[i];
+      let dry = false;
+      for (let k = 0; k < s.tanks.length; k++) if (this.prop[off + k] <= res * s.tanks[k].propellantMass + 1e-6) dry = true;
       const curve = s.engine.thrustCurve;
       if (curve && this.t - st.ignitionTime >= curve[curve.length - 1][0]) dry = true;
       if (dry) {
@@ -466,21 +558,29 @@ export class Simulation {
         st.burnoutTime = this.t;
         this.shutdown(i, 'burnout');
       }
-    });
+    }
   }
 
   /** Seconds until the first burning tank reaches its residual level at the present flow. */
   private timeToDepletion(): number {
     let tMin = Infinity;
-    this.forEachBurning((i, thr) => {
+    const stages = this.rt.stages;
+    for (let i = 0; i < stages.length; i++) {
+      const st = stages[i];
+      if (!st.attached || !st.engineOn) continue;
       const s = this.vehicle.stages[i];
-      const rate = engineOutput(s.engine, thr, 0).massFlow * s.engineCount;
+      const e = s.engine;
+      const thr = e.thrustCurve ? thrustCurveAt(e.thrustCurve, this.t - st.ignitionTime) : st.throttle;
+      if (!(thr > 0)) continue;
+      const rate = ((thr * e.thrustVac) / (G0 * e.ispVac)) * s.engineCount;
       const res = s.residualFraction ?? 0.005;
-      s.tanks.forEach((tk, k) => {
-        const left = this.prop[this.offs[i] + k] - res * tk.propellantMass;
+      const off = this.offs[i];
+      for (let k = 0; k < s.tanks.length; k++) {
+        const tk = s.tanks[k];
+        const left = this.prop[off + k] - res * tk.propellantMass;
         tMin = Math.min(tMin, left / (rate * tk.flowFraction));
-      });
-    });
+      }
+    }
     return Math.max(tMin, 1e-5);
   }
 
@@ -510,8 +610,8 @@ export class Simulation {
     let maxSin = 0;
     let authority = 0;
     let rcsLimit = 0;
-    this.rt.stages.forEach((st, i) => {
-      if (!st.attached) return;
+    for (let i = 0; i < this.rt.stages.length; i++) {
+      if (!this.rt.stages[i].attached) continue;
       const s = this.vehicle.stages[i];
       rcsLimit = Math.max(rcsLimit, s.rcsTorque ?? 0);
       const g = s.engine.maxGimbal ?? 0;
@@ -520,7 +620,7 @@ export class Simulation {
         maxSin = Math.max(maxSin, Math.sin(g));
         gimbalRate = Math.min(gimbalRate, s.engine.gimbalRate ?? 0.35);
       }
-    });
+    }
     if (!target) {
       this.attRef = null;
       this.gimbal = [0, 0];
@@ -531,7 +631,7 @@ export class Simulation {
     this.attRef = slerpToward(this.attRef ?? xAxis, unit(target), slew * h);
     const db = qrotInv(this.q, this.attRef);
     // Rotation vector that takes body X onto the reference direction.
-    const s = Math.hypot(db[1], db[2]);
+    const s = Math.sqrt(db[1] * db[1] + db[2] * db[2]);
     const ang = Math.atan2(s, db[0]);
     const ey = s > 1e-9 ? (-db[2] / s) * ang : 0;
     const ez = s > 1e-9 ? (db[1] / s) * ang : 0;
@@ -553,14 +653,14 @@ export class Simulation {
       // tau_y = authority * u_z, tau_z = -authority * u_y
       let uy = -tau[2] / authority;
       let uz = tau[1] / authority;
-      const mag = Math.hypot(uy, uz);
+      const mag = Math.sqrt(uy * uy + uz * uz);
       if (mag > maxSin) {
         uy *= maxSin / mag;
         uz *= maxSin / mag;
       }
       const dy = uy - this.gimbal[0];
       const dz = uz - this.gimbal[1];
-      const dm = Math.hypot(dy, dz);
+      const dm = Math.sqrt(dy * dy + dz * dz);
       const lim = gimbalRate * h;
       const f = dm > lim ? lim / dm : 1;
       this.gimbal = [this.gimbal[0] + dy * f, this.gimbal[1] + dz * f];
@@ -576,40 +676,60 @@ export class Simulation {
     ];
   }
 
-  /** Equations of motion: time derivative of the packed state. */
-  private evaluate(t: number, y: number[], fillDiag: boolean): number[] {
-    const r: Vec3 = [y[IR], y[IR + 1], y[IR + 2]];
-    const v: Vec3 = [y[IV], y[IV + 1], y[IV + 2]];
-    const q = qnormalize([y[IQ], y[IQ + 1], y[IQ + 2], y[IQ + 3]]);
-    const w: Vec3 = [y[IW], y[IW + 1], y[IW + 2]];
+  /**
+   * Equations of motion: writes the time derivative of the packed state `y` into `dy`.
+   * This runs four times per step, so it works on plain numbers and allocates nothing
+   * unless `fillDiag` asks for the diagnostics record as well.
+   */
+  private evaluate(t: number, y: Float64Array, dy: Float64Array, fillDiag: boolean): void {
+    const rx = y[IR], ry = y[IR + 1], rz = y[IR + 2];
+    const vx = y[IV], vy = y[IV + 1], vz = y[IV + 2];
+    let qx = y[IQ], qy = y[IQ + 1], qz = y[IQ + 2], qw = y[IQ + 3];
+    const ql = Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+    if (ql > 0) {
+      qx /= ql; qy /= ql; qz /= ql; qw /= ql;
+    } else {
+      qx = 0; qy = 0; qz = 0; qw = 1;
+    }
+    const wx = y[IW], wy = y[IW + 1], wz = y[IW + 2];
     const nProp = this.prop.length;
-    const prop = y.slice(IPROP, IPROP + nProp);
     const veh = this.vehicle;
-    const mp = massProperties(veh, this.rt, prop);
-    const lf = localFrame(r);
-    const atm = atmosphere(lf.alt);
+    const rt = this.rt;
+    if (this.massModel.signature !== massSignature(rt)) this.massModel = new MassModel(veh, rt);
+    const mm = this.massModel;
+    const mp = this.mp;
+    mm.evaluate(y, IPROP, mp);
+    const wind = this.cfg.wind;
+    // The local frame costs two arctangents; only wind and the diagnostics need more than height.
+    const lf: LocalFrame | null = fillDiag || wind ? localFrame([rx, ry, rz]) : null;
+    const alt = lf ? lf.alt : geodeticAltitude(rx, ry, rz);
+    const atm = atmosphereInto(this.atm, alt);
 
     // Thrust
     let fx = 0, fy = 0, fz = 0, ty = 0, tz = 0;
     let mdot = 0, jet = 0, thrust = 0;
-    const propRate = new Array<number>(nProp).fill(0);
+    for (let k = 0; k < nProp; k++) dy[IPROP + k] = 0;
     const stageThrust = fillDiag ? new Array<number>(veh.stages.length).fill(0) : null;
     for (let i = 0; i < veh.stages.length; i++) {
-      const st = this.rt.stages[i];
+      const st = rt.stages[i];
       if (!st.attached || !st.engineOn) continue;
       const s = veh.stages[i];
       const e = s.engine;
       const thr = e.thrustCurve ? thrustCurveAt(e.thrustCurve, t - st.ignitionTime) : st.throttle;
       if (thr <= 0) continue;
-      const off = this.offs[i];
-      if (s.tanks.some((_, k) => prop[off + k] <= 0)) continue;
-      const out = engineOutput(e, thr, atm.pressure);
+      const off = IPROP + this.offs[i];
+      const tanks = s.tanks;
+      let dry = false;
+      for (let k = 0; k < tanks.length; k++) if (y[off + k] <= 0) dry = true;
+      if (dry) continue;
+      const outThrust = Math.max(0, thr * e.thrustVac - atm.pressure * exitArea(e));
+      const outFlow = (thr * e.thrustVac) / (G0 * e.ispVac);
       const n = s.engineCount * boosterCount(s);
-      const F = out.thrust * n;
+      const F = outThrust * n;
       const maxSin = Math.sin(e.maxGimbal ?? 0);
       let uy = this.gimbal[0];
       let uz = this.gimbal[1];
-      const mag = Math.hypot(uy, uz);
+      const mag = Math.sqrt(uy * uy + uz * uz);
       if (mag > maxSin) {
         const k = mag > 0 ? maxSin / mag : 0;
         uy *= k;
@@ -622,67 +742,114 @@ export class Simulation {
       fz += F * uz;
       ty += -arm * F * uz;
       tz += arm * F * uy;
-      mdot += out.massFlow * n;
-      jet += out.massFlow * n * arm * arm;
+      mdot += outFlow * n;
+      jet += outFlow * n * arm * arm;
       thrust += F;
       if (stageThrust) stageThrust[i] = F;
-      s.tanks.forEach((tk, k) => (propRate[off + k] = -out.massFlow * s.engineCount * tk.flowFraction));
+      for (let k = 0; k < tanks.length; k++) dy[off + k] = -outFlow * s.engineCount * tanks[k].flowFraction;
     }
 
     // Aerodynamics: the air turns with the Earth, plus wind.
-    let vRel = sub(v, groundVelocity(r));
-    if (this.cfg.wind) {
-      const wind = this.cfg.wind(lf.alt, lf.lat, lf.lon - (this.theta0 + OMEGA_EARTH * t));
-      vRel = sub(vRel, add(scale(lf.east, wind.east), scale(lf.north, wind.north)));
+    let ax = vx + OMEGA_EARTH * ry;
+    let ay = vy - OMEGA_EARTH * rx;
+    let az = vz;
+    if (wind && lf) {
+      const wv = wind(lf.alt, lf.lat, lf.lon - (this.theta0 + OMEGA_EARTH * t));
+      ax -= lf.east[0] * wv.east + lf.north[0] * wv.north;
+      ay -= lf.east[1] * wv.east + lf.north[1] * wv.north;
+      az -= lf.east[2] * wv.east + lf.north[2] * wv.north;
     }
-    const vb = qrotInv(q, vRel);
-    const aero = aeroForces(vb, w, atm.density, atm.speedOfSound, atm.meanFreePath, this.geom, mp.cg);
+    // World -> body: rotate by the conjugate quaternion.
+    {
+      const cx = (-qy * az + qz * ay) * 2;
+      const cy = (-qz * ax + qx * az) * 2;
+      const cz = (-qx * ay + qy * ax) * 2;
+      const vb = this.vbody;
+      vb[0] = ax + cx * qw + (-qy * cz + qz * cy);
+      vb[1] = ay + cy * qw + (-qz * cx + qx * cz);
+      vb[2] = az + cz * qw + (-qx * cy + qy * cx);
+    }
+    const wb = this.wbody;
+    wb[0] = wx; wb[1] = wy; wb[2] = wz;
+    // The diagnostics record keeps the aerodynamic moment, so that pass gets a record of its own.
+    const aero = aeroForces(this.vbody, wb, atm.density, atm.speedOfSound, atm.meanFreePath, this.geom, mp.cg, fillDiag ? undefined : this.aero);
 
     // Translation
-    const g = gravityAccel(r, this.cfg.gravity, this.bodies);
-    const fBody: Vec3 = [fx + aero.force[0], fy + aero.force[1], fz + aero.force[2]];
-    const aNonGrav = scale(qrot(q, fBody), 1 / mp.mass);
-    const a = add(g, aNonGrav);
+    const g = this.grav;
+    gravityInto(g, rx, ry, rz, this.cfg.gravity, this.bodies.sun, this.bodies.moon);
+    const bx = fx + aero.force[0];
+    const by = fy + aero.force[1];
+    const bz = fz + aero.force[2];
+    // Body -> world.
+    const sx = (qy * bz - qz * by) * 2;
+    const sy = (qz * bx - qx * bz) * 2;
+    const sz = (qx * by - qy * bx) * 2;
+    const invMass = 1 / mp.mass;
+    const ngx = (bx + sx * qw + (qy * sz - qz * sy)) * invMass;
+    const ngy = (by + sy * qw + (qz * sx - qx * sz)) * invMass;
+    const ngz = (bz + sz * qw + (qx * sy - qy * sx)) * invMass;
 
     // Rotation: Euler's equations for a body that is losing mass.
     const I = mp.inertia;
-    let Idot: Vec3 = [0, 0, 0];
+    const I0 = I[0], I1 = I[1], I2 = I[2];
+    let Id0 = 0, Id1 = 0, Id2 = 0;
     if (mdot > 0) {
       const eps = 0.05;
-      const I2 = massProperties(veh, this.rt, prop.map((p, k) => p + propRate[k] * eps)).inertia;
-      Idot = [(I2[0] - I[0]) / eps, (I2[1] - I[1]) / eps, (I2[2] - I[2]) / eps];
+      const pe = this.propEps;
+      for (let k = 0; k < nProp; k++) pe[k] = y[IPROP + k] + dy[IPROP + k] * eps;
+      mm.evaluate(pe, 0, this.mp2);
+      const J = this.mp2.inertia;
+      Id0 = (J[0] - I0) / eps;
+      Id1 = (J[1] - I1) / eps;
+      Id2 = (J[2] - I2) / eps;
     }
-    const rm = norm(r);
-    const rb = scale(qrotInv(q, r), 1 / rm);
+    const rm = Math.sqrt(rx * rx + ry * ry + rz * rz);
+    // Direction of the vehicle from the Earth's centre, in body axes.
+    const ux2 = (-qy * rz + qz * ry) * 2;
+    const uy2 = (-qz * rx + qx * rz) * 2;
+    const uz2 = (-qx * ry + qy * rx) * 2;
+    const rbx = (rx + ux2 * qw + (-qy * uz2 + qz * uy2)) / rm;
+    const rby = (ry + uy2 * qw + (-qz * ux2 + qx * uz2)) / rm;
+    const rbz = (rz + uz2 * qw + (-qx * uy2 + qy * ux2)) / rm;
     // Gravity-gradient torque: the lower end of the vehicle is pulled slightly harder.
-    const gg = scale(cross(rb, [I[0] * rb[0], I[1] * rb[1], I[2] * rb[2]]), (3 * MU_EARTH) / rm ** 3);
-    const tx = this.rcs[0] + gg[0];
+    const ggk = (3 * MU_EARTH) / (rm * rm * rm);
+    const ggx = (rby * (I2 * rbz) - rbz * (I1 * rby)) * ggk;
+    const ggy = (rbz * (I0 * rbx) - rbx * (I2 * rbz)) * ggk;
+    const ggz = (rbx * (I1 * rby) - rby * (I0 * rbx)) * ggk;
+    const tx = this.rcs[0] + ggx;
     // Jet damping: exhaust leaving the nozzle carries away angular momentum.
-    const tY = ty + aero.moment[1] + this.rcs[1] + gg[1] - jet * w[1];
-    const tZ = tz + aero.moment[2] + this.rcs[2] + gg[2] - jet * w[2];
-    const wdot: Vec3 = [
-      (tx - (I[2] - I[1]) * w[1] * w[2] - Idot[0] * w[0]) / I[0],
-      (tY - (I[0] - I[2]) * w[2] * w[0] - Idot[1] * w[1]) / I[1],
-      (tZ - (I[1] - I[0]) * w[0] * w[1] - Idot[2] * w[2]) / I[2],
-    ];
-    const qd = qderiv(q, w);
-    const speedRel = norm(vRel);
+    const tY = ty + aero.moment[1] + this.rcs[1] + ggy - jet * wy;
+    const tZ = tz + aero.moment[2] + this.rcs[2] + ggz - jet * wz;
+    const speedRel = Math.sqrt(ax * ax + ay * ay + az * az);
     const heat = stagnationHeatFlux(atm.density, speedRel, this.geom.noseRadius);
 
-    if (fillDiag) {
-      const nose = qrot(q, [1, 0, 0]);
+    dy[IR] = vx; dy[IR + 1] = vy; dy[IR + 2] = vz;
+    dy[IV] = g[0] + ngx; dy[IV + 1] = g[1] + ngy; dy[IV + 2] = g[2] + ngz;
+    dy[IQ] = 0.5 * (qw * wx + qy * wz - qz * wy);
+    dy[IQ + 1] = 0.5 * (qw * wy + qz * wx - qx * wz);
+    dy[IQ + 2] = 0.5 * (qw * wz + qx * wy - qy * wx);
+    dy[IQ + 3] = 0.5 * (-qx * wx - qy * wy - qz * wz);
+    dy[IW] = (tx - (I2 - I1) * wy * wz - Id0 * wx) / I0;
+    dy[IW + 1] = (tY - (I0 - I2) * wz * wx - Id1 * wy) / I1;
+    dy[IW + 2] = (tZ - (I1 - I0) * wx * wy - Id2 * wz) / I2;
+    dy[IHEAT] = heat;
+    dy[IDV] = thrust / mp.mass;
+
+    if (fillDiag && lf) {
+      const nose = rotateByQuat(qx, qy, qz, qw, 1, 0, 0);
       const lon = lf.lon - (this.theta0 + OMEGA_EARTH * t);
+      const up = lf.up, east = lf.east, north = lf.north;
       this.diag = {
         altitude: lf.alt,
         lat: lf.lat,
         lon: Math.atan2(Math.sin(lon), Math.cos(lon)),
-        up: lf.up,
-        east: lf.east,
-        north: lf.north,
-        vRel,
+        up,
+        east,
+        north,
+        vRel: [ax, ay, az],
         speedRel,
-        speedInertial: norm(v),
-        verticalSpeed: dot(vRel, lf.up),
+        speedInertial: Math.sqrt(vx * vx + vy * vy + vz * vz),
+        verticalSpeed: ax * up[0] + ay * up[1] + az * up[2],
         mach: aero.mach,
         q: aero.dynamicPressure,
         alpha: aero.alpha,
@@ -690,41 +857,39 @@ export class Simulation {
         stageThrust: stageThrust!,
         massFlow: mdot,
         mass: mp.mass,
-        accelG: norm(aNonGrav) / G0,
+        accelG: Math.sqrt(ngx * ngx + ngy * ngy + ngz * ngz) / G0,
         drag: -aero.force[0],
         pressure: atm.pressure,
         density: atm.density,
         heatFlux: heat,
         fmHeatFlux: freeMolecularHeatFlux(atm.density, speedRel),
         knudsen: aero.knudsen,
-        pitch: Math.asin(clamp(dot(nose, lf.up), -1, 1)),
-        heading: Math.atan2(dot(nose, lf.east), dot(nose, lf.north)),
-        massProps: mp,
+        pitch: Math.asin(clamp(nose[0] * up[0] + nose[1] * up[1] + nose[2] * up[2], -1, 1)),
+        heading: Math.atan2(nose[0] * east[0] + nose[1] * east[1] + nose[2] * east[2], nose[0] * north[0] + nose[1] * north[1] + nose[2] * north[2]),
+        massProps: { mass: mp.mass, cg: mp.cg, inertia: [I0, I1, I2], length: mp.length, top: mp.top, stageBase: mp.stageBase },
         cp: aero.cp,
         aeroMoment: aero.moment,
       };
     }
-
-    const dy = new Array<number>(y.length);
-    dy[IR] = v[0]; dy[IR + 1] = v[1]; dy[IR + 2] = v[2];
-    dy[IV] = a[0]; dy[IV + 1] = a[1]; dy[IV + 2] = a[2];
-    dy[IQ] = qd[0]; dy[IQ + 1] = qd[1]; dy[IQ + 2] = qd[2]; dy[IQ + 3] = qd[3];
-    dy[IW] = wdot[0]; dy[IW + 1] = wdot[1]; dy[IW + 2] = wdot[2];
-    dy[IHEAT] = heat;
-    dy[IDV] = thrust / mp.mass;
-    for (let k = 0; k < nProp; k++) dy[IPROP + k] = propRate[k];
-    return dy;
   }
 
   /** Recompute diagnostics (and Sun / Moon positions) for the current state. */
   refresh(): void {
-    const gopt = this.cfg.gravity ?? {};
-    const jd = this.epochJD + this.t / 86400;
-    this.bodies = {
-      sun: (gopt.sun ?? true) ? sunPosition(jd) : undefined,
-      moon: (gopt.moon ?? true) ? moonPosition(jd) : undefined,
-    };
-    this.evaluate(this.t, this.pack(), true);
+    // The Moon moves about 1 km a second and the Sun's direction far less, against distances
+    // of 384 000 km and more: holding both for up to a second changes their pull on the
+    // vehicle by parts in a million of an already tiny term, and saves the two series on
+    // every 20 ms step of powered flight.
+    if (!(Math.abs(this.t - this.bodiesT) < 1)) {
+      const gopt = this.cfg.gravity ?? {};
+      const jd = this.epochJD + this.t / 86400;
+      this.bodies = {
+        sun: (gopt.sun ?? true) ? sunPosition(jd) : undefined,
+        moon: (gopt.moon ?? true) ? moonPosition(jd) : undefined,
+      };
+      this.bodiesT = this.t;
+    }
+    this.pack(this.y0);
+    this.evaluate(this.t, this.y0, this.k1, true);
   }
 
   private bookkeeping(): void {

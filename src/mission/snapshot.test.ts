@@ -89,8 +89,9 @@ describe('iipTrack', () => {
     }
     expect(nearest125.lonDeg).toBeGreaterThanOrEqual(82.7);
     expect(nearest125.lonDeg).toBeLessThanOrEqual(84.7);
-    expect(nearest125.latDeg).toBeGreaterThanOrEqual(13.4);
-    expect(nearest125.latDeg).toBeLessThanOrEqual(13.9);
+    // The launch heads south of east (21.3 degree orbit), so the impact point drifts south of the pad.
+    expect(nearest125.latDeg).toBeGreaterThanOrEqual(12.2);
+    expect(nearest125.latDeg).toBeLessThanOrEqual(13.2);
 
     for (let i = 1; i < track.length; i++) {
       expect(track[i].lonDeg).toBeGreaterThanOrEqual(track[i - 1].lonDeg);

@@ -7,7 +7,15 @@ import {
   type SimConfig,
   type StressReport,
 } from '../types';
-import { EJECTION_DELAYS_S, RAIL_ANGLES_DEG, WIND_SPEEDS_MS, runCase, stressTest } from './sweep';
+import {
+  EJECTION_DELAYS_S,
+  RAIL_ANGLES_DEG,
+  STRESS_FLIGHT_COUNT,
+  WIND_SPEEDS_MS,
+  runCase,
+  stressTest,
+  stressTestSteps,
+} from './sweep';
 
 // ---- Stub models (same approach as sim.test.ts) ------------------------------
 
@@ -165,6 +173,29 @@ describe('stressTest', () => {
   it('a stable rocket has a safe wind limit', () => {
     expect(report.maxSafeWind).not.toBeNull();
   });
+});
+
+describe('stressTestSteps', () => {
+  it('yields inside flights and returns the same report as stressTest', () => {
+    const gen = stressTestSteps(makeRocket(), makeMotor(), makeConfig(), makeDeps());
+    let yields = 0;
+    let last: { done: number; total: number } | undefined;
+    for (;;) {
+      const r = gen.next();
+      if (r.done) {
+        expect(r.value).toEqual(
+          stressTest(makeRocket(), makeMotor(), makeConfig(), makeDeps()),
+        );
+        break;
+      }
+      yields++;
+      expect(r.value.total).toBe(STRESS_FLIGHT_COUNT);
+      if (last) expect(r.value.done).toBeGreaterThanOrEqual(last.done);
+      last = r.value;
+    }
+    expect(last?.done).toBe(STRESS_FLIGHT_COUNT);
+    expect(yields).toBeGreaterThan(STRESS_FLIGHT_COUNT * 5);
+  }, 120_000);
 });
 
 describe('stressTest with an unstable rocket', () => {

@@ -16,6 +16,14 @@ export interface LanderSpec {
   payloadMass: number;
   landerProp: number;
   hasRover?: boolean;
+  /** Descent engine; LANDER_ENGINE when omitted. */
+  engine?: { tMax: number; minThrottle: number; isp: number; rcsTorque: number };
+  /** Centre-of-gravity height above the feet and foot-circle radius (m), inertia per kg (m^2). */
+  geom?: { cgh: number; foot: number; inertiaPerKg: number };
+  /** Fraction of full thrust the braking phase is planned at (0.7 when omitted); the rest is margin. */
+  brakeFrac?: number;
+  /** Perilune altitude the deorbit burn aims for, m. */
+  doiPeri?: number;
 }
 export const LANDER_SPECS: Record<'lander' | 'roverLander', LanderSpec> = {
   lander: { payloadMass: 7600, landerProp: 4300, hasRover: false },

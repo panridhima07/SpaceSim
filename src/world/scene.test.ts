@@ -4,6 +4,7 @@ import { R_EARTH } from '../types';
 import { buildLaunchSite } from './launchSite';
 import { buildSolarSystem } from './solarSystem';
 import { julianDate } from './ephemeris';
+import { PAD_GROUND_Y, terrainHeightAt } from '../render/padTerrain';
 
 const J2000 = julianDate(new Date('2000-01-01T12:00:00Z'));
 
@@ -119,5 +120,26 @@ describe('buildLaunchSite', () => {
     const pole = site.group.getObjectByName('referencePole')!;
     const d = Math.hypot(pole.position.x - pivot.position.x, pole.position.z - pivot.position.z);
     expect(d).toBeCloseTo(0.6, 6);
+  });
+
+  it('puts the flat pad ground of the shared terrain at y = 0 and keeps the pad above it', () => {
+    const site = buildLaunchSite({ railLength: 1 });
+    const terrain = site.group.getObjectByName('groundTerrain')!;
+    expect(terrain).toBeDefined();
+    // Pad-local ground height is PAD_GROUND_Y at the origin; the shift lifts it onto y = 0.
+    expect(terrainHeightAt(0, 0) + terrain.position.y).toBeCloseTo(0, 9);
+    // The slab is centred on pad.position.y; its top face (centre + half the 3 cm thickness) sits just above ground.
+    const pad = site.group.getObjectByName('pad')!;
+    const padTop = pad.position.y + 0.015;
+    expect(padTop).toBeGreaterThan(0);
+    expect(padTop).toBeLessThan(0.01);
+    const sand = site.group.getObjectByName('sandClearing')!;
+    expect(sand.position.y).toBeGreaterThan(0);
+  });
+
+  it('updates and disposes the terrain without errors', () => {
+    const site = buildLaunchSite({ railLength: 1 });
+    expect(() => site.updateTerrain?.(1.5, 10)).not.toThrow();
+    expect(() => site.dispose?.()).not.toThrow();
   });
 });

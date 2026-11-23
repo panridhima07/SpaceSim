@@ -1,3 +1,4 @@
+import './motion.css';
 import './style.css';
 import './astraTheme.css';
 import type {
@@ -12,6 +13,18 @@ import type {
 import { STRESS_FLIGHT_COUNT } from '../physics/sweep';
 import type { CameraMode, RocketInfo, ToggleName, UI, UICallbacks } from './uiTypes';
 import { attachTilt } from './tilt';
+import { IMPORT_ACCEPT } from '../io/importer';
+import {
+  LAUNCH_SITES,
+  assessLaunch,
+  describeSky,
+  fetchLaunchWeather,
+  weatherToConfig,
+  type LaunchSiteInfo,
+  type LaunchWeather,
+  type Verdict,
+} from '../weather/launchWeather';
+import type { WindLayer } from '../types';
 
 const EASE_OUT = 'cubic-bezier(0.16, 1, 0.3, 1)';
 /** Toasts leave in this long, shorter than the 220 ms they take to arrive. */
@@ -92,6 +105,27 @@ const STRESS_LABEL: Record<SweepResult['worst'], string> = {
 export interface CreateUIOptions {
   /** Test hook: build the phone HUD structure regardless of the viewport. */
   forceMobile?: boolean;
+  /** Weather source for the launch-date picker. Defaults to the Open-Meteo client. */
+  weather?: (site: LaunchSiteInfo, date: string, hour: number) => Promise<LaunchWeather>;
+}
+
+const VERDICT_LABEL: Record<Verdict, string> = { go: 'Go', caution: 'Caution', 'no-go': 'No-go' };
+const VERDICT_CLASS: Record<Verdict, string> = {
+  go: 'sfb-stress-ok',
+  caution: 'sfb-stress-warning',
+  'no-go': 'sfb-stress-critical',
+};
+const SOURCE_LABEL: Record<LaunchWeather['source'], string> = {
+  forecast: 'Forecast',
+  record: 'Recorded weather',
+  climatology: 'Typical for this day',
+};
+const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+const CUSTOM_SITE = 'custom';
+const DEFAULT_LAUNCH_HOUR = 10;
+
+function compass(deg: number): string {
+  return COMPASS[Math.round((((deg % 360) + 360) % 360) / 45) % 8];
 }
 
 // ---------- DOM helpers ----------
@@ -184,6 +218,13 @@ function numberField(
   return { el, input };
 }
 
+/** A labelled control in the same two-column layout as the number fields. */
+function labelled(label: string, control: HTMLElement): HTMLLabelElement {
+  const el = h('label', 'sfb-field');
+  el.append(h('span', 'sfb-field-label', label), control);
+  return el;
+}
+
 function parseNum(input: HTMLInputElement, fallback: number): number {
   const v = parseFloat(input.value);
   return Number.isFinite(v) ? v : fallback;
@@ -257,8 +298,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   title.setAttribute('aria-label', 'Astra Space Flight Builder');
   const fileInput = h('input', 'sfb-hidden');
   fileInput.type = 'file';
-  // Android's picker only lists .ork files when the MIME types are included too.
-  fileInput.accept = '.ork,.eng,.xml,application/zip,application/octet-stream';
+  fileInput.accept = IMPORT_ACCEPT;
   fileInput.addEventListener('change', () => {
     const file = fileInput.files?.[0];
     fileInput.value = ''; // allow choosing the same file again
@@ -269,7 +309,8 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   brandRow.append(
     buildBtn,
     button('Fly LVM3 mission', 'sfb-btn-ghost sfb-btn-wide', () => cb.onMission?.(), 'Fly the LVM3-M4 mission'),
-    button('Open .ork', '', () => fileInput.click(), 'Open an OpenRocket file'),
+    button('Import file', '', () => fileInput.click(), 'Import .ork, .rkt, .json, .eng, or .rse file'),
+    button('Export .ork', '', () => cb.onExport?.('ork'), 'Export the current rocket as .ork'),
     button('Load sample', '', () => cb.onLoadSample(), 'Load the built-in sample rocket'),
     button('Moon landing', 'sfb-btn-ghost sfb-btn-wide', () => window.location.assign('./landing.html'), 'Fly a lunar landing'),
   );
@@ -280,7 +321,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
 
   const rocketPanel = h('section', 'sfb-panel');
   rocketPanel.append(h('h2', 'sfb-section-title', 'Rocket'));
-  const rocketHint = h('p', 'sfb-hint', 'Drop an OpenRocket .ork file');
+  const rocketHint = h('p', 'sfb-hint', 'Drop an OpenRocket (.ork), RockSim (.rkt), .json, or .eng file');
   const rocketBody = h('div', 'sfb-hidden');
   const rocketName = h('p', 'sfb-rocket-name');
   const kv = h('dl', 'sfb-kv');
@@ -318,13 +359,62 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   const windFromF = numberField('Wind from', 'deg', '270', '5');
   const gustF = numberField('Gust', '%', '20', '5', '0');
   const delayF = numberField('Ejection delay', 's', '', '0.1', '0', "motor's");
+  // Blank means the standard atmosphere (15 °C, 1013 hPa at sea level).
+  const tempF = numberField('Air temp', '°C', '', '1', undefined, 'standard');
+  const pressureF = numberField('Pressure', 'hPa', '', '1', '0', 'standard');
   const launchGrid = h('div', 'sfb-launch-grid');
   launchGrid.append(
     railF.el, angleF.el, azimuthF.el, windSpeedF.el, windFromF.el, gustF.el, delayF.el,
+    tempF.el, pressureF.el,
   );
-  launchPanel.append(launchGrid);
+
+  // ----- Launch date and weather -----
+  const siteSelect = h('select', 'sfb-select');
+  for (const site of LAUNCH_SITES) {
+    const o = h('option', undefined, site.name);
+    o.value = site.id;
+    siteSelect.append(o);
+  }
+  const customOpt = h('option', undefined, 'Custom coordinates');
+  customOpt.value = CUSTOM_SITE;
+  siteSelect.append(customOpt);
+
+  const latF = numberField('Latitude', 'deg', '', '0.01');
+  const lonF = numberField('Longitude', 'deg', '', '0.01');
+  latF.input.min = '-90';
+  latF.input.max = '90';
+  lonF.input.min = '-180';
+  lonF.input.max = '180';
+  latF.el.classList.add('sfb-hidden');
+  lonF.el.classList.add('sfb-hidden');
+
+  const dateInput = h('input', 'sfb-input');
+  dateInput.type = 'date';
+  const hourSelect = h('select', 'sfb-select');
+  for (let hr = 0; hr < 24; hr++) {
+    const o = h('option', undefined, `${String(hr).padStart(2, '0')}:00`);
+    o.value = String(hr);
+    hourSelect.append(o);
+  }
+  hourSelect.value = String(DEFAULT_LAUNCH_HOUR);
+
+  const weatherOut = h('div', 'sfb-weather');
+  weatherOut.setAttribute('aria-live', 'polite');
+  const weatherIdle = (): void =>
+    fill(weatherOut, [h('p', 'sfb-hint', 'Pick a launch date to load that day’s weather.')]);
+  weatherIdle();
+
+  const weatherGrid = h('div', 'sfb-weather-grid');
+  weatherGrid.append(
+    labelled('Launch site', siteSelect), latF.el, lonF.el,
+    labelled('Launch date', dateInput), labelled('Local time', hourSelect),
+  );
+  launchPanel.append(weatherGrid, weatherOut, launchGrid);
 
   left.append(rocketPanel, launchPanel);
+
+  /** Winds aloft from the last loaded weather. Cleared when the surface wind is edited by hand. */
+  let windLayers: WindLayer[] | undefined;
 
   function getConfig(): SimConfig {
     const cfg: SimConfig = {
@@ -342,13 +432,126 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
       const v = parseFloat(delayText);
       if (Number.isFinite(v)) cfg.ejectionDelay = v;
     }
+    const tempC = parseFloat(tempF.input.value);
+    if (Number.isFinite(tempC) && tempC > -100) cfg.groundTemperature = tempC + 273.15;
+    const hPa = parseFloat(pressureF.input.value);
+    if (Number.isFinite(hPa) && hPa > 0) cfg.groundPressure = hPa * 100;
+    if (windLayers) cfg.windLayers = windLayers;
     return cfg;
   }
 
   const emitConfig = (): void => cb.onConfig(getConfig());
-  for (const f of [railF, angleF, azimuthF, windSpeedF, windFromF, gustF, delayF]) {
+  // A hand-set surface wind no longer matches the loaded winds aloft, so drop them first.
+  for (const f of [windSpeedF, windFromF]) {
+    f.input.addEventListener('input', () => {
+      if (!windLayers) return;
+      windLayers = undefined;
+      weatherOut.querySelector('.sfb-weather-aloft')?.remove();
+    });
+  }
+  for (const f of [railF, angleF, azimuthF, windSpeedF, windFromF, gustF, delayF, tempF, pressureF]) {
     f.input.addEventListener('input', emitConfig);
   }
+
+  const loadWeather = opts.weather ?? ((site, date, hour) => fetchLaunchWeather(site, date, hour));
+  let weatherSeq = 0;
+
+  function selectedSite(): LaunchSiteInfo | null {
+    if (siteSelect.value !== CUSTOM_SITE) {
+      return LAUNCH_SITES.find((x) => x.id === siteSelect.value) ?? LAUNCH_SITES[0];
+    }
+    const latitude = parseFloat(latF.input.value);
+    const longitude = parseFloat(lonF.input.value);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+    if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return null;
+    return { id: CUSTOM_SITE, name: 'Custom site', latitude, longitude };
+  }
+
+  function showWeather(w: LaunchWeather): void {
+    const a = assessLaunch(w);
+    const head = h('div', 'sfb-weather-head');
+    head.append(
+      h('span', `sfb-pill sfb-stress-pill ${VERDICT_CLASS[a.verdict]}`, VERDICT_LABEL[a.verdict]),
+      h('span', 'sfb-weather-sky', describeSky(w)),
+    );
+    const source = w.source === 'climatology' && w.years
+      ? `${SOURCE_LABEL.climatology} (${w.years}-year average)`
+      : SOURCE_LABEL[w.source];
+    const facts = h('dl', 'sfb-kv sfb-weather-kv');
+    const row = (k: string, v: string): void => {
+      facts.append(h('dt', undefined, k), h('dd', undefined, v));
+    };
+    const gust = w.gustSpeed !== null ? `, gusts ${w.gustSpeed.toFixed(1)}` : '';
+    row('Wind', `${w.windSpeed.toFixed(1)} m/s from ${compass(w.windFromDeg)}${gust}`);
+    row('Air', `${w.temperatureC.toFixed(0)} °C${w.pressureHpa !== null ? `, ${w.pressureHpa.toFixed(0)} hPa` : ''}`);
+    if (w.cloudCover !== null) row('Cloud', `${Math.round(w.cloudCover)} %`);
+    if (w.precipChance !== null) row('Rain chance', `${Math.round(w.precipChance)} %`);
+    const nodes: Node[] = [head, h('p', 'sfb-hint sfb-weather-source', source), facts];
+    if (w.aloft.length > 0) {
+      const top = w.aloft[w.aloft.length - 1];
+      nodes.push(h(
+        'p', 'sfb-hint sfb-weather-aloft',
+        `Winds aloft applied up to ${fmtAltitude(top.altitude)}: ${top.speed.toFixed(1)} m/s from ${compass(top.fromDeg)} at the top.`,
+      ));
+    }
+    if (a.reasons.length > 0) {
+      const list = h('ul', 'sfb-weather-reasons');
+      for (const r of a.reasons) list.append(h('li', undefined, r));
+      nodes.push(list);
+    }
+    fill(weatherOut, nodes);
+  }
+
+  /** Copy the weather into the launch fields so the next flight uses it. */
+  function applyWeather(w: LaunchWeather): void {
+    const c = weatherToConfig(w);
+    windSpeedF.input.value = c.windSpeed.toFixed(1);
+    windFromF.input.value = String(Math.round(w.windFromDeg));
+    gustF.input.value = String(Math.round(c.gust * 100));
+    tempF.input.value = w.temperatureC.toFixed(1);
+    pressureF.input.value = w.pressureHpa !== null ? w.pressureHpa.toFixed(0) : '';
+    windLayers = c.windLayers;
+    emitConfig();
+  }
+
+  function refreshWeather(): void {
+    const seq = ++weatherSeq;
+    const date = dateInput.value;
+    if (date === '') {
+      weatherIdle();
+      return;
+    }
+    const site = selectedSite();
+    if (!site) {
+      fill(weatherOut, [h('p', 'sfb-hint', 'Enter the site’s latitude and longitude.')]);
+      return;
+    }
+    fill(weatherOut, [h('p', 'sfb-hint', 'Loading weather…')]);
+    loadWeather(site, date, parseInt(hourSelect.value, 10)).then(
+      (w) => {
+        if (seq !== weatherSeq) return; // a newer request replaced this one
+        showWeather(w);
+        applyWeather(w);
+      },
+      () => {
+        if (seq !== weatherSeq) return;
+        fill(weatherOut, [
+          h('p', 'sfb-hint sfb-weather-error', 'Could not load the weather. Check the connection and pick the date again. The launch settings are unchanged.'),
+        ]);
+      },
+    );
+  }
+
+  siteSelect.addEventListener('change', () => {
+    const custom = siteSelect.value === CUSTOM_SITE;
+    latF.el.classList.toggle('sfb-hidden', !custom);
+    lonF.el.classList.toggle('sfb-hidden', !custom);
+    refreshWeather();
+  });
+  dateInput.addEventListener('change', refreshWeather);
+  hourSelect.addEventListener('change', refreshWeather);
+  latF.input.addEventListener('change', refreshWeather);
+  lonF.input.addEventListener('change', refreshWeather);
 
   // ===== Right column: telemetry, flight log, design flaws =====
   const right = h('div', 'sfb-right');
@@ -368,6 +571,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   };
   const tAlt = teleRow('Altitude');
   const tSpeed = teleRow('Speed');
+  const tAir = teleRow('Airspeed');
   const tMach = teleRow('Mach');
   const tAccel = teleRow('Acceleration');
   const tAoa = teleRow('Angle of attack');
@@ -423,8 +627,8 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
     cb.onLaunch();
     // Confirm the press with one ring of light off the button.
     pulse(launchBtn, [
-      { boxShadow: '0 0 0 0 rgba(127, 215, 255, 0.7)' },
-      { boxShadow: '0 0 0 22px rgba(127, 215, 255, 0)' },
+      { boxShadow: '0 0 0 0 rgba(245, 166, 91, 0.7)' },
+      { boxShadow: '0 0 0 22px rgba(245, 166, 91, 0)' },
     ], 420);
   }, 'Launch (Space)');
   const resetBtn = button('Reset', '', () => cb.onReset(), 'Reset (R)');
@@ -520,7 +724,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
 
   // ===== Toasts and drop highlight =====
   const toasts = h('div', 'sfb-toasts');
-  const dropHint = h('div', 'sfb-drop', 'Drop file to open');
+  const dropHint = h('div', 'sfb-drop', 'Drop .ork / .rkt / .json / .eng to open');
 
   // ===== Phone HUD: top strip, right rail, bottom sheet =====
   const topBar = h('div', 'sfb-hud-bar');
@@ -764,10 +968,10 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
     closeSheet();
   });
 
-  // Drag and drop of files anywhere in the window.
+  // Drag and drop of files anywhere in the window (only when pad HUD is visible).
   let dragDepth = 0;
-  const isFileDrag = (e: DragEvent): boolean =>
-    Array.from(e.dataTransfer?.types ?? []).includes('Files');
+  const hasFiles = (e: DragEvent): boolean => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+  const isFileDrag = (e: DragEvent): boolean => !root.classList.contains('sfb-hidden') && hasFiles(e);
   window.addEventListener('dragenter', (e) => {
     if (!isFileDrag(e)) return;
     e.preventDefault();
@@ -775,18 +979,25 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
     root.classList.add('is-dragging');
   });
   window.addEventListener('dragover', (e) => {
-    if (!isFileDrag(e)) return;
+    if (!hasFiles(e)) return;
+    // Always cancel file drags so the browser never navigates to a dropped file, even
+    // in mission mode or on the title screen where nothing accepts the import.
+    const alreadyHandled = e.defaultPrevented;
     e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    if (!e.dataTransfer) return;
+    if (isFileDrag(e)) e.dataTransfer.dropEffect = 'copy';
+    else if (!alreadyHandled) e.dataTransfer.dropEffect = 'none';
   });
   window.addEventListener('dragleave', (e) => {
-    if (!isFileDrag(e)) return;
+    if (dragDepth === 0) return;
+    if (!Array.from(e.dataTransfer?.types ?? []).includes('Files')) return;
     dragDepth = Math.max(0, dragDepth - 1);
     if (dragDepth === 0) root.classList.remove('is-dragging');
   });
   window.addEventListener('drop', (e) => {
-    if (!isFileDrag(e)) return;
+    if (!hasFiles(e)) return;
     e.preventDefault();
+    if (!isFileDrag(e)) return;
     dragDepth = 0;
     root.classList.remove('is-dragging');
     const file = e.dataTransfer?.files?.[0];
@@ -926,6 +1137,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
       setText(phaseCell, phase);
       setText(tAlt, fmtAltitude(s.altitude));
       setText(tSpeed, `${s.speed.toFixed(1)} m/s`);
+      setText(tAir, `${(s.airspeed ?? s.speed).toFixed(1)} m/s`);
       setText(tMach, s.mach.toFixed(2));
       setText(tAccel, `${s.accelG.toFixed(1)} g`);
       setText(tAoa, `${(s.alpha * DEG_PER_RAD).toFixed(1)}°`);
@@ -1035,7 +1247,11 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
 
     setVisible(visible: boolean): void {
       root.classList.toggle('sfb-hidden', !visible);
-      if (!visible && isMobile) closeSheet();
+      if (!visible) {
+        dragDepth = 0;
+        root.classList.remove('is-dragging');
+        if (isMobile) closeSheet();
+      }
     },
 
     setBuildLabel(label: string): void {

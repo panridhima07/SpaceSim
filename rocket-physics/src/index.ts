@@ -21,6 +21,7 @@ export * from './gnc/guidance.ts';
 export * from './gnc/autopilot.ts';
 export * from './sim/simulation.ts';
 export * from './sim/report.ts';
+export * from './sim/montecarlo.ts';
 export * from './faults/fluids.ts';
 export * from './faults/materials.ts';
 export * from './faults/pressure.ts';

@@ -15,8 +15,8 @@ set "DEVICES="
 for /f "skip=1 tokens=2" %%s in ('adb devices') do if "%%s"=="device" set "DEVICES=1"
 if defined DEVICES goto :build
 
-echo No phone or emulator found. Starting the Android16 emulator...
-start "Android16 emulator" emulator -avd Android16 -no-boot-anim -no-snapshot -gpu swiftshader_indirect
+echo No phone or emulator found. Starting the Android16 emulator (headless; windowed mode hangs on this PC)...
+start "Android16 emulator" /min emulator -avd Android16 -no-window -no-boot-anim -no-snapshot -gpu swiftshader_indirect
 adb wait-for-device
 echo Waiting for Android to finish booting...
 :boot

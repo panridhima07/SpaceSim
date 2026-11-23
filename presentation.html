@@ -1,0 +1,821 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ASTRA Spaceflight — 7-Slide Presentation Deck</title>
+  <style>
+    :root {
+      --bg: #0b0c11;
+      --bg-deep: #06080d;
+      --card: #111622;
+      --card-alt: #151c2c;
+      --border: #24324c;
+      --border-cyan: #3b7ea1;
+      --border-purple: #584e9e;
+      --kicker: #71b7d5;
+      --cyan: #65d2e6;
+      --purple: #9a8fef;
+      --white: #ffffff;
+      --text: #e2ecf8;
+      --muted: #9aa6b8;
+      --dim: #68778d;
+      --green: #7dffb2;
+      --amber: #ffb454;
+      --red: #ff5d6c;
+      --mono: ui-monospace, "Cascadia Code", "SF Mono", "JetBrains Mono", Consolas, monospace;
+      --sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 28px 20px 60px;
+      background: #05070b;
+      color: var(--text);
+      font-family: var(--sans);
+      -webkit-font-smoothing: antialiased;
+    }
+    .toolbar {
+      max-width: 1280px;
+      margin: 0 auto 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 20px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+    .toolbar-title {
+      font-family: var(--mono);
+      font-size: 13px;
+      letter-spacing: 0.14em;
+      color: var(--cyan);
+      text-transform: uppercase;
+    }
+    .toolbar-sub {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .toolbar-btn {
+      appearance: none;
+      background: linear-gradient(180deg, #65d2e6, #46a0e6);
+      color: #031018;
+      font-family: var(--mono);
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 18px;
+      cursor: pointer;
+    }
+    .deck {
+      max-width: 1280px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+    }
+    .slide {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      position: relative;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.65);
+      display: flex;
+      flex-direction: column;
+      padding: 36px 56px 28px;
+    }
+    /* Slide 1 special split layout */
+    .slide.slide-1 {
+      padding: 0;
+      display: grid;
+      grid-template-columns: 62.3% 37.7%;
+    }
+    .s1-left {
+      padding: 64px 56px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+    }
+    .s1-kicker {
+      font-family: var(--mono);
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      color: var(--kicker);
+      margin: 0 0 14px;
+    }
+    .s1-title {
+      font-family: var(--mono);
+      font-size: 62px;
+      font-weight: 700;
+      color: var(--white);
+      letter-spacing: 0.01em;
+      margin: 0 0 22px;
+      line-height: 1.08;
+    }
+    .s1-sub {
+      font-size: 25px;
+      line-height: 1.32;
+      color: var(--cyan);
+      margin: 0 0 24px;
+      max-width: 680px;
+    }
+    .s1-domain {
+      font-size: 17px;
+      line-height: 1.42;
+      color: var(--muted);
+      margin: 0 0 42px;
+      max-width: 680px;
+    }
+    .s1-team-label {
+      font-family: var(--mono);
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      color: var(--purple);
+      margin: 0 0 14px;
+    }
+    .s1-team-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px 36px;
+      max-width: 620px;
+      font-size: 20px;
+      color: var(--white);
+    }
+    .s1-right {
+      background: #010101 url('./public/slide1_space_panel.jpg') center center / cover no-repeat;
+      height: 100%;
+    }
+
+    /* Standard slide chrome (Slides 2..7) */
+    .chrome-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .chrome-kicker-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .chrome-bar {
+      width: 38px;
+      height: 4px;
+      background: var(--cyan);
+      border-radius: 2px;
+    }
+    .chrome-kicker {
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      color: var(--kicker);
+      text-transform: uppercase;
+    }
+    .chrome-num {
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      color: var(--cyan);
+      background: var(--card);
+      border: 1px solid var(--border);
+      padding: 5px 14px;
+      border-radius: 999px;
+    }
+    .chrome-title {
+      font-family: var(--mono);
+      font-size: 32px;
+      font-weight: 700;
+      color: var(--white);
+      margin: 0 0 6px;
+    }
+    .chrome-sub {
+      font-size: 16px;
+      color: var(--cyan);
+      margin: 0 0 20px;
+    }
+    .slide-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 0;
+    }
+    .chrome-footer {
+      margin-top: 16px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      color: var(--dim);
+    }
+
+    /* Grids & Cards */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      flex: 1;
+    }
+    .grid-2x2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
+      gap: 18px;
+      flex: 1;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 18px;
+      flex: 1;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 20px;
+      position: relative;
+      overflow: hidden;
+    }
+    .card-alt {
+      background: var(--card-alt);
+    }
+    .card-top-bar {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 5px;
+    }
+    .card-left-bar {
+      position: absolute;
+      top: 0; bottom: 0; left: 0;
+      width: 6px;
+    }
+    .eyebrow {
+      font-family: var(--mono);
+      font-size: 11.5px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    .card h3 {
+      font-size: 19px;
+      color: var(--white);
+      margin: 0 0 8px;
+    }
+    .card p, .card li {
+      font-size: 13.5px;
+      line-height: 1.42;
+      color: var(--text);
+      margin: 0 0 6px;
+    }
+    .card ul {
+      margin: 0;
+      padding-left: 16px;
+    }
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .kpi-card {
+      background: var(--card-alt);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+      text-align: center;
+    }
+    .kpi-val {
+      font-family: var(--mono);
+      font-size: 28px;
+      font-weight: 700;
+    }
+    .kpi-lbl {
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      color: var(--white);
+      margin-top: 2px;
+    }
+    .kpi-sub {
+      font-size: 11.5px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    table.bench {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.5px;
+      margin-top: 8px;
+    }
+    table.bench th {
+      background: var(--card-alt);
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 6px 8px;
+      text-align: left;
+    }
+    table.bench td {
+      padding: 5.5px 8px;
+      border-bottom: 1px solid rgba(36, 50, 76, 0.5);
+    }
+    table.bench td.mono {
+      font-family: var(--mono);
+    }
+    .avatar-row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .avatar {
+      width: 52px;
+      height: 52px;
+      border-radius: 12px;
+      background: var(--card-alt);
+      border: 2px solid var(--cyan);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--mono);
+      font-size: 18px;
+      font-weight: 700;
+      flex: none;
+    }
+
+    @media print {
+      body { background: #0b0c11; padding: 0; }
+      .toolbar { display: none; }
+      .deck { gap: 0; max-width: none; }
+      .slide {
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+        page-break-after: always;
+        break-after: page;
+        width: 100vw;
+        height: 100vh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <div>
+      <div class="toolbar-title">ASTRA Spaceflight · 7-Slide Presentation Deck</div>
+      <div class="toolbar-sub">PowerPoint file generated at <code>ASTRA_Spaceflight_Presentation.pptx</code> · Print this page (Ctrl+P) for vector PDF export</div>
+    </div>
+    <button class="toolbar-btn" onclick="window.print()">Print / Save PDF</button>
+  </div>
+
+  <div class="deck">
+    <!-- SLIDE 1 -->
+    <section class="slide slide-1">
+      <div class="s1-left">
+        <p class="s1-kicker">ASTRA 2026 · ANTERiX · VIT BHOPAL UNIVERSITY</p>
+        <h1 class="s1-title">ASTRA Spaceflight</h1>
+        <p class="s1-sub">A mobile game that makes every rocket design playable, on missions from Mercury to Jupiter.</p>
+        <p class="s1-domain">Domain 05: Moon, Mars &amp; Deep-Space Exploration, merged with Domain 01: Indian Space Missions &amp; Space Data</p>
+        <p class="s1-team-label">TEAM</p>
+        <div class="s1-team-grid">
+          <div>Ridhima Pandey (Team Lead)</div>
+          <div>Kshitij Jha</div>
+          <div>Vidit Agarwal</div>
+          <div>Medhansh Khattar</div>
+        </div>
+      </div>
+      <div class="s1-right"></div>
+    </section>
+
+    <!-- SLIDE 2 -->
+    <section class="slide">
+      <div class="chrome-top">
+        <div class="chrome-kicker-wrap"><div class="chrome-bar"></div><div class="chrome-kicker">PROBLEM &amp; DUAL-DOMAIN VISION</div></div>
+        <div class="chrome-num">02 / 07</div>
+      </div>
+      <h2 class="chrome-title">Bridging Desktop Rocket CAD &amp; Interactive Spaceflight</h2>
+      <p class="chrome-sub">Why student rocketry teams and space enthusiasts need a unified 3D physics sandbox on Web &amp; Mobile.</p>
+      <div class="slide-body">
+        <div class="grid-2">
+          <div style="display:flex;flex-direction:column;gap:14px;">
+            <div class="eyebrow" style="color:var(--purple);">THE GAPS IN EXISTING TOOLS</div>
+            <div class="card" style="padding-left:24px;">
+              <div class="card-left-bar" style="background:var(--red);"></div>
+              <div class="eyebrow" style="color:var(--red);">01 · DESKTOP-BOUND 2D ROCKET CAD</div>
+              <h3>OpenRocket Cannot Run at the Launch Pad</h3>
+              <p>Student rocket teams design in OpenRocket (<code>.ork</code>), which is locked to desktop Java, offers only static 2D schematics, and cannot be inspected or flown on phones in the field.</p>
+            </div>
+            <div class="card" style="padding-left:24px;">
+              <div class="card-left-bar" style="background:var(--amber);"></div>
+              <div class="eyebrow" style="color:var(--amber);">02 · OPAQUE FLIGHT FAILURES</div>
+              <h3>Raw CSV Plots Hide Why a Rocket Failed</h3>
+              <p>When a design tumbles, weathercocks, or shreds fins, 2D charts do not show 3D force vectors (CG vs CP) or explain which component caused the instability and how to fix it.</p>
+            </div>
+            <div class="card" style="padding-left:24px;">
+              <div class="card-left-bar" style="background:var(--cyan);"></div>
+              <div class="eyebrow" style="color:var(--cyan);">03 · DISCONNECTED ISRO &amp; DEEP-SPACE DATA</div>
+              <h3>Arcade Mobile Sims vs Static ISRO Telemetry</h3>
+              <p>Mobile games simplify orbital physics, while real ISRO mission data (LVM3-M4, Chandrayaan-3, RH-200) sits in static tables instead of an interactive 3D world.</p>
+            </div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:14px;">
+            <div class="eyebrow" style="color:var(--cyan);">THE ASTRA SPACEFLIGHT SOLUTION</div>
+            <div class="card card-alt" style="border-color:var(--border-cyan);flex:1;">
+              <div class="eyebrow" style="color:var(--cyan);">DOMAIN 05 · MOON, MARS &amp; DEEP-SPACE EXPLORATION</div>
+              <h3>Solar-System 3D Sandbox + Lunar Powered Descent</h3>
+              <ul>
+                <li>True-scale JPL Keplerian Solar System (Sun, 8 planets from Mercury to Neptune, Moon) with d3-celestial star catalog &amp; time warp up to 100,000×.</li>
+                <li>Interactive 6-DOF Powered Lunar Descent from 100 km perilune to touchdown with procedural boulder fields, slope hazard maps, and manual/autopilot guidance.</li>
+              </ul>
+            </div>
+            <div class="card card-alt" style="border-color:var(--border-purple);flex:1;">
+              <div class="eyebrow" style="color:var(--purple);">DOMAIN 01 · INDIAN SPACE MISSIONS &amp; SPACE DATA</div>
+              <h3>Sriharikota Launch Complex &amp; ISRO Fleet Validation</h3>
+              <ul>
+                <li>Default launch site at SDSC SHAR Sriharikota (13.72°N, 80.23°E) on a rotating WGS-84 ellipsoid Earth with local GMST sky alignment.</li>
+                <li>Fly ISRO LVM3-M4 (Chandrayaan-3) to its 170 × 36,500 km GTO against 14 July 2023 flight timestamps, plus the 2-stage ISRO RH-200 Rohini sounding rocket.</li>
+              </ul>
+            </div>
+            <div class="card" style="padding:12px 18px;text-align:center;">
+              <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--green);letter-spacing:0.1em;">ONE CODEBASE, TWO BUILDS: </span>
+              <span style="font-size:13px;font-weight:700;color:var(--white);">Offline-First PWA Web App + Native Capacitor Android APK</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="chrome-footer">
+        <span>ASTRA SPACEFLIGHT · ASTRA 2026 · ANTERiX · VIT BHOPAL UNIVERSITY</span>
+        <span>DOMAIN 05 + DOMAIN 01 · BUILD · LAUNCH · EXPLORE · LAND</span>
+      </div>
+    </section>
+
+    <!-- SLIDE 3 -->
+    <section class="slide">
+      <div class="chrome-top">
+        <div class="chrome-kicker-wrap"><div class="chrome-bar"></div><div class="chrome-kicker">PRODUCT EXPERIENCE · BUILD · LAUNCH · EXPLORE · LAND</div></div>
+        <div class="chrome-num">03 / 07</div>
+      </div>
+      <h2 class="chrome-title">Four Integrated Modes in One 3D World</h2>
+      <p class="chrome-sub">From snapping airframe tubes together to orbital staging and lunar touchdown.</p>
+      <div class="slide-body">
+        <div class="grid-2x2">
+          <div class="card">
+            <div class="card-top-bar" style="background:var(--cyan);"></div>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div class="eyebrow" style="color:var(--cyan);">MODE 01 · BUILD</div>
+              <div class="eyebrow" style="color:var(--muted);font-size:10.5px;">40+ Parts · 8 Categories · .ork Round-Trip</div>
+            </div>
+            <h3>3D Rocket Builder &amp; OpenRocket CAD</h3>
+            <ul>
+              <li>Drag-and-drop or tap-to-snap 3D assembly across Nose Cones, Body Tubes, Transitions, Fins, Motor Mounts, Parachutes, Payloads &amp; Rings.</li>
+              <li>Native OpenRocket (<code>.ork</code> zip/XML) &amp; RASP (<code>.eng</code>) import and export — round-trip verified on geometry, mass, CG, CP, and CNα.</li>
+              <li>Multi-stage decouplers, 2×/3×/4× radial strap-on boosters, cutaway internal X-ray view, and automatic Best / OK / Bad workmanship grading.</li>
+            </ul>
+          </div>
+
+          <div class="card">
+            <div class="card-top-bar" style="background:var(--green);"></div>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div class="eyebrow" style="color:var(--green);">MODE 02 · LAUNCH &amp; DIAGNOSE</div>
+              <div class="eyebrow" style="color:var(--muted);font-size:10.5px;">2 ms RK4 · 20+ Motors · 19-Flight Sweep</div>
+            </div>
+            <h3>6-DOF Pad Flight &amp; Flaw Analyzer</h3>
+            <ul>
+              <li>Barrowman aerodynamics (normal-force slope, CP per part, pitch damping, skin/base/pressure drag + transonic wave Cd) in an ISA atmosphere to 86 km.</li>
+              <li>Rule-based Flaw Analyzer catches 11+ failure modes (Unstable, Over-stable, Fin Flutter, Hard Landing, Thermal/Pressure faults) with timestamps &amp; fixes.</li>
+              <li>Interactive replay pauses at each flaw with live 3D force arrows (Thrust, Drag, Normal force at CP, Weight at CG) + 19-flight wind/rail stress sweep.</li>
+            </ul>
+          </div>
+
+          <div class="card">
+            <div class="card-top-bar" style="background:var(--purple);"></div>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div class="eyebrow" style="color:var(--purple);">MODE 03 · ISRO MISSION</div>
+              <div class="eyebrow" style="color:var(--muted);font-size:10.5px;">S200 + L110 + C25 · 12 Health Bars · IIP Track</div>
+            </div>
+            <h3>LVM3-M4 Orbital Ascent &amp; Fault Lab</h3>
+            <ul>
+              <li>Full 6-DOF orbital launcher from Sriharikota with closed-loop Linear-Tangent guidance, J2–J4 gravity harmonics, and vacuum-expanding two-cone exhaust plumes.</li>
+              <li>Live event timeline compares simulated vs actual 14 July 2023 LVM3-M4 staging (S200 sep 126.7s vs 127.0s, L110 sep 307.1s vs 305.6s).</li>
+              <li>Destructive Fault Injection Lab: trigger Gimbal Lock, Vikas Engine-Out, C25 Shutdown, Blocked Fairing Vent, or Tank Overpressure with live Bay of Bengal IIP impact rings.</li>
+            </ul>
+          </div>
+
+          <div class="card">
+            <div class="card-top-bar" style="background:var(--amber);"></div>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div class="eyebrow" style="color:var(--amber);">MODE 04 · DEEP SPACE &amp; MOON</div>
+              <div class="eyebrow" style="color:var(--muted);font-size:10.5px;">69.37°S, 32.35°E · 3-Nested Meshes · Auto/Manual</div>
+            </div>
+            <h3>Shiv Shakti Lunar Powered Descent</h3>
+            <ul>
+              <li>Deorbit from a 100 km polar lunar orbit through Braking, Approach, and Terminal descent phases to the Chandrayaan-3 Shiv Shakti landing site.</li>
+              <li>Multi-resolution lunar regolith heightfield (240 m rock-field, 1.6 km approach patch, full Moon globe) with real-time footpad slope &amp; boulder hazard classification.</li>
+              <li>Fly hands-on with touch/keyboard pitch, roll &amp; throttle controls or watch closed-loop PD attitude + terminal descent guidance score your touchdown.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="chrome-footer">
+        <span>ASTRA SPACEFLIGHT · ASTRA 2026 · ANTERiX · VIT BHOPAL UNIVERSITY</span>
+        <span>DOMAIN 05 + DOMAIN 01 · BUILD · LAUNCH · EXPLORE · LAND</span>
+      </div>
+    </section>
+
+    <!-- SLIDE 4 -->
+    <section class="slide">
+      <div class="chrome-top">
+        <div class="chrome-kicker-wrap"><div class="chrome-bar"></div><div class="chrome-kicker">SYSTEM ARCHITECTURE &amp; SIMULATION CORE</div></div>
+        <div class="chrome-num">04 / 07</div>
+      </div>
+      <h2 class="chrome-title">Dual 6-DOF Physics Engines, One Unified FlightRecord Contract</h2>
+      <p class="chrome-sub">Decoupling high-rate aerodynamic &amp; orbital solvers from 60 FPS floating-origin WebGL rendering.</p>
+      <div class="slide-body" style="gap:14px;">
+        <div class="card card-alt" style="border-color:var(--border-cyan);padding:12px 20px;">
+          <div class="eyebrow" style="color:var(--cyan);margin-bottom:4px;">PRESENTATION &amp; HUD LAYER (src/app + landing.html) · Unified .sfb-root Glass UI · Desktop &amp; 44px Mobile Touch HUD</div>
+          <div style="font-size:14px;font-weight:700;color:var(--white);">Mode Switcher · 3D Builder Inspector · Flight Telemetry Strip · Flaw &amp; Health Panels · Interactive Timeline Scrubber · 1×–100,000× Time Warp</div>
+        </div>
+
+        <div class="grid-3">
+          <div class="card">
+            <div class="card-top-bar" style="background:var(--green);"></div>
+            <div class="eyebrow" style="color:var(--green);">ENGINE A · DESIGN &amp; SOUNDING SIM</div>
+            <h3>Barrowman 6-DOF (src/physics)</h3>
+            <ul>
+              <li>Fixed 2 ms RK4 integration with quaternion attitude &amp; dynamic CG/inertia as motors burn.</li>
+              <li>Per-part normal force (CNα) &amp; CP, body lift, pitch damping, skin/base/pressure + transonic wave drag.</li>
+              <li>Multi-stage separation, delayed ignition, dual parachute recovery, wind gusts &amp; 11+ flaw rules.</li>
+            </ul>
+          </div>
+
+          <div class="card card-alt" style="border-color:var(--border-purple);">
+            <div class="card-top-bar" style="background:var(--purple);"></div>
+            <div class="eyebrow" style="color:var(--purple);">BRIDGE · WEB WORKER &amp; CONTRACT</div>
+            <h3>FlightRecord + ECI Adapter</h3>
+            <ul>
+              <li>Non-blocking Web Worker computes full orbital ascents off-thread and streams <code>FlightRecord</code> samples.</li>
+              <li>Exact orthogonal frame map: Z-up ECI (body +X nose) → Y-up App (body +Y nose) via <code>(x, z, -y)</code> &amp; <code>qApp = Cq·q·Bq</code>.</li>
+              <li>Snapshot interpolator drives deterministic forward/backward scrubbing, staging &amp; trajectory draw ranges.</li>
+            </ul>
+          </div>
+
+          <div class="card">
+            <div class="card-top-bar" style="background:var(--amber);"></div>
+            <div class="eyebrow" style="color:var(--amber);">ENGINE B · ORBITAL &amp; LUNAR SIM</div>
+            <h3>Orbital 6-DOF (rocket-physics + lunar)</h3>
+            <ul>
+              <li>WGS-84 rotating Earth, J2/J3/J4 harmonics, US Standard Atmosphere 1976 to 1000 km &amp; Sutton-Graves heating.</li>
+              <li>Linear-Tangent closed-loop guidance, oblateness apogee compensation, Lambert transfer &amp; Dormand-Prince RK5(4).</li>
+              <li>FaultMonitor tracks 12 structural/thermal/propulsion health channels (ullage pressure, cavitation, skin temp).</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="card" style="padding:12px 20px;">
+          <div class="eyebrow" style="color:var(--cyan);margin-bottom:4px;">3D FLOATING-ORIGIN RENDERER (Three.js r170 · Logarithmic Depth Buffer) · Zero jitter from 1 mm rail buttons to 10⁹ km planetary orbits</div>
+          <p style="margin:0 0 3px;font-size:13px;">• <strong>Procedural Mesh Pipeline:</strong> Exact geometry from <code>.ork</code> / <code>VehicleSpec</code> · Cutaway internals · Two-cone vacuum-expanding plumes · Booster &amp; fairing separation kinematics</p>
+          <p style="margin:0;font-size:13px;">• <strong>Single TypeScript + Vite Build:</strong> Offline Service Worker PWA (<code>dist/</code>) + Capacitor 8 Android APK (<code>android/</code>) with native file export &amp; 60 FPS WebView performance</p>
+        </div>
+      </div>
+      <div class="chrome-footer">
+        <span>ASTRA SPACEFLIGHT · ASTRA 2026 · ANTERiX · VIT BHOPAL UNIVERSITY</span>
+        <span>DOMAIN 05 + DOMAIN 01 · BUILD · LAUNCH · EXPLORE · LAND</span>
+      </div>
+    </section>
+
+    <!-- SLIDE 5 -->
+    <section class="slide">
+      <div class="chrome-top">
+        <div class="chrome-kicker-wrap"><div class="chrome-bar"></div><div class="chrome-kicker">VALIDATION &amp; BENCHMARKS · 1,037 AUTOMATED UNIT TESTS</div></div>
+        <div class="chrome-num">05 / 07</div>
+      </div>
+      <h2 class="chrome-title">Verified Against OpenRocket &amp; ISRO LVM3-M4 Flight Data</h2>
+      <p class="chrome-sub">Every solver, frame transformation, and 3D mesh is pinned against analytical or real-flight benchmarks.</p>
+      <div class="slide-body">
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <div class="kpi-val" style="color:var(--green);">1,037</div>
+            <div class="kpi-lbl">UNIT TESTS PASSING</div>
+            <div class="kpi-sub">797 App + 240 Orbital Engine</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-val" style="color:var(--cyan);">&lt; 4.5%</div>
+            <div class="kpi-lbl">OPENROCKET APOGEE ERR</div>
+            <div class="kpi-sub">Well inside 10% target band</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-val" style="color:var(--purple);">0.3 s</div>
+            <div class="kpi-lbl">LVM3 S200 SEP DELTA</div>
+            <div class="kpi-sub">126.7 s sim vs 127.0 s ISRO flight</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-val" style="color:var(--amber);">67 / 67</div>
+            <div class="kpi-lbl">3D MESH AUDIT DESIGNS</div>
+            <div class="kpi-sub">62 mock + 5 real .ork files verified</div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-top-bar" style="background:var(--cyan);"></div>
+            <div class="eyebrow" style="color:var(--cyan);">BENCHMARK 1 · OPENROCKET 6-DOF VALIDATION</div>
+            <h3>Multi-Flight Comparison Against Stored OpenRocket Sims</h3>
+            <table class="bench">
+              <thead>
+                <tr><th>Metric / Reference Design</th><th>Flights</th><th>Measured Error</th><th>Target</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Design 1: Apogee Altitude</td><td class="mono">5 sims</td><td class="mono" style="color:var(--green);font-weight:700;">-1.9% to -4.3%</td><td class="mono">&lt; 10%</td></tr>
+                <tr><td>Design 1: Max Velocity</td><td class="mono">5 sims</td><td class="mono" style="color:var(--green);font-weight:700;">-2.2% to -2.9%</td><td class="mono">&lt; 10%</td></tr>
+                <tr><td>Design 1: Time to Apogee</td><td class="mono">5 sims</td><td class="mono" style="color:var(--green);font-weight:700;">Within ±1.1%</td><td class="mono">&lt; 10%</td></tr>
+                <tr><td>Design 1: Rail Exit Speed</td><td class="mono">5 sims</td><td class="mono" style="color:var(--green);font-weight:700;">-1.9% to -3.4%</td><td class="mono">&lt; 10%</td></tr>
+                <tr><td>Design 2 (Dual-Deploy, M 1.1): Apogee</td><td class="mono">6 sims</td><td class="mono" style="color:var(--green);font-weight:700;">-1.0% to -5.4%</td><td class="mono">&lt; 10%</td></tr>
+                <tr><td>Design 2 (Dual-Deploy, M 1.1): Max Speed</td><td class="mono">6 sims</td><td class="mono" style="color:var(--green);font-weight:700;">-0.1% to -2.3%</td><td class="mono">&lt; 10%</td></tr>
+                <tr><td>Design 2 (Dual-Deploy, M 1.1): Rail Exit</td><td class="mono">6 sims</td><td class="mono" style="color:var(--green);font-weight:700;">-3.1% to +0.6%</td><td class="mono">&lt; 10%</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="card">
+            <div class="card-top-bar" style="background:var(--purple);"></div>
+            <div class="eyebrow" style="color:var(--purple);">BENCHMARK 2 · ISRO LVM3-M4 (14 JULY 2023) &amp; FAULT LAB</div>
+            <h3>Simulated Ascent vs Actual Telemetry &amp; Failure Cases</h3>
+            <table class="bench">
+              <thead>
+                <tr><th style="color:var(--purple);">LVM3-M4 Event / Scenario</th><th style="color:var(--purple);">Astra Sim</th><th style="color:var(--purple);">ISRO Actual</th><th style="color:var(--purple);">Outcome</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>L110 Core Vikas Ignition</td><td class="mono">T+ 108.0 s</td><td class="mono">T+ 108.1 s</td><td class="mono" style="color:var(--green);">Nominal (-0.1 s)</td></tr>
+                <tr><td>S200 Solid Booster Separation</td><td class="mono">T+ 126.7 s</td><td class="mono">T+ 127.0 s</td><td class="mono" style="color:var(--green);">Nominal (-0.3 s)</td></tr>
+                <tr><td>L110 Core Stage Separation</td><td class="mono">T+ 307.1 s</td><td class="mono">T+ 305.6 s</td><td class="mono" style="color:var(--green);">Nominal (+1.5 s)</td></tr>
+                <tr><td>C25 Cryogenic Stage Ignition</td><td class="mono">T+ 309.5 s</td><td class="mono">T+ 308.0 s</td><td class="mono" style="color:var(--green);">Nominal (+1.5 s)</td></tr>
+                <tr><td>C25 Cutoff &amp; GTO Insertion</td><td class="mono">170×36,501 km</td><td class="mono">170×36,500 km</td><td class="mono" style="color:var(--green);">Target Reached</td></tr>
+                <tr><td>Fault: 1 Vikas Engine Out</td><td class="mono">T+ 1090.2 s</td><td class="mono">Closed-Loop</td><td class="mono" style="color:var(--green);">GTO Reached</td></tr>
+                <tr><td>Fault: Gimbal Lock / Vent Blocked</td><td class="mono">T+ 41.5 / 32.9 s</td><td class="mono">Breakup</td><td class="mono" style="color:var(--amber);">Bay of Bengal IIP</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="chrome-footer">
+        <span>ASTRA SPACEFLIGHT · ASTRA 2026 · ANTERiX · VIT BHOPAL UNIVERSITY</span>
+        <span>DOMAIN 05 + DOMAIN 01 · BUILD · LAUNCH · EXPLORE · LAND</span>
+      </div>
+    </section>
+
+    <!-- SLIDE 6: DEDICATED TEAM MEMBERS SLIDE -->
+    <section class="slide">
+      <div class="chrome-top">
+        <div class="chrome-kicker-wrap"><div class="chrome-bar"></div><div class="chrome-kicker">THE TEAM BEHIND ASTRA SPACEFLIGHT</div></div>
+        <div class="chrome-num">06 / 07</div>
+      </div>
+      <h2 class="chrome-title">Team Members &amp; Engineering Ownership</h2>
+      <p class="chrome-sub">Four builders uniting 6-DOF flight dynamics, orbital guidance, 3D WebGL graphics, and mobile UX.</p>
+      <div class="slide-body">
+        <div class="grid-2x2">
+          <div class="card" style="padding-left:24px;">
+            <div class="card-left-bar" style="background:var(--purple);"></div>
+            <div class="avatar-row">
+              <div class="avatar" style="border-color:var(--purple);color:var(--purple);">RP</div>
+              <div>
+                <h3 style="margin:0 0 2px;">Ridhima Pandey</h3>
+                <div style="font-size:13px;font-weight:700;color:var(--purple);">Team Lead · Product Architecture &amp; 3D Rocket Builder</div>
+                <div style="font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:2px;">System Architecture · 3D Builder &amp; Snap Engine · .ork CAD Export</div>
+              </div>
+            </div>
+            <ul>
+              <li>Led product vision merging Domain 05 (Deep-Space Exploration) and Domain 01 (Indian Space Missions) into one unified 3D platform.</li>
+              <li>Architected the 40+ preset 3D Rocket Builder, raycast part picking, live property inspector, multi-stage decouplers, and radial boosters.</li>
+              <li>Built the round-trip OpenRocket (<code>.ork</code>) exporter, engineering challenges system, and unified <code>.sfb-root</code> glass UI token system.</li>
+            </ul>
+          </div>
+
+          <div class="card" style="padding-left:24px;">
+            <div class="card-left-bar" style="background:var(--cyan);"></div>
+            <div class="avatar-row">
+              <div class="avatar" style="border-color:var(--cyan);color:var(--cyan);">VA</div>
+              <div>
+                <h3 style="margin:0 0 2px;">Vidit Agarwal</h3>
+                <div style="font-size:13px;font-weight:700;color:var(--cyan);">Aerodynamics &amp; 6-DOF Suborbital Physics Lead</div>
+                <div style="font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:2px;">Barrowman Aerodynamics · OpenRocket Parser · Flaw Analyzer</div>
+              </div>
+            </div>
+            <ul>
+              <li>Engineered the OpenRocket (<code>.ork</code> zip/gzip/XML) parser, RASP (<code>.eng</code>) ThrustCurve motor table, and dynamic per-component mass/CG/inertia solver.</li>
+              <li>Implemented the 2 ms RK4 6-DOF Barrowman aerodynamics engine with transonic wave drag, multi-stage ignition, and dual parachute recovery.</li>
+              <li>Created the rule-based pre-flight &amp; post-flight Flaw Analyzer, environmental fault diagnostics, and 19-flight parameter stress sweep.</li>
+            </ul>
+          </div>
+
+          <div class="card" style="padding-left:24px;">
+            <div class="card-left-bar" style="background:var(--green);"></div>
+            <div class="avatar-row">
+              <div class="avatar" style="border-color:var(--green);color:var(--green);">KJ</div>
+              <div>
+                <h3 style="margin:0 0 2px;">Kshitij Jha</h3>
+                <div style="font-size:13px;font-weight:700;color:var(--green);">Orbital Mechanics, GNC &amp; ISRO Mission Mode Lead</div>
+                <div style="font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:2px;">LVM3-M4 GNC Autopilot · 12-Channel FaultMonitor · Lunar Descent</div>
+              </div>
+            </div>
+            <ul>
+              <li>Built the dependency-free <code>rocket-physics</code> orbital engine: WGS-84 rotating Earth, J2–J4 harmonics, Linear-Tangent guidance, and Lambert solver.</li>
+              <li>Developed the 12-channel structural/thermal/propulsion FaultMonitor, destructive failure injection lab, and Instantaneous Impact Point (IIP) predictor.</li>
+              <li>Implemented the 6-DOF Chandrayaan-3 Shiv Shakti lunar powered descent simulator with procedural boulder hazard maps and autopilot/manual controls.</li>
+            </ul>
+          </div>
+
+          <div class="card" style="padding-left:24px;">
+            <div class="card-left-bar" style="background:var(--amber);"></div>
+            <div class="avatar-row">
+              <div class="avatar" style="border-color:var(--amber);color:var(--amber);">MK</div>
+              <div>
+                <h3 style="margin:0 0 2px;">Medhansh Khattar</h3>
+                <div style="font-size:13px;font-weight:700;color:var(--amber);">3D WebGL Rendering, Solar System &amp; Mobile Lead</div>
+                <div style="font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:2px;">Floating-Origin Three.js · Mesh Quality Audit · Android Capacitor APK</div>
+              </div>
+            </div>
+            <ul>
+              <li>Built the floating-origin 3D rendering pipeline, logarithmic depth buffer solar system, GMST sky alignment, and d3-celestial constellation overlay.</li>
+              <li>Crafted procedural 3D part geometry with Best/OK/Bad workmanship grading (verified across 67 designs), cutaway internals, and vacuum-expanding plumes.</li>
+              <li>Delivered the LVM3 3D launch complex, staging kinematics, offline Service Worker PWA, and native Capacitor Android app with 44 px touch ergonomics.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="chrome-footer">
+        <span>ASTRA SPACEFLIGHT · ASTRA 2026 · ANTERiX · VIT BHOPAL UNIVERSITY</span>
+        <span>DOMAIN 05 + DOMAIN 01 · BUILD · LAUNCH · EXPLORE · LAND</span>
+      </div>
+    </section>
+
+    <!-- SLIDE 7 -->
+    <section class="slide">
+      <div class="chrome-top">
+        <div class="chrome-kicker-wrap"><div class="chrome-bar"></div><div class="chrome-kicker">IMPACT, ROADMAP &amp; LIVE DEMO</div></div>
+        <div class="chrome-num">07 / 07</div>
+      </div>
+      <h2 class="chrome-title">From Student Launch Pads to Interplanetary Missions</h2>
+      <p class="chrome-sub">Ready to play today in any browser or Android phone — built to scale across the solar system.</p>
+      <div class="slide-body">
+        <div class="grid-3">
+          <div class="card">
+            <div class="card-top-bar" style="background:var(--cyan);"></div>
+            <div class="eyebrow" style="color:var(--cyan);">01 · REAL-WORLD IMPACT</div>
+            <h3>Who Uses ASTRA Today</h3>
+            <p><strong style="color:var(--cyan);">Student Rocketry Clubs &amp; IN-SPACe Teams</strong><br/>Drop any OpenRocket (<code>.ork</code>) design on a phone at the launch field to check stability margin, rail exit speed, fin flutter, and wind sensitivity before lighting the motor.</p>
+            <p><strong style="color:var(--green);">Aerospace Educators &amp; STEM Labs</strong><br/>Teach Barrowman aerodynamics, 6-DOF attitude control, orbital staging, and lunar descent visually with live force vectors and destructive fault injection.</p>
+            <p><strong style="color:var(--purple);">ISRO Mission Enthusiasts</strong><br/>Experience Indian spaceflight hands-on — from RH-200 sounding hops at Sriharikota to LVM3-M4 GTO insertion and Chandrayaan-3 touchdown.</p>
+          </div>
+
+          <div class="card">
+            <div class="card-top-bar" style="background:var(--purple);"></div>
+            <div class="eyebrow" style="color:var(--purple);">02 · ROADMAP TO JUPITER</div>
+            <h3>Expanding the Mission Fleet</h3>
+            <p><strong style="color:var(--purple);">Phase A · Custom Liquid Orbital Builder</strong><br/>Let players assemble custom kerolox, methalox, and hydrolox multi-stage orbital launchers in the 3D builder and fly them straight into the orbital engine.</p>
+            <p><strong style="color:var(--cyan);">Phase B · PSLV, Gaganyaan &amp; Mangalyaan</strong><br/>Add ISRO PSLV-XL, Gaganyaan crewed abort scenarios, and Mars Orbiter Mission (MOM) trans-Mars Lambert injection windows.</p>
+            <p><strong style="color:var(--amber);">Phase C · Mercury to Jupiter Transfers</strong><br/>Unlock interactive gravity-assist trajectories across the rendered Solar System from Mercury and Venus aerocapture to Jovian moon tours.</p>
+          </div>
+
+          <div class="card card-alt" style="border-color:var(--border-cyan);">
+            <div class="card-top-bar" style="background:var(--green);"></div>
+            <div class="eyebrow" style="color:var(--green);">03 · LIVE DEMO WALKTHROUGH</div>
+            <h3>90-Second Judge Tour</h3>
+            <p><strong style="color:var(--cyan);">Step 1 · Snap &amp; Grade in 3D Builder</strong><br/>Assemble a 2-stage rocket or drop an <code>.ork</code> file, toggle internal cutaway, and inspect live CG/CP stability.</p>
+            <p><strong style="color:var(--green);">Step 2 · Launch &amp; Inspect Force Vectors</strong><br/>Fly from Sriharikota, pause at a detected flaw with 3D Thrust/Drag/Lift arrows, and run the 19-flight sweep.</p>
+            <p><strong style="color:var(--purple);">Step 3 · Fly LVM3-M4 &amp; Inject a Fault</strong><br/>Watch S200 &amp; L110 staging to GTO, then trigger a Gimbal Lock or Vikas Engine-Out to see live health &amp; IIP impact.</p>
+            <p><strong style="color:var(--amber);">Step 4 · Touch Down at Shiv Shakti Point</strong><br/>Pilot the lunar lander down to 69.37°S, 32.35°E avoiding boulder hazards for a soft landing score.</p>
+          </div>
+        </div>
+      </div>
+      <div class="chrome-footer">
+        <span>ASTRA SPACEFLIGHT · ASTRA 2026 · ANTERiX · VIT BHOPAL UNIVERSITY</span>
+        <span>DOMAIN 05 + DOMAIN 01 · BUILD · LAUNCH · EXPLORE · LAND</span>
+      </div>
+    </section>
+  </div>
+</body>
+</html>

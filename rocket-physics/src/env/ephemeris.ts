@@ -9,6 +9,12 @@ import { scale, sub, type Vec3 } from '../math/vec.ts';
 
 const centuries = (jd: number): number => (jd - 2451545.0) / 36525;
 
+// Last answer of each series, keyed by the Julian Date it was asked for.
+let sunJd = NaN;
+let sunAt: Vec3 = [0, 0, 0];
+let moonJd = NaN;
+let moonAt: Vec3 = [0, 0, 0];
+
 function eclipticToEquatorial(lon: number, lat: number, r: number, T: number): Vec3 {
   const eps = (23.439291 - 0.0130042 * T) * DEG;
   const cl = Math.cos(lat);
@@ -20,15 +26,21 @@ function eclipticToEquatorial(lon: number, lat: number, r: number, T: number): V
 
 /** Geocentric position of the Sun, m. */
 export function sunPosition(jd: number): Vec3 {
+  // An integrator asks for the same instant several times in a row (stage ends coincide).
+  if (jd === sunJd) return [sunAt[0], sunAt[1], sunAt[2]];
   const T = centuries(jd);
   const M = (357.5291092 + 35999.05034 * T) * DEG;
   const lon = (280.46 + 36000.771 * T + 1.914666471 * Math.sin(M) + 0.019994643 * Math.sin(2 * M)) * DEG;
   const r = (1.000140612 - 0.016708617 * Math.cos(M) - 0.000139589 * Math.cos(2 * M)) * AU;
-  return eclipticToEquatorial(lon, 0, r, T);
+  const out = eclipticToEquatorial(lon, 0, r, T);
+  sunJd = jd;
+  sunAt = [out[0], out[1], out[2]];
+  return out;
 }
 
 /** Geocentric position of the Moon, m. */
 export function moonPosition(jd: number): Vec3 {
+  if (jd === moonJd) return [moonAt[0], moonAt[1], moonAt[2]];
   const T = centuries(jd);
   const s = (deg: number): number => Math.sin(deg * DEG);
   const c = (deg: number): number => Math.cos(deg * DEG);
@@ -46,7 +58,10 @@ export function moonPosition(jd: number): Vec3 {
   const parallax =
     0.9508 + 0.0518 * c(134.9 + 477198.85 * T) + 0.0095 * c(259.2 - 413335.38 * T) + 0.0078 * c(235.7 + 890534.23 * T) + 0.0028 * c(269.9 + 954397.7 * T);
   const r = RE / Math.sin(parallax * DEG);
-  return eclipticToEquatorial(lon * DEG, lat * DEG, r, T);
+  const out = eclipticToEquatorial(lon * DEG, lat * DEG, r, T);
+  moonJd = jd;
+  moonAt = [out[0], out[1], out[2]];
+  return out;
 }
 
 /** Geocentric velocity of the Moon, m/s (central difference of the position series). */

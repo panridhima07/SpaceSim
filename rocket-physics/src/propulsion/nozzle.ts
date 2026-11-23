@@ -9,8 +9,29 @@ export function areaRatio(mach: number, gamma: number): number {
   return (1 / mach) * Math.pow((1 + ((gamma - 1) / 2) * mach * mach) / g1, g1 / (gamma - 1));
 }
 
+// The fault monitor asks for the same few (expansion ratio, gamma) pairs on every step, and
+// the bisection below costs 80+ powers. The function is pure, so remembering the last few
+// answers returns exactly the same numbers.
+const MACH_CACHE_SIZE = 8;
+const machEps: number[] = [];
+const machGamma: number[] = [];
+const machValue: number[] = [];
+let machNext = 0;
+
 /** Supersonic Mach number at a given expansion ratio (bisection: the relation has no closed inverse). */
 export function machFromAreaRatio(eps: number, gamma: number): number {
+  for (let i = 0; i < machEps.length; i++) {
+    if (machEps[i] === eps && machGamma[i] === gamma) return machValue[i];
+  }
+  const m = solveMachFromAreaRatio(eps, gamma);
+  machEps[machNext] = eps;
+  machGamma[machNext] = gamma;
+  machValue[machNext] = m;
+  machNext = (machNext + 1) % MACH_CACHE_SIZE;
+  return m;
+}
+
+function solveMachFromAreaRatio(eps: number, gamma: number): number {
   let lo = 1;
   let hi = 2;
   while (areaRatio(hi, gamma) < eps) hi *= 2;

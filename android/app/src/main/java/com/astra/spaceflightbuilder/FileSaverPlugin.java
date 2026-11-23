@@ -24,12 +24,20 @@ import java.io.OutputStream;
 @CapacitorPlugin(name = "FileSaver")
 public class FileSaverPlugin extends Plugin {
 
+    /** Largest accepted base64 payload (~50 MB decoded); larger files are rejected before decoding. */
+    private static final int MAX_BASE64_CHARS = 70 * 1024 * 1024;
+    private static final String TOO_LARGE = "File is too large to save";
+
     @PluginMethod
     public void save(PluginCall call) {
         String name = call.getString("name");
         String data = call.getString("data");
         if (name == null || data == null) {
             call.reject("name and data are required");
+            return;
+        }
+        if (data.length() > MAX_BASE64_CHARS) {
+            call.reject(TOO_LARGE);
             return;
         }
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
@@ -49,13 +57,20 @@ public class FileSaverPlugin extends Plugin {
             call.resolve(ret);
             return;
         }
+        String data = call.getString("data");
+        if (data == null || data.length() > MAX_BASE64_CHARS) {
+            call.reject(TOO_LARGE);
+            return;
+        }
         Uri uri = picked.getData();
         try (OutputStream out = getContext().getContentResolver().openOutputStream(uri)) {
             if (out == null) throw new java.io.IOException("Could not open the chosen location");
-            out.write(Base64.decode(call.getString("data"), Base64.DEFAULT));
+            out.write(Base64.decode(data, Base64.DEFAULT));
             ret.put("saved", true);
             ret.put("uri", uri.toString());
             call.resolve(ret);
+        } catch (OutOfMemoryError e) {
+            call.reject(TOO_LARGE);
         } catch (Exception e) {
             call.reject("Could not write the file: " + e.getMessage(), e);
         }

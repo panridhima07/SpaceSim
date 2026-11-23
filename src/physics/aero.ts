@@ -3,7 +3,7 @@
 // (Niskanen 2009): skin friction, base drag and pressure drag.
 
 import type { AeroProps, AeroPropsFn, Component, FinSet, NoseCone, RocketModel, Transition } from '../types';
-import { finPlanform, noseLateralArea } from './massprops';
+import { finPlanform, noseLateralArea, noseRadius } from './massprops';
 
 const PI = Math.PI;
 const NU_SEA_LEVEL = 1.5e-5; // m^2/s, kinematic viscosity used for Reynolds number
@@ -150,7 +150,17 @@ function finCountFactor(N: number): number {
   return 0.854;
 }
 
-/** Incompressible Barrowman CNα of a fin set (per radian), referenced to refArea. */
+/**
+ * Incompressible Barrowman CNα of a fin set (per radian), referenced to refArea.
+ *
+ * Body-fin interference: the classical Barrowman report multiplies by Kfb = 1 + rb/(s + rb)
+ * once. The CNα that OpenRocket stores in its own flight data (the `cna` column of the
+ * example .ork files) equals this slope multiplied by Kfb twice: within 0.4 % on "A simple
+ * model rocket" (Kfb 1.294), "Dual parachute deployment" (1.271) and the "Two stage high
+ * power rocket" (1.250 and 1.235), once its body lift term is taken out. A single Kfb read
+ * 18 to 24 % low on all three. OpenRocket is the validation reference, so it is matched
+ * here; src/validate/aeroOpenRocket.test.ts pins it.
+ */
 function finCnAlphaIncompressible(f: FinSet, d: number): number {
   const t = trapOf(f);
   const { Cr, Ct, s, m, rb } = t;
@@ -159,7 +169,54 @@ function finCnAlphaIncompressible(f: FinSet, d: number): number {
   const l = Math.sqrt(s * s + (m + Ct / 2 - Cr / 2) ** 2);
   const Kfb = 1 + rb / (s + rb);
   const denom = 1 + Math.sqrt(1 + (2 * l / (Cr + Ct)) ** 2);
-  return (Kfb * (4 * N * (s / d) ** 2)) / denom * finCountFactor(N);
+  return (Kfb * Kfb * (4 * N * (s / d) ** 2)) / denom * finCountFactor(N);
+}
+
+/** Body lift constant K in CN = K (A_planform / A_ref) sin²α (Galejs; OpenRocket uses 1.1). */
+const BODY_LIFT_K = 1.1;
+
+/**
+ * Side-view (planform) area of the main body, m², and its centroid station from the nose tip.
+ * Body lift acts at that centroid, not at the Barrowman CP. Falls back to the bounding
+ * rectangle when the stack has no body parts.
+ */
+function bodyPlanform(rocket: RocketModel): { area: number; x: number } {
+  let area = 0;
+  let moment = 0;
+  const add = (a: number, x: number): void => {
+    if (a > 0 && Number.isFinite(a) && Number.isFinite(x)) {
+      area += a;
+      moment += a * x;
+    }
+  };
+  for (const c of rocket.components) {
+    if (c.kind === 'bodytube') {
+      add(2 * c.outerRadius * c.length, c.x + c.length / 2);
+    } else if (c.kind === 'transition') {
+      const rf = c.foreRadius;
+      const ra = c.aftRadius;
+      const sum = rf + ra;
+      if (sum > 0) add(sum * c.length, c.x + (c.length * (rf + 2 * ra)) / (3 * sum));
+    } else if (c.kind === 'nosecone' && c.length > 0) {
+      // Midpoint rule over the profile; 32 slices is well under 0.1 % for every shape.
+      const n = 32;
+      const h = c.length / n;
+      let a = 0;
+      let mx = 0;
+      for (let i = 0; i < n; i++) {
+        const s = (i + 0.5) * h;
+        const w = 2 * noseRadius(c.shape, c.baseRadius, c.length, c.shapeParam, s) * h;
+        a += w;
+        mx += w * s;
+      }
+      if (a > 0) {
+        const fromTip = mx / a;
+        add(a, c.flipped ? c.x + c.length - fromTip : c.x + fromTip);
+      }
+    }
+  }
+  if (area > 0) return { area, x: moment / area };
+  return { area: 2 * rocket.maxRadius * rocket.length, x: rocket.length / 2 };
 }
 
 /** Fin CP station, from the body nose tip. */
@@ -486,6 +543,8 @@ export const aeroProps: AeroPropsFn = (rocket: RocketModel, mach: number, cgX: n
     dampSum += e.cn * dx * dx;
   }
 
+  const body = bodyPlanform(rocket);
+
   return {
     refArea,
     refLength,
@@ -493,5 +552,7 @@ export const aeroProps: AeroPropsFn = (rocket: RocketModel, mach: number, cgX: n
     cpX,
     cd: dragBreakdown(rocket, mach).total,
     dampSum,
+    bodyLift: refArea > 0 ? (BODY_LIFT_K * body.area) / refArea : 0,
+    bodyLiftX: body.x,
   };
 };

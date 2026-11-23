@@ -7,6 +7,7 @@ import {
   importDesignJson,
   listSavedDesigns,
   saveDesign,
+  STORAGE_KEY,
   type StorageLike,
 } from './storage';
 import type { BodyTube, NoseCone } from '../types';
@@ -54,5 +55,45 @@ describe('builder/storage', () => {
 
     expect(() => importDesignJson('{bad json')).toThrow();
     expect(() => importDesignJson('{"hello": 1}')).toThrow();
+  });
+});
+
+describe('builder/storage hostile data', () => {
+  const body = { kind: 'bodytube', outerRadius: 0.025, length: 0.3, thickness: 0.001, density: 680 };
+
+  it('importDesignJson sanitizes instead of copying the stack verbatim', () => {
+    const d = importDesignJson(JSON.stringify({
+      stack: [
+        { id: 'x', part: { ...body, outerRadius: 1e9 }, children: [{ id: 'y', part: { kind: 'finset', rootChord: 0.1, span: 0.05, count: 1e9 } }, { part: null }] },
+        { id: 'z' },
+        { id: 'w', part: { kind: 'nope' } },
+      ],
+    }));
+    expect(d.stack).toHaveLength(1);
+    expect(d.stack[0].part.kind === 'bodytube' && d.stack[0].part.outerRadius).toBe(10);
+    expect(d.stack[0].children).toHaveLength(1);
+    expect(() => importDesignJson(JSON.stringify({ stack: [{ id: 'q' }] }))).toThrow();
+  });
+
+  it('listSavedDesigns drops or repairs corrupt entries', () => {
+    const store = memoryStorage();
+    store.setItem(STORAGE_KEY, JSON.stringify([
+      { id: 'bad', savedAt: 1, design: { stack: [{ part: 'x' }] } },
+      { id: 'good', savedAt: 2, design: { id: 'good', name: 'G', stack: [{ id: 'a', part: body, children: [] }], nextId: 5 } },
+    ]));
+    const list = listSavedDesigns(store);
+    expect(list.map((e) => e.id)).toEqual(['good']);
+  });
+
+  it('saveDesign throws a friendly error when storage is full, after retrying without old thumbnails', () => {
+    const calls: string[] = [];
+    const store: StorageLike = {
+      getItem: () => null,
+      setItem: (_k, v) => { calls.push(v); throw new Error('QuotaExceededError'); },
+      removeItem: () => {},
+    };
+    const d = createEmptyDesign('Full');
+    expect(() => saveDesign(d, undefined, store)).toThrow('Storage is full. Delete a saved rocket and try again.');
+    expect(calls).toHaveLength(2);
   });
 });

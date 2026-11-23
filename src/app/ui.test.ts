@@ -87,6 +87,93 @@ describe('createUI', () => {
     expect((cb.onConfig as ReturnType<typeof vi.fn>).mock.calls[0][0].railLength).toBeCloseTo(2.5);
   });
 
+  describe('launch date and weather', () => {
+    const forecast = {
+      source: 'forecast' as const,
+      date: '2026-11-25',
+      hour: 10,
+      temperatureC: 31,
+      pressureHpa: 1006,
+      windSpeed: 9.4,
+      windFromDeg: 135,
+      gustSpeed: 11.75,
+      cloudCover: 40,
+      lowCloudCover: 10,
+      precipChance: 10,
+      visibilityM: 20000,
+      weatherCode: 2,
+      aloft: [{ altitude: 1500, speed: 14, fromDeg: 180 }],
+    };
+
+    const pickDate = (value: string): void => {
+      const date = container.querySelector<HTMLInputElement>('.sfb-weather-grid input[type="date"]') as HTMLInputElement;
+      date.value = value;
+      date.dispatchEvent(new Event('change'));
+    };
+    const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+    it('does not ask for weather until a date is picked', () => {
+      const weather = vi.fn();
+      createUI(container, cb, { weather });
+      expect(weather).not.toHaveBeenCalled();
+      expect(container.querySelector('.sfb-weather')?.textContent).toContain('Pick a launch date');
+    });
+
+    it('loads the weather for the picked date and applies it to the launch settings', async () => {
+      const weather = vi.fn().mockResolvedValue(forecast);
+      const ui = createUI(container, cb, { weather });
+      pickDate('2026-11-25');
+      await settle();
+
+      expect(weather).toHaveBeenCalledWith(expect.objectContaining({ id: 'sdsc' }), '2026-11-25', 10);
+      const cfg = ui.getConfig();
+      expect(cfg.windSpeed).toBeCloseTo(9.4);
+      expect(cfg.windDirection).toBeCloseTo((135 * Math.PI) / 180);
+      expect(cfg.gust).toBeCloseTo(0.25);
+      expect(cfg.groundTemperature).toBeCloseTo(304.15);
+      expect(cfg.groundPressure).toBeCloseTo(100600);
+      expect(cfg.windLayers).toHaveLength(1);
+      expect(cb.onConfig).toHaveBeenCalled();
+
+      const out = container.querySelector('.sfb-weather') as HTMLElement;
+      expect(out.querySelector('.sfb-pill')?.textContent).toBe('No-go');
+      expect(out.textContent).toContain('9.4 m/s from SE');
+      expect(out.textContent).toContain('Winds aloft applied');
+    });
+
+    it('drops the winds aloft when the surface wind is edited by hand', async () => {
+      const ui = createUI(container, cb, { weather: vi.fn().mockResolvedValue(forecast) });
+      pickDate('2026-11-25');
+      await settle();
+      const wind = container.querySelectorAll<HTMLInputElement>('.sfb-launch-grid input')[3];
+      wind.value = '0';
+      wind.dispatchEvent(new Event('input'));
+      const cfg = ui.getConfig();
+      expect(cfg.windSpeed).toBe(0);
+      expect(cfg.windLayers).toBeUndefined();
+    });
+
+    it('keeps the launch settings and says so when the weather cannot be loaded', async () => {
+      const ui = createUI(container, cb, { weather: vi.fn().mockRejectedValue(new Error('offline')) });
+      pickDate('2026-11-25');
+      await settle();
+      expect(container.querySelector('.sfb-weather-error')).not.toBeNull();
+      expect(ui.getConfig().windSpeed).toBe(2);
+      expect(ui.getConfig().groundTemperature).toBeUndefined();
+    });
+
+    it('waits for coordinates on a custom site', () => {
+      const weather = vi.fn().mockResolvedValue(forecast);
+      createUI(container, cb, { weather });
+      const site = container.querySelector<HTMLSelectElement>('.sfb-weather-grid select') as HTMLSelectElement;
+      site.value = 'custom';
+      site.dispatchEvent(new Event('change'));
+      pickDate('2026-11-25');
+      expect(weather).not.toHaveBeenCalled();
+      expect(container.querySelector('.sfb-weather')?.textContent).toContain('latitude and longitude');
+    });
+  });
+
   it('hides the rocket body and shows the hint when setRocket(null)', () => {
     const ui = createUI(container, cb);
     ui.setRocket(null);

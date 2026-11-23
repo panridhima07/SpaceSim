@@ -1,12 +1,15 @@
 // Contract between the DOM UI (ui.ts) and the app glue (main.ts).
 import type { Flaw, FlightEvent, SimConfig, SimState, StressReport } from '../types';
+import type { ExportFormat } from '../io/exporter';
 
 export type CameraMode = 'pad' | 'chase' | 'onboard' | 'map';
 export type ToggleName = 'cutaway' | 'forces' | 'markers' | 'trail';
 
 export interface UICallbacks {
-  /** A .ork or .eng file was dropped or chosen. */
+  /** A rocket or motor file was dropped or chosen. */
   onFile(file: File): void;
+  /** Export the currently loaded rocket in the given format. */
+  onExport?(format: ExportFormat): void;
   onLoadSample(): void;
   onLaunch(): void;
   onReset(): void;

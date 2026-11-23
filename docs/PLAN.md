@@ -99,28 +99,41 @@ app/main: file drop, HUD, launch controls, flaw panel, replay
 | 5 | Chandrayaan mission mode from v3 (Horizons ghost, burn table) on the same solar system | Replay scrubs |
 | 6 | Active control, multi-stage, Earth rotation | — |
 
-## Status (21 Nov 2026)
+## Status (23 Nov 2026)
 
 Phases 1 and 2 are done and most of 3 and 4. Run with `npm install`, then `npm run dev`. `node scripts/fetch-data.mjs` re-downloads motor curves and the OpenRocket example files.
 
-Working: `.ork` import (including the exact motors embedded in the file), 3D rocket with cutaway and CG/CP markers, launch pad, solar system with map view and time warp, 6-DOF flight with parachute recovery, flight log, pre-flight and post-flight flaw reports, replay scrubber with jump-to-flaw, 19-flight stress test (wind, rail angle, ejection delay), 20 certified motors plus runtime lookup. 202 unit tests pass.
+Working: `.ork` import (including the exact motors embedded in the file), 3D rocket with cutaway and CG/CP markers, launch pad, solar system with map view and time warp, 6-DOF flight with parachute recovery, flight log, pre-flight and post-flight flaw reports, replay scrubber with jump-to-flaw, 19-flight stress test (wind, rail angle, ejection delay), 20 certified motors plus runtime lookup. Multi-stage `.ork` flight with separation. Mission mode with LVM3, PSLV-C61 and Falcon 9 missions. Tests on 23 Nov 2026: app 1183 tests in 84 files pass; `rocket-physics` 280 tests in 45 suites pass.
 
-Validation against OpenRocket's own stored results for "A simple model rocket" (5 flights, same embedded motors):
+Validation against OpenRocket's own stored results (same embedded motors), measured 23 Nov 2026:
 
-| Quantity | Our error |
-|---|---|
-| Apogee | -1.9 % to -4.3 % |
-| Max speed | -2.2 % to -2.9 % |
-| Time to apogee | within 1.1 % |
-| Rail exit speed | -1.9 % to -3.4 % |
+| Quantity | A simple model rocket (5 flights) | Dual parachute deployment (6 flights) |
+|---|---|---|
+| Apogee | -4.4 % to +0.1 % | -5.4 % to -1.0 % |
+| Max speed | -3.0 % to -2.2 % | -2.3 % to -0.2 % |
+| Time to apogee | -1.1 % to +5.8 % (the +5.8 % flight has a too-short ejection delay) | -3.0 % to -0.8 % |
+| Rail exit speed | -3.5 % to -1.1 % | -3.1 % to +0.6 % |
+
+Static aerodynamics against the CNα, CP and stability that OpenRocket stores row by row in the same files (`src/validate/aeroOpenRocket.test.ts`, 1184 rows at Mach 0.05 to 0.3 and under 4 degrees angle of attack):
+
+| Design | CNα | CP | Stability margin |
+|---|---|---|---|
+| A simple model rocket | within 2.9 % | within 0.05 cal | within 0.24 cal |
+| Dual parachute deployment | within 3.6 % | within 0.14 cal | within 0.31 cal |
+| Two stage high power rocket (before staging) | within 2.3 % | within 0.03 cal | not compared (test loads one motor only) |
+
+What the validation test asserts (`src/validate/openrocket.test.ts`):
+- "A simple model rocket": prints the comparison table and checks only that each flight gives a finite, positive apogee. It sets no error limit.
+- "Dual parachute deployment": apogee within 8 %, max speed within 5 %, time to apogee within 5 %, rail exit speed within 6 % of OpenRocket.
+- The two- and three-stage examples are not in the test.
 
 Known gaps:
-- Fin lift slope (CNα) is about 20 % below OpenRocket's and our stability margin reads roughly half a calibre to one calibre higher. The "over-stable" warning can therefore be a false positive. Cause not yet found.
-- Validated on one design only. The two- and three-stage examples load but staging is not simulated.
+- Fixed 23 Nov 2026: fin lift slope (CNα) was 18 to 27 % below OpenRocket's. OpenRocket's stored CNα equals the Barrowman fin slope with the body-fin interference factor 1 + r/(s + r) applied twice, plus body lift K (A_planform / A_ref) sin(aoa) acting at the body planform centroid. Both are now modelled (`src/physics/aero.ts`, `src/physics/sim.ts`). The old margin looked close only because the low fin slope and the missing body-lift offset cancelled. The static margin the app shows (zero angle of attack) now reads 0.4 to 0.6 calibre higher than before; in flight, body lift pulls it back down, as in OpenRocket's stored data. "Over-stable" warnings (above about 3 calibres) therefore appear on more designs.
+- The three-stage example still reads about 9 % low on CNα at 11 degrees angle of attack (freeform fins, high angle); not in the test.
+- CG sits 4 to 9 mm forward of OpenRocket's on the two single-stage designs (0.16 to 0.18 calibre), which is most of the remaining margin difference.
+- Error limits are asserted on one design only, the Dual parachute deployment. The simple model rocket is printed, not asserted. The two- and three-stage examples are not in the validation test.
 - Dry mass is 3.4 % high on the reference design.
-- No transonic or supersonic drag model.
-- The planets are not aligned to the real sky for the launch site's latitude and time.
-- The bundled sample rocket has an 18 mm motor in a 17 mm mount (the pre-flight check catches it; the sample should be fixed).
+- Transonic and supersonic wave drag (`transonicWaveCd`) is an uncalibrated placeholder.
 
 ## Risks and open questions
 - **Engine: decided.** One TypeScript codebase, two builds. The website is the Vite build (installable, works offline through a service worker). The mobile game is the same build inside a Capacitor Android app (`android/`), with a phone HUD: top telemetry strip, round Launch button, and a slide-up sheet for everything else. Godot is not used, so the physics is written and validated once.

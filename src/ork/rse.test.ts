@@ -118,3 +118,9 @@ describe.skipIf(!haveFixtures)('embedded .rse fixtures (fixtures/external/x)', (
     expect(a8!.totalMass).toBeCloseTo(0.01635, 6);
   });
 });
+
+describe('parseRse limits', () => {
+  it('rejects DOCTYPE and ENTITY declarations', () => {
+    expect(() => parseRse('<?xml version="1.0"?><!DOCTYPE x [<!ENTITY e "v">]><engine-database/>')).toThrow(/DOCTYPE or ENTITY/);
+  });
+});

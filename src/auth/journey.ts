@@ -226,8 +226,10 @@ function galaxyPoints(): { pos: Float32Array; col: Float32Array; size: Float32Ar
     const rr = r + gauss(rng) * 2.5;
     const k = 0.4 + 0.6 * rng();
     const pink = rng() < 0.05;
+    // Amber near the core, teal toward the rim; one in twenty is a pale warm spark.
+    const t = Math.min(1, Math.max(0, (r - 14) / 60));
     put(rr * Math.cos(a), gauss(rng) * 1.2, rr * Math.sin(a),
-      (pink ? 1.0 : 0.6) * k, (pink ? 0.45 : 0.75) * k, (pink ? 0.6 : 1.0) * k, 0.7 + rng() * 1.3);
+      (pink ? 1.0 : 1.0 - 0.68 * t) * k, (pink ? 0.9 : 0.6 + 0.2 * t) * k, (pink ? 0.8 : 0.28 + 0.5 * t) * k, 0.7 + rng() * 1.3);
   }
 
   for (let i = 0; i < HAZE; i++) {
@@ -268,7 +270,11 @@ function buildGalaxy(ctx: Ctx) {
 
   const sunTag = new Tag(ctx.labels, 'THE SUN · ORION ARM', 'auth-label--here');
   const dir = new THREE.Vector3();
+  // First view: the disc seen face-on, upright on the page. Scrolling tips it over into
+  // the inclined view (dirA) that the rest of the fall starts from.
+  const dirFace = new THREE.Vector3(0, 1, 0.1).normalize();
   const dirA = new THREE.Vector3(0, 0.5, 0.87);
+  const dirStart = new THREE.Vector3();
   const dirB = new THREE.Vector3(0.3, 0.8, 0.5);
   const target = new THREE.Vector3();
 
@@ -279,7 +285,8 @@ function buildGalaxy(ctx: Ctx) {
       const e = smooth(0, 1, qa);
       const d0 = 330 * Math.max(1, 0.9 / ctx.view.aspect);
       target.copy(ZERO).lerp(SUN_LOCAL, smooth(0.05, 0.6, qa));
-      dir.lerpVectors(dirA, dirB, e).normalize();
+      dirStart.lerpVectors(dirFace, dirA, smooth(0, 0.4, qa)).normalize();
+      dir.lerpVectors(dirStart, dirB, e).normalize();
       const sway = Math.sin(t * 0.1) * 0.05;
       const cs = Math.cos(sway), sn = Math.sin(sway);
       dir.set(dir.x * cs + dir.z * sn, dir.y, -dir.x * sn + dir.z * cs);

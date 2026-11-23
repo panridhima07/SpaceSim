@@ -7,6 +7,7 @@ const ROOT = 'c:/Users/medha/Desktop/Hackathons/Astra';
 const UPLOADED_IMG = 'C:/Users/medha/.gemini/antigravity/brain/2ac306fa-c208-42b6-a311-cfae006f5da8/.user_uploaded/media_1795310052170_146e3f85.jpg';
 const SPACE_ART_OUT = path.join(ROOT, 'public', 'slide1_space_panel.jpg');
 const PPTX_OUT = path.join(ROOT, 'ASTRA_Spaceflight_Presentation.pptx');
+const PPT_OUT = path.join(ROOT, 'ASTRA_Spaceflight_Presentation.ppt');
 
 // 1. Crop the right-hand space panel (x=638..1023, y=0..573) from the uploaded Slide 1 image
 //    and also keep the full uploaded image available.
@@ -197,7 +198,9 @@ function textBox({
       </p:spPr>
       <p:txBody>
         <a:bodyPr wrap="square" rtlCol="0" anchor="${anchor}"
-          lIns="${inToEmu(padL)}" rIns="${inToEmu(padR)}" tIns="${inToEmu(padT)}" bIns="${inToEmu(padB)}"/>
+          lIns="${inToEmu(padL)}" rIns="${inToEmu(padR)}" tIns="${inToEmu(padT)}" bIns="${inToEmu(padB)}">
+          <a:noAutofit/>
+        </a:bodyPr>
         <a:lstStyle/>
         ${pXml}
       </p:txBody>
@@ -227,6 +230,85 @@ function picShape({ rId, x, y, w, h, name = 'Picture' }) {
     </p:pic>`;
 }
 
+/**
+ * Native OpenXML Table (<p:graphicFrame> with <a:tbl>) for crisp PowerPoint tables.
+ */
+function tableShape({
+  x, y, w, rowH = 0.34,
+  colWidths = [],
+  rows = [], // Array of string[]
+  headerColor = C.cyan,
+  highlightCol = -1,
+  highlightColor = C.green,
+  warnRowIdx = -1,
+  warnColIdx = -1,
+}) {
+  const id = nextId();
+  const totalH = rows.length * rowH;
+  const gridColsXml = colWidths.map((cw) => `<a:gridCol w="${inToEmu(cw)}"/>`).join('');
+
+  const rowsXml = rows.map((row, rIdx) => {
+    const isHdr = rIdx === 0;
+    const bgHex = isHdr ? C.cardAlt : (rIdx % 2 === 0 ? C.bgDeep : C.card);
+    const cellsXml = row.map((cellText, cIdx) => {
+      const algn = cIdx >= 1 ? 'ctr' : 'l';
+      const font = cIdx >= 1 ? 'Consolas' : 'Segoe UI';
+      const sz = isHdr ? 950 : 980;
+      const b = (isHdr || cIdx === highlightCol) ? ' b="1"' : '';
+      let clr = isHdr ? headerColor : (cIdx === highlightCol ? highlightColor : C.text);
+      if (rIdx === warnRowIdx && cIdx === warnColIdx) clr = C.amber;
+
+      return `<a:tc>
+        <a:txBody>
+          <a:bodyPr/>
+          <a:lstStyle/>
+          <a:p>
+            <a:pPr algn="${algn}"/>
+            <a:r>
+              <a:rPr lang="en-US" sz="${sz}"${b} dirty="0">
+                <a:solidFill><a:srgbClr val="${clr}"/></a:solidFill>
+                <a:latin typeface="${font}"/>
+                <a:cs typeface="${font}"/>
+              </a:rPr>
+              <a:t>${esc(cellText)}</a:t>
+            </a:r>
+          </a:p>
+        </a:txBody>
+        <a:tcPr marL="${inToEmu(0.06)}" marR="${inToEmu(0.06)}" marT="${inToEmu(0.03)}" marB="${inToEmu(0.03)}" anchor="ctr">
+          <a:lnL w="0"><a:noFill/></a:lnL>
+          <a:lnR w="0"><a:noFill/></a:lnR>
+          <a:lnT w="6350"><a:solidFill><a:srgbClr val="${C.border}"/></a:solidFill></a:lnT>
+          <a:lnB w="6350"><a:solidFill><a:srgbClr val="${C.border}"/></a:solidFill></a:lnB>
+          <a:solidFill><a:srgbClr val="${bgHex}"/></a:solidFill>
+        </a:tcPr>
+      </a:tc>`;
+    }).join('');
+    return `<a:tr h="${inToEmu(rowH)}">${cellsXml}</a:tr>`;
+  }).join('');
+
+  return `
+    <p:graphicFrame>
+      <p:nvGraphicFramePr>
+        <p:cNvPr id="${id}" name="Table ${id}"/>
+        <p:cNvGraphicFramePr><a:graphicFrameLocks noGrp="1"/></p:cNvGraphicFramePr>
+        <p:nvPr/>
+      </p:nvGraphicFramePr>
+      <p:xfrm>
+        <a:off x="${inToEmu(x)}" y="${inToEmu(y)}"/>
+        <a:ext cx="${inToEmu(w)}" cy="${inToEmu(totalH)}"/>
+      </p:xfrm>
+      <a:graphic>
+        <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table">
+          <a:tbl>
+            <a:tblPr firstRow="1" bandRow="1"/>
+            <a:tblGrid>${gridColsXml}</a:tblGrid>
+            ${rowsXml}
+          </a:tbl>
+        </a:graphicData>
+      </a:graphic>
+    </p:graphicFrame>`;
+}
+
 // Common chrome header + footer for Slides 2..7
 function slideChrome({ slideNum, kicker, title, subtitle }) {
   const parts = [];
@@ -247,7 +329,7 @@ function slideChrome({ slideNum, kicker, title, subtitle }) {
     fill: C.card, line: C.border, radius: 18000,
     anchor: 'ctr', padL: 0.05, padR: 0.05, padT: 0, padB: 0,
     paragraphs: [{
-      text: `0${slideNum} / 07`,
+      text: `0${slideNum} / 08`,
       size: 10, bold: true, color: C.cyan, font: 'Consolas', align: 'ctr', spc: 120,
     }],
   }));
@@ -412,215 +494,78 @@ function buildSlide1() {
 }
 
 // ===========================================================================
-// SLIDE 2: Problem Statement & Dual-Domain Vision
+// SLIDE 2: The Problem
 // ===========================================================================
 function buildSlide2() {
   const s = [];
   s.push(slideChrome({
     slideNum: 2,
-    kicker: 'PROBLEM & DUAL-DOMAIN VISION',
-    title: 'Bridging Desktop Rocket CAD & Interactive Spaceflight',
-    subtitle: 'Why student rocketry teams and space enthusiasts need a unified 3D physics sandbox on Web & Mobile.',
+    kicker: 'THE PROBLEM',
+    title: 'Rocket designs stay on screen and are never flown',
+    subtitle: 'Reaching another planet takes 9.3–10 km/s of delta-v and years of travel.',
   }));
 
-  // Left column: 3 Problem Cards
-  s.push(textBox({
-    x: 0.65, y: 1.72, w: 5.8, h: 0.3,
-    padL: 0, padT: 0,
-    paragraphs: [{ text: 'THE GAPS IN EXISTING TOOLS', size: 11, bold: true, color: C.purple, font: 'Consolas', spc: 180 }],
-  }));
-
-  const problems = [
-    {
-      num: '01',
-      title: 'Desktop-Bound, 2D Rocket CAD',
-      desc: 'Student rocket teams design in OpenRocket (.ork), which is locked to desktop Java, offers only static 2D schematics, and cannot run on phones at the launch pad.',
-      color: C.red,
-    },
-    {
-      num: '02',
-      title: 'Opaque Flight Failures',
-      desc: 'When a design tumbles, weathercocks, or shreds fins, raw CSV plots do not show 3D force vectors (CG vs CP) or explain which part failed and how to fix it.',
-      color: C.amber,
-    },
-    {
-      num: '03',
-      title: 'Disconnected ISRO & Deep-Space Data',
-      desc: 'Existing mobile space games use arcade physics, while real ISRO mission telemetry (LVM3-M4, Chandrayaan-3, RH-200) sits in static tables instead of playable 3D worlds.',
-      color: C.cyan,
-    },
+  const stats = [
+    { value: '9.3–10 km/s', label: 'delta-v to reach low Earth orbit', color: C.cyan },
+    { value: '259 days', label: 'Earth to Mars transfer', color: C.amber },
+    { value: '2.7 years', label: 'Earth to Jupiter transfer', color: C.purple },
   ];
-
-  problems.forEach((p, idx) => {
-    const y = 2.08 + idx * 1.56;
-    s.push(rectShape({ x: 0.65, y, w: 5.85, h: 1.40, fill: C.card, line: C.border, radius: 12000 }));
-    s.push(rectShape({ x: 0.65, y, w: 0.08, h: 1.40, fill: p.color }));
+  stats.forEach((st, i) => {
+    const x = 0.65 + i * 4.12;
+    s.push(rectShape({ x, y: 1.85, w: 3.90, h: 2.0, fill: C.card, line: C.border, radius: 12000 }));
+    s.push(rectShape({ x, y: 1.85, w: 3.90, h: 0.06, fill: st.color }));
     s.push(textBox({
-      x: 0.88, y: y + 0.12, w: 0.55, h: 0.35,
-      padL: 0, padT: 0,
-      paragraphs: [{ text: p.num, size: 14, bold: true, color: p.color, font: 'Consolas' }],
-    }));
-    s.push(textBox({
-      x: 1.40, y: y + 0.10, w: 4.95, h: 1.20,
-      padL: 0, padT: 0,
+      x: x + 0.3, y: 2.20, w: 3.3, h: 1.5, padL: 0, padT: 0,
       paragraphs: [
-        { text: p.title, size: 15, bold: true, color: C.white, font: 'Segoe UI', spaceAfterPt: 5 },
-        { text: p.desc, size: 12, color: C.muted, font: 'Segoe UI', lineSpacingPct: 122 },
+        { text: st.value, size: 30, bold: true, color: C.white, font: 'Segoe UI', spaceAfterPt: 6 },
+        { text: st.label, size: 13, color: C.muted, font: 'Segoe UI' },
       ],
     }));
   });
 
-  // Right column: Our Solution & Dual-Domain Merger
   s.push(textBox({
-    x: 6.80, y: 1.72, w: 5.85, h: 0.3,
-    padL: 0, padT: 0,
-    paragraphs: [{ text: 'THE ASTRA SPACEFLIGHT SOLUTION', size: 11, bold: true, color: C.cyan, font: 'Consolas', spc: 180 }],
-  }));
-
-  // Domain 05 Card
-  s.push(rectShape({ x: 6.80, y: 2.08, w: 5.88, h: 1.95, fill: C.cardAlt, line: C.borderCyan, lineWidthPt: 1.2, radius: 12000 }));
-  s.push(textBox({
-    x: 7.02, y: 2.20, w: 5.45, h: 1.75,
-    padL: 0, padT: 0,
+    x: 0.65, y: 4.35, w: 12.0, h: 2.2, padL: 0, padT: 0,
     paragraphs: [
-      { text: 'DOMAIN 05 · MOON, MARS & DEEP-SPACE EXPLORATION', size: 10.5, bold: true, color: C.cyan, font: 'Consolas', spc: 150, spaceAfterPt: 4 },
-      { text: 'Solar-System 3D Sandbox + Lunar Lander', size: 16.5, bold: true, color: C.white, font: 'Segoe UI', spaceAfterPt: 6 },
-      { text: '• True-scale JPL Keplerian Solar System (Sun, 8 planets from Mercury to Neptune, Moon) with d3-celestial star catalog & time warp up to 100,000×.', size: 11.8, color: C.text, spaceAfterPt: 3 },
-      { text: '• Interactive 6-DOF Powered Lunar Descent from 100 km perilune to touchdown with procedural boulder fields, slope hazard maps, and manual/autopilot guidance.', size: 11.8, color: C.text },
+      { text: 'A CAD model or OpenRocket file describes a rocket, but nothing flies it.', size: 18, bold: true, color: C.text, spaceAfterPt: 8 },
+      { text: 'Students and hobbyists need to know whether a design will get off the pad, stay stable and recover, before any hardware is built.', size: 15, color: C.muted, lineSpacingPct: 125 },
     ],
-  }));
-
-  // Domain 01 Card
-  s.push(rectShape({ x: 6.80, y: 4.20, w: 5.88, h: 1.95, fill: C.cardAlt, line: C.borderPurple, lineWidthPt: 1.2, radius: 12000 }));
-  s.push(textBox({
-    x: 7.02, y: 4.32, w: 5.45, h: 1.75,
-    padL: 0, padT: 0,
-    paragraphs: [
-      { text: 'DOMAIN 01 · INDIAN SPACE MISSIONS & SPACE DATA', size: 10.5, bold: true, color: C.purple, font: 'Consolas', spc: 150, spaceAfterPt: 4 },
-      { text: 'Sriharikota Pad, ISRO Vehicles & Telemetry Validation', size: 16.5, bold: true, color: C.white, font: 'Segoe UI', spaceAfterPt: 6 },
-      { text: '• Default launch complex at SDSC SHAR Sriharikota (13.72°N, 80.23°E) on a rotating WGS-84 ellipsoid Earth with local GMST sky alignment.', size: 11.8, color: C.text, spaceAfterPt: 3 },
-      { text: '• Fly ISRO LVM3-M4 (Chandrayaan-3) to its 170 × 36,500 km GTO against 14 July 2023 flight timestamps, plus the 2-stage ISRO RH-200 Rohini sounding rocket.', size: 11.8, color: C.text },
-    ],
-  }));
-
-  // Bottom highlight strip on right
-  s.push(rectShape({ x: 6.80, y: 6.30, w: 5.88, h: 0.54, fill: C.card, line: C.border, radius: 12000 }));
-  s.push(textBox({
-    x: 6.95, y: 6.36, w: 5.6, h: 0.42,
-    padL: 0, padT: 0, anchor: 'ctr',
-    paragraphs: [{
-      runs: [
-        { text: 'ONE CODEBASE, TWO BUILDS: ', size: 11, bold: true, color: C.green, font: 'Consolas', spc: 120 },
-        { text: 'Offline-first PWA Web App + Native Capacitor Android APK', size: 12, bold: true, color: C.white, font: 'Segoe UI' },
-      ],
-      align: 'ctr',
-    }],
   }));
 
   return wrapSlideXml(s.join('\n'));
 }
 
 // ===========================================================================
-// SLIDE 3: Four Integrated Gameplay & Engineering Modes
+// SLIDE 3: Why Existing Tools Fall Short
 // ===========================================================================
 function buildSlide3() {
   const s = [];
   s.push(slideChrome({
     slideNum: 3,
-    kicker: 'PRODUCT EXPERIENCE  ·  BUILD · LAUNCH · EXPLORE · LAND',
-    title: 'Four Integrated Modes in One 3D World',
-    subtitle: 'From snapping airframe tubes together to orbital staging and lunar touchdown.',
+    kicker: 'THE GAP',
+    title: 'Current tools stop at the launch pad',
+    subtitle: 'Design tools, hobby simulators and space games each cover one part of the problem.',
   }));
 
-  const modes = [
-    {
-      badge: 'MODE 01 · BUILD',
-      title: '3D Rocket Builder & .ork CAD',
-      accent: C.cyan,
-      metrics: '40+ Real Parts  ·  8 Categories  ·  .ork Round-Trip',
-      bullets: [
-        'Drag-and-drop or tap-to-snap 3D assembly across Nose Cones, Body Tubes, Transitions, Fins, Motor Mounts, Parachutes, Payloads & Rings.',
-        'Native OpenRocket (.ork zip/XML) & RASP (.eng) import and export — round-trip verified on geometry, mass, CG, CP, and CNα.',
-        'Multi-stage decouplers, 2×/3×/4× radial strap-on boosters, cutaway internal X-ray view, and automatic Best / OK / Bad workmanship grading.',
-      ],
-    },
-    {
-      badge: 'MODE 02 · LAUNCH & DIAGNOSE',
-      title: '6-DOF Pad Flight & Flaw Analyzer',
-      accent: C.green,
-      metrics: '2 ms RK4 Step  ·  20+ ThrustCurve Motors  ·  19-Flight Sweep',
-      bullets: [
-        'Barrowman aerodynamics (normal-force slope, CP per part, pitch damping, skin/base/pressure drag + transonic wave Cd) in an ISA atmosphere to 86 km.',
-        'Rule-based Flaw Analyzer catches 11+ failure modes (Unstable, Over-stable, Fin Flutter, Hard Landing, Thermal/Pressure faults) with timestamps & fixes.',
-        'Interactive replay pauses at each flaw and draws live 3D force arrows (Thrust, Drag, Normal force at CP, Weight at CG) plus a 19-flight wind/rail stress sweep.',
-      ],
-    },
-    {
-      badge: 'MODE 03 · ISRO MISSION',
-      title: 'LVM3-M4 Orbital Ascent & Fault Lab',
-      accent: C.purple,
-      metrics: 'S200 + L110 + C25 Stages  ·  12 Live Health Bars  ·  IIP Track',
-      bullets: [
-        'Full 6-DOF orbital launcher from Sriharikota with closed-loop Linear-Tangent guidance, J2-J4 gravity harmonics, and vacuum-expanding two-cone exhaust plumes.',
-        'Live event timeline compares simulated vs actual 14 July 2023 LVM3-M4 staging (S200 sep 126.7s vs 127.0s, L110 sep 307.1s vs 305.6s).',
-        'Destructive Fault Injection Lab: test Gimbal Lock, Vikas Engine-Out, C25 Shutdown, Blocked Fairing Vent, or Tank Overpressure with live Bay of Bengal IIP impact rings.',
-      ],
-    },
-    {
-      badge: 'MODE 04 · DEEP SPACE & MOON',
-      title: 'Shiv Shakti Lunar Powered Descent',
-      accent: C.amber,
-      metrics: '69.37°S, 32.35°E  ·  3-Nested Terrain Meshes  ·  Auto & Manual',
-      bullets: [
-        'Deorbit from a 100 km polar lunar orbit through Braking, Approach, and Terminal descent phases to the Chandrayaan-3 Shiv Shakti landing site.',
-        'Multi-resolution lunar regolith heightfield (240 m rock-field, 1.6 km approach patch, full Moon globe) with real-time footpad slope & boulder hazard classification.',
-        'Fly hands-on with touch/keyboard pitch, roll & throttle controls or watch closed-loop PD attitude + terminal descent guidance score your touchdown.',
-      ],
-    },
+  const gaps = [
+    { n: '01', t: 'Design tools stop at launch', b: 'OpenRocket is desktop-only and shows static 2D views.', c: C.red },
+    { n: '02', t: 'Simulators plot one flight', b: 'Hobby simulators show a flight to apogee, not a trip to another planet.', c: C.amber },
+    { n: '03', t: 'Games use invented worlds', b: 'Kerbal-style games use made-up parts at one-tenth real scale.', c: C.cyan },
+    { n: '04', t: 'Hardware tests are costly', b: 'A failed launch costs parts and time. A failed simulation costs nothing.', c: C.green },
   ];
-
-  modes.forEach((m, i) => {
+  gaps.forEach((g, i) => {
     const col = i % 2;
     const row = Math.floor(i / 2);
     const x = 0.65 + col * 6.12;
-    const y = 1.75 + row * 2.58;
-    const w = 5.90;
-    const h = 2.40;
-
-    s.push(rectShape({ x, y, w, h, fill: C.card, line: C.border, radius: 12000 }));
-    s.push(rectShape({ x, y, w, h: 0.06, fill: m.accent }));
-
-    // Badge + metric pill row
+    const y = 1.85 + row * 2.45;
+    s.push(rectShape({ x, y, w: 5.90, h: 2.20, fill: C.card, line: C.border, radius: 12000 }));
+    s.push(rectShape({ x, y, w: 0.08, h: 2.20, fill: g.c }));
     s.push(textBox({
-      x: x + 0.22, y: y + 0.16, w: 2.3, h: 0.26,
-      padL: 0, padT: 0,
-      paragraphs: [{ text: m.badge, size: 10, bold: true, color: m.accent, font: 'Consolas', spc: 150 }],
-    }));
-    s.push(textBox({
-      x: x + 2.4, y: y + 0.16, w: 3.3, h: 0.26,
-      padL: 0, padR: 0, padT: 0,
-      paragraphs: [{ text: m.metrics, size: 9.5, bold: true, color: C.muted, font: 'Consolas', align: 'r' }],
-    }));
-
-    // Title
-    s.push(textBox({
-      x: x + 0.22, y: y + 0.44, w: 5.46, h: 0.36,
-      padL: 0, padT: 0,
-      paragraphs: [{ text: m.title, size: 16.5, bold: true, color: C.white, font: 'Segoe UI' }],
-    }));
-
-    // Bullets
-    s.push(textBox({
-      x: x + 0.22, y: y + 0.84, w: 5.46, h: 1.48,
-      padL: 0, padT: 0,
-      paragraphs: m.bullets.map((b) => ({
-        text: `▸  ${b}`,
-        size: 11.2,
-        color: C.text,
-        font: 'Segoe UI',
-        lineSpacingPct: 118,
-        spaceAfterPt: 5,
-      })),
+      x: x + 0.35, y: y + 0.3, w: 5.2, h: 1.7, padL: 0, padT: 0,
+      paragraphs: [
+        { text: g.n, size: 12, bold: true, color: g.c, font: 'Consolas', spaceAfterPt: 4 },
+        { text: g.t, size: 19, bold: true, color: C.white, font: 'Segoe UI', spaceAfterPt: 8 },
+        { text: g.b, size: 14, color: C.muted, font: 'Segoe UI', lineSpacingPct: 120 },
+      ],
     }));
   });
 
@@ -628,436 +573,230 @@ function buildSlide3() {
 }
 
 // ===========================================================================
-// SLIDE 4: Dual Physics Engines & System Architecture
+// SLIDE 4: The Solution (with app screenshots)
 // ===========================================================================
 function buildSlide4() {
   const s = [];
   s.push(slideChrome({
     slideNum: 4,
-    kicker: 'SYSTEM ARCHITECTURE & SIMULATION CORE',
-    title: 'Dual 6-DOF Physics Engines, One Unified FlightRecord Contract',
-    subtitle: 'Decoupling high-rate aerodynamic & orbital solvers from 60 FPS floating-origin WebGL rendering.',
+    kicker: 'THE SOLUTION',
+    title: 'Every rocket design becomes a playable mission',
+    subtitle: 'A mobile game that lets students and adults test a rocket before it is built.',
   }));
 
-  // Top Layer: App UI & Interactive Controls
-  s.push(rectShape({ x: 0.65, y: 1.75, w: 12.03, h: 0.88, fill: C.cardAlt, line: C.borderCyan, radius: 10000 }));
-  s.push(textBox({
-    x: 0.85, y: 1.83, w: 11.6, h: 0.72,
-    padL: 0, padT: 0,
-    paragraphs: [
-      {
-        runs: [
-          { text: 'PRESENTATION & HUD LAYER  (src/app + landing.html)   ', size: 10.5, bold: true, color: C.cyan, font: 'Consolas', spc: 140 },
-          { text: 'Unified .sfb-root Glass UI · Desktop & 44px Mobile Touch HUD', size: 10.5, color: C.muted, font: 'Consolas' },
-        ],
-        spaceAfterPt: 4,
-      },
-      {
-        text: 'Mode Switcher  ·  3D Builder Inspector  ·  Flight Telemetry Strip  ·  Flaw & Health Panels  ·  Interactive Timeline Scrubber  ·  1×–100,000× Time Warp',
-        size: 12.5, bold: true, color: C.white, font: 'Segoe UI',
-      },
-    ],
-  }));
+  const steps = [
+    { n: '01 · IMPORT', t: 'Load any rocket', b: 'OpenRocket (.ork) files today. RockSim and CAD formats are planned.', c: C.cyan },
+    { n: '02 · BUILD', t: 'Or build one', b: 'Engines, tanks, decouplers, heat shields and parachutes snap together.', c: C.purple },
+    { n: '03 · FLY', t: 'Mercury to Jupiter', b: 'Touch controls: throttle, rotate, stage and switch to the map view.', c: C.green },
+    { n: '04 · LEARN', t: 'Fail and find out why', b: 'Warnings never block a launch. Each failure is explained in plain words.', c: C.amber },
+  ];
+  steps.forEach((st, i) => {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    const x = 0.65 + col * 3.98;
+    const y = 1.85 + row * 2.50;
+    s.push(rectShape({ x, y, w: 3.78, h: 2.30, fill: C.card, line: C.border, radius: 12000 }));
+    s.push(rectShape({ x, y, w: 3.78, h: 0.06, fill: st.c }));
+    s.push(textBox({
+      x: x + 0.25, y: y + 0.25, w: 3.3, h: 1.9, padL: 0, padT: 0,
+      paragraphs: [
+        { text: st.n, size: 10, bold: true, color: st.c, font: 'Consolas', spc: 150, spaceAfterPt: 4 },
+        { text: st.t, size: 16, bold: true, color: C.white, font: 'Segoe UI', spaceAfterPt: 6 },
+        { text: st.b, size: 12, color: C.muted, font: 'Segoe UI', lineSpacingPct: 120 },
+      ],
+    }));
+  });
 
-  // Middle Left: Suborbital / Model Rocket Engine
-  s.push(rectShape({ x: 0.65, y: 2.82, w: 3.85, h: 2.65, fill: C.card, line: C.border, radius: 10000 }));
-  s.push(rectShape({ x: 0.65, y: 2.82, w: 3.85, h: 0.06, fill: C.green }));
-  s.push(textBox({
-    x: 0.85, y: 2.98, w: 3.45, h: 2.40,
-    padL: 0, padT: 0,
-    paragraphs: [
-      { text: 'ENGINE A · DESIGN & SOUNDING SIM', size: 10, bold: true, color: C.green, font: 'Consolas', spc: 140, spaceAfterPt: 3 },
-      { text: 'Barrowman 6-DOF (src/physics)', size: 15, bold: true, color: C.white, spaceAfterPt: 6 },
-      { text: '• Fixed 2 ms RK4 integration with quaternion attitude & dynamic CG/inertia as motors burn.', size: 11.2, color: C.text, spaceAfterPt: 4 },
-      { text: '• Per-part normal force (CNα) & CP, body lift, pitch damping, skin/base/pressure + transonic wave drag.', size: 11.2, color: C.text, spaceAfterPt: 4 },
-      { text: '• Multi-stage separation, delayed ignition, dual parachute recovery, wind gusts & 11+ flaw rules.', size: 11.2, color: C.text },
-    ],
-  }));
-
-  // Middle Center: Shared Contract & Frame Adapter
-  s.push(rectShape({ x: 4.74, y: 2.82, w: 3.85, h: 2.65, fill: C.cardAlt, line: C.borderPurple, lineWidthPt: 1.3, radius: 10000 }));
-  s.push(rectShape({ x: 4.74, y: 2.82, w: 3.85, h: 0.06, fill: C.purple }));
-  s.push(textBox({
-    x: 4.94, y: 2.98, w: 3.45, h: 2.40,
-    padL: 0, padT: 0,
-    paragraphs: [
-      { text: 'BRIDGE · WEB WORKER & CONTRACT', size: 10, bold: true, color: C.purple, font: 'Consolas', spc: 140, spaceAfterPt: 3 },
-      { text: 'FlightRecord + ECI Adapter', size: 15, bold: true, color: C.white, spaceAfterPt: 6 },
-      { text: '• Non-blocking Web Worker computes full orbital ascents off-thread and streams FlightRecord samples.', size: 11.2, color: C.text, spaceAfterPt: 4 },
-      { text: '• Exact orthogonal frame map: Z-up ECI (body +X nose) → Y-up App (body +Y nose) via (x, z, -y) & qApp = Cq·q·Bq.', size: 11.2, color: C.text, spaceAfterPt: 4 },
-      { text: '• Snapshot interpolator drives deterministic forward/backward scrubbing, staging & trajectory draw ranges.', size: 11.2, color: C.text },
-    ],
-  }));
-
-  // Middle Right: Orbital & Lunar Engine
-  s.push(rectShape({ x: 8.83, y: 2.82, w: 3.85, h: 2.65, fill: C.card, line: C.border, radius: 10000 }));
-  s.push(rectShape({ x: 8.83, y: 2.82, w: 3.85, h: 0.06, fill: C.amber }));
-  s.push(textBox({
-    x: 9.03, y: 2.98, w: 3.45, h: 2.40,
-    padL: 0, padT: 0,
-    paragraphs: [
-      { text: 'ENGINE B · ORBITAL & LUNAR SIM', size: 10, bold: true, color: C.amber, font: 'Consolas', spc: 140, spaceAfterPt: 3 },
-      { text: 'Orbital 6-DOF (rocket-physics + lunar)', size: 15, bold: true, color: C.white, spaceAfterPt: 6 },
-      { text: '• WGS-84 rotating Earth, J2/J3/J4 harmonics, US Standard Atmosphere 1976 to 1000 km & Sutton-Graves heating.', size: 11.2, color: C.text, spaceAfterPt: 4 },
-      { text: '• Linear-Tangent closed-loop guidance, oblateness apogee compensation, Lambert transfer & Dormand-Prince RK5(4).', size: 11.2, color: C.text, spaceAfterPt: 4 },
-      { text: '• FaultMonitor tracks 12 structural/thermal/propulsion health channels (ullage pressure, cavitation, skin temp).', size: 11.2, color: C.text },
-    ],
-  }));
-
-  // Bottom Layer: 3D Rendering & Cross-Platform Build
-  s.push(rectShape({ x: 0.65, y: 5.66, w: 12.03, h: 1.15, fill: C.card, line: C.border, radius: 10000 }));
-  s.push(textBox({
-    x: 0.85, y: 5.76, w: 11.6, h: 0.96,
-    padL: 0, padT: 0,
-    paragraphs: [
-      {
-        runs: [
-          { text: '3D FLOATING-ORIGIN RENDERER  (Three.js r170 · Logarithmic Depth Buffer)   ', size: 10.5, bold: true, color: C.cyan, font: 'Consolas', spc: 140 },
-          { text: 'Zero jitter from 1 mm rail buttons to 10⁹ km planetary orbits', size: 10.5, color: C.green, font: 'Consolas' },
-        ],
-        spaceAfterPt: 5,
-      },
-      {
-        text: '• Procedural Mesh Pipeline: Exact geometry from .ork / VehicleSpec · Cutaway internals · Two-cone vacuum-expanding plumes · Booster & fairing separation kinematics',
-        size: 11.5, color: C.text, spaceAfterPt: 3,
-      },
-      {
-        text: '• Single TypeScript + Vite Build: Offline Service Worker PWA (dist/) + Capacitor 8 Android APK (android/) with native file export & 60 FPS WebView performance',
-        size: 11.5, color: C.text,
-      },
-    ],
-  }));
+  // Screenshots: desktop builder/pad view on top, two phone views below
+  s.push(picShape({ rId: 'rId4', x: 8.62, y: 1.85, w: 4.08, h: 2.08, name: 'Desktop builder and pad' }));
+  s.push(picShape({ rId: 'rId2', x: 9.24, y: 4.15, w: 1.27, h: 2.75, name: 'Flight view' }));
+  s.push(picShape({ rId: 'rId3', x: 10.81, y: 4.15, w: 1.27, h: 2.75, name: 'Parts builder' }));
 
   return wrapSlideXml(s.join('\n'));
 }
 
 // ===========================================================================
-// SLIDE 5: Engineering Rigor, ISRO Benchmarks & Validation
+// SLIDE 5: Real Data & Architecture
 // ===========================================================================
 function buildSlide5() {
   const s = [];
   s.push(slideChrome({
     slideNum: 5,
-    kicker: 'VALIDATION & BENCHMARKS  ·  1,037 AUTOMATED UNIT TESTS',
-    title: 'Verified Against OpenRocket & ISRO LVM3-M4 Flight Data',
-    subtitle: 'Every solver, frame transformation, and 3D mesh is pinned against analytical or real-flight benchmarks.',
+    kicker: 'REAL DATA & ARCHITECTURE',
+    title: 'Real mission data drives every number in the game',
+    subtitle: 'Every value is labelled with its source: real, derived or simulated.',
   }));
 
-  // Top Metric Banner (4 KPI Pill Cards)
-  const kpis = [
-    { val: '1,037', label: 'UNIT TESTS PASSING', sub: '797 App + 240 Orbital Engine', color: C.green },
-    { val: '< 4.5%', label: 'OPENROCKET APOGEE ERR', sub: 'Well inside 10% target band', color: C.cyan },
-    { val: '0.3 s', label: 'LVM3 S200 SEP DELTA', sub: '126.7 s sim vs 127.0 s ISRO flight', color: C.purple },
-    { val: '67 / 67', label: '3D MESH AUDIT DESIGNS', sub: '62 mock + 5 real .ork files verified', color: C.amber },
+  const rows = [
+    ['Planet positions', 'NASA/JPL Horizons ephemerides', 'Real-scale solar system'],
+    ['Planet properties', 'Published gravity, radius, atmosphere', 'Launch, drag and landing physics'],
+    ['Player designs', 'OpenRocket .ork files', 'Parts, mass and thrust'],
+    ['Delta-v budgets', 'Published reference figures', 'Feasibility check per destination'],
+    ['Indian vehicles', 'ISRO specs: LVM3, 43.5 m, 640 t', 'Preset rockets to fly'],
   ];
-
-  kpis.forEach((k, i) => {
-    const x = 0.65 + i * 3.06;
-    s.push(rectShape({ x, y: 1.72, w: 2.88, h: 1.08, fill: C.cardAlt, line: C.border, radius: 12000 }));
-    s.push(textBox({
-      x: x + 0.12, y: 1.78, w: 2.64, h: 0.96,
-      padL: 0, padR: 0, padT: 0,
-      paragraphs: [
-        { text: k.val, size: 24, bold: true, color: k.color, font: 'Consolas', align: 'ctr', spaceAfterPt: 2 },
-        { text: k.label, size: 9.5, bold: true, color: C.white, font: 'Consolas', align: 'ctr', spc: 120, spaceAfterPt: 2 },
-        { text: k.sub, size: 9.5, color: C.muted, font: 'Segoe UI', align: 'ctr' },
-      ],
-    }));
+  const cols = [3.1, 4.6, 4.3];
+  const heads = ['Data', 'Source', 'What it drives'];
+  let x0 = 0.65;
+  const y0 = 1.85;
+  const rowH = 0.72;
+  // header
+  let cx = x0;
+  heads.forEach((h, j) => {
+    s.push(textBox({ x: cx + 0.2, y: y0 + 0.1, w: cols[j] - 0.3, h: 0.4, padL: 0, padT: 0,
+      paragraphs: [{ text: h.toUpperCase(), size: 10, bold: true, color: C.cyan, font: 'Consolas', spc: 150 }] }));
+    cx += cols[j];
   });
-
-  // Left Table Card: OpenRocket Validation
-  s.push(rectShape({ x: 0.65, y: 2.98, w: 5.88, h: 3.82, fill: C.card, line: C.border, radius: 12000 }));
-  s.push(rectShape({ x: 0.65, y: 2.98, w: 5.88, h: 0.06, fill: C.cyan }));
-  s.push(textBox({
-    x: 0.88, y: 3.12, w: 5.42, h: 0.55,
-    padL: 0, padT: 0,
-    paragraphs: [
-      { text: 'BENCHMARK 1 · OPENROCKET 6-DOF VALIDATION', size: 10, bold: true, color: C.cyan, font: 'Consolas', spc: 150, spaceAfterPt: 2 },
-      { text: 'Multi-Flight Comparison Against Stored OpenRocket Sims', size: 14.5, bold: true, color: C.white },
-    ],
-  }));
-
-  const orRows = [
-    ['Metric / Reference Design', 'Flights', 'Measured Error Range', 'Target'],
-    ['Design 1: Apogee Altitude', '5 sims', '-1.9 %  to  -4.3 %', '< 10 %'],
-    ['Design 1: Max Velocity', '5 sims', '-2.2 %  to  -2.9 %', '< 10 %'],
-    ['Design 1: Time to Apogee', '5 sims', 'Within  ±1.1 %', '< 10 %'],
-    ['Design 1: Rail Exit Speed', '5 sims', '-1.9 %  to  -3.4 %', '< 10 %'],
-    ['Design 2 (Dual-Deploy, Mach 1.1): Apogee', '6 sims', '-1.0 %  to  -5.4 %', '< 10 %'],
-    ['Design 2 (Dual-Deploy, Mach 1.1): Max Speed', '6 sims', '-0.1 %  to  -2.3 %', '< 10 %'],
-    ['Design 2 (Dual-Deploy, Mach 1.1): Rail Exit', '6 sims', '-3.1 %  to  +0.6 %', '< 10 %'],
-  ];
-
-  orRows.forEach((r, idx) => {
-    const ry = 3.74 + idx * 0.36;
-    const isHdr = idx === 0;
-    if (isHdr) {
-      s.push(rectShape({ x: 0.85, y: ry, w: 5.48, h: 0.32, fill: C.cardAlt }));
-    } else if (idx % 2 === 0) {
-      s.push(rectShape({ x: 0.85, y: ry, w: 5.48, h: 0.32, fill: C.bgDeep }));
-    }
-    const colX = [0.92, 3.38, 4.10, 5.62];
-    const colW = [2.42, 0.68, 1.48, 0.68];
-    r.forEach((cell, cIdx) => {
-      s.push(textBox({
-        x: colX[cIdx], y: ry + 0.04, w: colW[cIdx], h: 0.26,
-        padL: 0, padR: 0, padT: 0,
-        paragraphs: [{
-          text: cell,
-          size: isHdr ? 9.5 : 10,
-          bold: isHdr || cIdx === 2,
-          color: isHdr ? C.cyan : (cIdx === 2 ? C.green : C.text),
-          font: cIdx >= 1 ? 'Consolas' : 'Segoe UI',
-          align: cIdx >= 1 ? 'ctr' : 'l',
-        }],
-      }));
+  rows.forEach((r, i) => {
+    const y = y0 + 0.5 + i * rowH;
+    s.push(rectShape({ x: x0, y, w: 12.0, h: rowH - 0.08, fill: i % 2 === 0 ? C.card : C.cardAlt, line: C.border, radius: 8000 }));
+    let rx = x0;
+    r.forEach((cell, j) => {
+      s.push(textBox({ x: rx + 0.2, y: y + 0.12, w: cols[j] - 0.3, h: rowH - 0.3, padL: 0, padT: 0, anchor: 'ctr',
+        paragraphs: [{ text: cell, size: 13, bold: j === 0, color: j === 0 ? C.white : C.text, font: 'Segoe UI' }] }));
+      rx += cols[j];
     });
   });
 
-  // Right Table Card: ISRO LVM3-M4 (Chandrayaan-3) Flight & Fault Validation
-  s.push(rectShape({ x: 6.80, y: 2.98, w: 5.88, h: 3.82, fill: C.card, line: C.border, radius: 12000 }));
-  s.push(rectShape({ x: 6.80, y: 2.98, w: 5.88, h: 0.06, fill: C.purple }));
-  s.push(textBox({
-    x: 7.02, y: 3.12, w: 5.42, h: 0.55,
-    padL: 0, padT: 0,
-    paragraphs: [
-      { text: 'BENCHMARK 2 · ISRO LVM3-M4 (14 JULY 2023) & FAULT LAB', size: 10, bold: true, color: C.purple, font: 'Consolas', spc: 150, spaceAfterPt: 2 },
-      { text: 'Simulated Ascent vs Actual Telemetry & Failure Cases', size: 14.5, bold: true, color: C.white },
-    ],
-  }));
-
-  const isroRows = [
-    ['LVM3-M4 Event / Scenario', 'Astra Sim', 'ISRO Actual / Ref', 'Outcome'],
-    ['L110 Core Vikas Ignition', 'T+ 108.0 s', 'T+ 108.1 s', 'Nominal (-0.1 s)'],
-    ['S200 Solid Booster Separation', 'T+ 126.7 s', 'T+ 127.0 s', 'Nominal (-0.3 s)'],
-    ['L110 Core Stage Separation', 'T+ 307.1 s', 'T+ 305.6 s', 'Nominal (+1.5 s)'],
-    ['C25 Cryogenic Stage Ignition', 'T+ 309.5 s', 'T+ 308.0 s', 'Nominal (+1.5 s)'],
-    ['C25 Cutoff & GTO Insertion', '170 × 36,501 km', '170 × 36,500 km', 'Target Reached'],
-    ['Fault: 1 Vikas Engine Out', 'T+ 1090.2 s', 'Closed-Loop Comp.', 'GTO Reached'],
-    ['Fault: Gimbal Lock / Vent Blocked', 'T+ 41.5 s / 32.9 s', 'Structural Breakup', 'Bay of Bengal IIP'],
-  ];
-
-  isroRows.forEach((r, idx) => {
-    const ry = 3.74 + idx * 0.36;
-    const isHdr = idx === 0;
-    if (isHdr) {
-      s.push(rectShape({ x: 7.00, y: ry, w: 5.48, h: 0.32, fill: C.cardAlt }));
-    } else if (idx % 2 === 0) {
-      s.push(rectShape({ x: 7.00, y: ry, w: 5.48, h: 0.32, fill: C.bgDeep }));
-    }
-    const colX = [7.06, 9.36, 10.38, 11.45];
-    const colW = [2.26, 0.98, 1.04, 1.00];
-    r.forEach((cell, cIdx) => {
-      const isBreakup = idx === 7 && cIdx === 3;
-      s.push(textBox({
-        x: colX[cIdx], y: ry + 0.04, w: colW[cIdx], h: 0.26,
-        padL: 0, padR: 0, padT: 0,
-        paragraphs: [{
-          text: cell,
-          size: isHdr ? 9.5 : 9.8,
-          bold: isHdr || cIdx === 1,
-          color: isHdr ? C.purple : (isBreakup ? C.amber : (cIdx === 3 ? C.green : C.text)),
-          font: cIdx >= 1 ? 'Consolas' : 'Segoe UI',
-          align: cIdx >= 1 ? 'ctr' : 'l',
-        }],
-      }));
-    });
+  // Architecture strip
+  const flow = ['Data pack (sourced values)', 'Physics + 3D game engine', 'Web app and Android APK'];
+  flow.forEach((t, i) => {
+    const x = 0.65 + i * 4.12;
+    s.push(rectShape({ x, y: 6.05, w: 3.90, h: 0.85, fill: C.cardAlt, line: C.borderCyan, radius: 12000 }));
+    s.push(textBox({ x, y: 6.05, w: 3.90, h: 0.85, anchor: 'ctr', padL: 0.1, padR: 0.1,
+      paragraphs: [{ text: t, size: 13, bold: true, color: C.white, font: 'Segoe UI', align: 'ctr' }] }));
   });
 
   return wrapSlideXml(s.join('\n'));
 }
 
 // ===========================================================================
-// SLIDE 6: Team Members & Contributions (Dedicated Team Slide requested by user)
+// SLIDE 6: Missions from Mercury to Jupiter
 // ===========================================================================
 function buildSlide6() {
   const s = [];
   s.push(slideChrome({
     slideNum: 6,
-    kicker: 'THE TEAM BEHIND ASTRA SPACEFLIGHT',
-    title: 'Team Members & Engineering Ownership',
-    subtitle: 'Four builders uniting 6-DOF flight dynamics, orbital guidance, 3D WebGL graphics, and mobile UX.',
+    kicker: 'THE PLAYFIELD',
+    title: 'Missions from Mercury to Jupiter, at real scale',
+    subtitle: 'Time warp turns a 2.7-year transfer into seconds of play.',
   }));
 
-  const members = [
-    {
-      initials: 'RP',
-      name: 'Ridhima Pandey',
-      role: 'Team Lead · Product Architecture & 3D Rocket Builder',
-      accent: C.purple,
-      tags: 'System Architecture  ·  3D Builder & Snap Engine  ·  .ork CAD Export',
-      points: [
-        'Led product vision merging Domain 05 (Deep-Space Exploration) and Domain 01 (Indian Space Missions) into one unified 3D platform.',
-        'Architected the 40+ preset 3D Rocket Builder, raycast part picking, live property inspector, multi-stage decouplers, and radial boosters.',
-        'Built the round-trip OpenRocket (.ork) exporter, engineering challenges system, and unified .sfb-root glass UI token system.',
-      ],
-    },
-    {
-      initials: 'VA',
-      name: 'Vidit Agarwal',
-      role: 'Aerodynamics & 6-DOF Suborbital Physics Lead',
-      accent: C.cyan,
-      tags: 'Barrowman Aerodynamics  ·  OpenRocket Parser  ·  Flaw Analyzer',
-      points: [
-        'Engineered the OpenRocket (.ork zip/gzip/XML) parser, RASP (.eng) ThrustCurve motor table, and dynamic per-component mass/CG/inertia solver.',
-        'Implemented the 2 ms RK4 6-DOF Barrowman aerodynamics engine with transonic wave drag, multi-stage ignition, and dual parachute recovery.',
-        'Created the rule-based pre-flight & post-flight Flaw Analyzer, environmental fault diagnostics, and 19-flight parameter stress sweep.',
-      ],
-    },
-    {
-      initials: 'KJ',
-      name: 'Kshitij Jha',
-      role: 'Orbital Mechanics, GNC & ISRO Mission Mode Lead',
-      accent: C.green,
-      tags: 'LVM3-M4 GNC Autopilot  ·  12-Channel FaultMonitor  ·  Lunar Descent',
-      points: [
-        'Built the dependency-free rocket-physics orbital engine: WGS-84 rotating Earth, J2–J4 harmonics, Linear-Tangent guidance, and Lambert solver.',
-        'Developed the 12-channel structural/thermal/propulsion FaultMonitor, destructive failure injection lab, and Instantaneous Impact Point (IIP) predictor.',
-        'Implemented the 6-DOF Chandrayaan-3 Shiv Shakti lunar powered descent simulator with procedural boulder hazard maps and autopilot/manual controls.',
-      ],
-    },
-    {
-      initials: 'MK',
-      name: 'Medhansh Khattar',
-      role: '3D WebGL Rendering, Solar System & Mobile Lead',
-      accent: C.amber,
-      tags: 'Floating-Origin Three.js  ·  Mesh Quality Audit  ·  Android Capacitor APK',
-      points: [
-        'Built the floating-origin 3D rendering pipeline, logarithmic depth buffer solar system, GMST sky alignment, and d3-celestial constellation overlay.',
-        'Crafted procedural 3D part geometry with Best/OK/Bad workmanship grading (verified across 67 designs), cutaway internals, and vacuum-expanding plumes.',
-        'Delivered the LVM3 3D launch complex, staging kinematics, offline Service Worker PWA, and native Capacitor Android app with 44 px touch ergonomics.',
-      ],
-    },
+  const rows = [
+    ['Mercury', '3.7', '4.3', '105 days'],
+    ['Venus', '8.9', '10.4', '146 days'],
+    ['Moon', '1.6', '2.4', 'about 3 days'],
+    ['Mars', '3.7', '5.0', '259 days'],
+    ['Jupiter', '23.1', '59.5', '2.7 years'],
   ];
-
-  members.forEach((m, i) => {
-    const col = i % 2;
-    const row = Math.floor(i / 2);
-    const x = 0.65 + col * 6.12;
-    const y = 1.75 + row * 2.58;
-    const w = 5.90;
-    const h = 2.40;
-
-    s.push(rectShape({ x, y, w, h, fill: C.card, line: C.border, radius: 12000 }));
-    s.push(rectShape({ x, y, w: 0.08, h, fill: m.accent }));
-
-    // Monogram Avatar Badge
-    s.push(textBox({
-      x: x + 0.24, y: y + 0.20, w: 0.64, h: 0.64,
-      fill: C.cardAlt, line: m.accent, lineWidthPt: 1.5, radius: 22000,
-      anchor: 'ctr', padL: 0, padR: 0, padT: 0, padB: 0,
-      paragraphs: [{ text: m.initials, size: 16, bold: true, color: m.accent, font: 'Consolas', align: 'ctr' }],
-    }));
-
-    // Name & Role
-    s.push(textBox({
-      x: x + 1.02, y: y + 0.16, w: 4.70, h: 0.72,
-      padL: 0, padT: 0,
-      paragraphs: [
-        { text: m.name, size: 17, bold: true, color: C.white, font: 'Segoe UI', spaceAfterPt: 2 },
-        { text: m.role, size: 11.5, bold: true, color: m.accent, font: 'Segoe UI', spaceAfterPt: 3 },
-        { text: m.tags, size: 9.2, color: C.muted, font: 'Consolas' },
-      ],
-    }));
-
-    // Divider line
-    s.push(rectShape({ x: x + 0.24, y: y + 0.96, w: 5.44, h: 0.012, fill: C.border }));
-
-    // Contribution bullets
-    s.push(textBox({
-      x: x + 0.24, y: y + 1.04, w: 5.46, h: 1.30,
-      padL: 0, padT: 0,
-      paragraphs: m.points.map((pt) => ({
-        text: `▸  ${pt}`,
-        size: 10.6,
-        color: C.text,
-        font: 'Segoe UI',
-        lineSpacingPct: 116,
-        spaceAfterPt: 4,
-      })),
-    }));
+  const heads = ['Destination', 'Gravity (m/s²)', 'Escape speed (km/s)', 'Trip from Earth'];
+  const cols = [2.6, 2.6, 2.9, 2.6];
+  const y0 = 1.85;
+  const rowH = 0.70;
+  let cx = 0.65;
+  heads.forEach((h, j) => {
+    s.push(textBox({ x: cx + 0.2, y: y0 + 0.1, w: cols[j] - 0.3, h: 0.4, padL: 0, padT: 0,
+      paragraphs: [{ text: h.toUpperCase(), size: 10, bold: true, color: C.cyan, font: 'Consolas', spc: 120 }] }));
+    cx += cols[j];
   });
+  rows.forEach((r, i) => {
+    const y = y0 + 0.5 + i * rowH;
+    s.push(rectShape({ x: 0.65, y, w: 10.7, h: rowH - 0.08, fill: i % 2 === 0 ? C.card : C.cardAlt, line: C.border, radius: 8000 }));
+    let rx = 0.65;
+    r.forEach((cell, j) => {
+      s.push(textBox({ x: rx + 0.2, y: y + 0.10, w: cols[j] - 0.3, h: rowH - 0.28, padL: 0, padT: 0, anchor: 'ctr',
+        paragraphs: [{ text: cell, size: 14, bold: j === 0, color: j === 0 ? C.white : C.text, font: 'Segoe UI' }] }));
+      rx += cols[j];
+    });
+  });
+
+  // Side fact
+  s.push(rectShape({ x: 11.55, y: 1.85, w: 1.15, h: 4.7, fill: C.cardAlt, line: C.borderCyan, radius: 12000 }));
+  s.push(textBox({ x: 11.6, y: 2.0, w: 1.05, h: 4.4, padL: 0.05, padR: 0.05, padT: 0,
+    paragraphs: [
+      { text: '5.2 AU', size: 15, bold: true, color: C.cyan, font: 'Segoe UI', align: 'ctr', spaceAfterPt: 2 },
+      { text: 'Jupiter from the Sun', size: 10, color: C.muted, align: 'ctr', spaceAfterPt: 14 },
+      { text: '59.5 km/s', size: 15, bold: true, color: C.cyan, font: 'Segoe UI', align: 'ctr', spaceAfterPt: 2 },
+      { text: 'escape speed at Jupiter', size: 10, color: C.muted, align: 'ctr', spaceAfterPt: 14 },
+      { text: '11.2 km/s', size: 15, bold: true, color: C.cyan, font: 'Segoe UI', align: 'ctr', spaceAfterPt: 2 },
+      { text: 'escape speed at Earth', size: 10, color: C.muted, align: 'ctr' },
+    ],
+  }));
+
+  s.push(textBox({ x: 0.65, y: 6.1, w: 12.0, h: 0.7, padL: 0, padT: 0,
+    paragraphs: [{ text: 'Earth for comparison: gravity 9.8 m/s², escape speed 11.2 km/s. A zoomable map keeps a 5.2 AU orbit readable on a phone.', size: 13, color: C.muted, lineSpacingPct: 120 }] }));
 
   return wrapSlideXml(s.join('\n'));
 }
 
 // ===========================================================================
-// SLIDE 7: Impact, Roadmap & Live Demo Flow
+// SLIDE 7: Landing & Test Reports
 // ===========================================================================
 function buildSlide7() {
   const s = [];
   s.push(slideChrome({
     slideNum: 7,
-    kicker: 'IMPACT, ROADMAP & LIVE DEMO',
-    title: 'From Student Launch Pads to Interplanetary Missions',
-    subtitle: 'Ready to play today in any browser or Android phone — built to scale across the solar system.',
+    kicker: 'LANDING & TEST REPORTS',
+    title: 'Landing is where most designs fail',
+    subtitle: 'Lunar gravity is one-sixth of Earth’s, and with no air a lander must use its engines for everything.',
   }));
 
-  // Left Column: Who It Serves & Immediate Impact
-  s.push(rectShape({ x: 0.65, y: 1.75, w: 3.85, h: 5.05, fill: C.card, line: C.border, radius: 12000 }));
-  s.push(rectShape({ x: 0.65, y: 1.75, w: 3.85, h: 0.06, fill: C.cyan }));
-  s.push(textBox({
-    x: 0.88, y: 1.92, w: 3.40, h: 4.70,
-    padL: 0, padT: 0,
+  const limits = [
+    { v: '2 m/s', l: 'max vertical touchdown speed', c: C.cyan },
+    { v: '0.5 m/s', l: 'max horizontal touchdown speed', c: C.green },
+    { v: '12°', l: 'max ground slope at the site', c: C.amber },
+    { v: '1.62 m/s²', l: 'lunar surface gravity', c: C.purple },
+  ];
+  limits.forEach((st, i) => {
+    const x = 0.65 + i * 3.02;
+    s.push(rectShape({ x, y: 1.85, w: 2.85, h: 1.85, fill: C.card, line: C.border, radius: 12000 }));
+    s.push(rectShape({ x, y: 1.85, w: 2.85, h: 0.06, fill: st.c }));
+    s.push(textBox({ x: x + 0.25, y: 2.1, w: 2.4, h: 1.5, padL: 0, padT: 0,
+      paragraphs: [
+        { text: st.v, size: 24, bold: true, color: C.white, font: 'Segoe UI', spaceAfterPt: 6 },
+        { text: st.l, size: 12, color: C.muted, font: 'Segoe UI', lineSpacingPct: 118 },
+      ] }));
+  });
+
+  s.push(rectShape({ x: 0.65, y: 4.05, w: 5.9, h: 2.75, fill: C.cardAlt, line: C.borderPurple, radius: 12000 }));
+  s.push(textBox({ x: 0.9, y: 4.25, w: 5.4, h: 2.4, padL: 0, padT: 0,
     paragraphs: [
-      { text: '01 · REAL-WORLD IMPACT', size: 10, bold: true, color: C.cyan, font: 'Consolas', spc: 150, spaceAfterPt: 4 },
-      { text: 'Who Uses ASTRA Today', size: 16, bold: true, color: C.white, spaceAfterPt: 10 },
+      { text: 'ON MARS', size: 10, bold: true, color: C.purple, font: 'Consolas', spc: 150, spaceAfterPt: 6 },
+      { text: 'A heat shield and parachute do part of the work.', size: 14, bold: true, color: C.white, spaceAfterPt: 8 },
+      { text: 'On the Moon and Mercury, the engines must do all of it. Each failed landing shows its cause.', size: 13, color: C.text, lineSpacingPct: 120 },
+    ] }));
 
-      { text: 'Student Rocketry Clubs & IN-SPACe Teams', size: 12.5, bold: true, color: C.cyan, spaceAfterPt: 3 },
-      { text: 'Drop any OpenRocket (.ork) design on a phone at the launch field to check stability margin, rail exit speed, fin flutter, and wind sensitivity before lighting the motor.', size: 11, color: C.text, lineSpacingPct: 120, spaceAfterPt: 10 },
+  s.push(rectShape({ x: 6.8, y: 4.05, w: 5.9, h: 2.75, fill: C.cardAlt, line: C.borderCyan, radius: 12000 }));
+  s.push(textBox({ x: 7.05, y: 4.25, w: 5.4, h: 2.4, padL: 0, padT: 0,
+    paragraphs: [
+      { text: 'EVERY TEST FLIGHT REPORTS', size: 10, bold: true, color: C.cyan, font: 'Consolas', spc: 150, spaceAfterPt: 6 },
+      { text: 'Thrust-to-weight at lift-off', size: 13, color: C.text, spaceAfterPt: 4 },
+      { text: 'Delta-v per stage', size: 13, color: C.text, spaceAfterPt: 4 },
+      { text: 'Peak drag and touchdown speed', size: 13, color: C.text, spaceAfterPt: 4 },
+      { text: 'The cause of any failure', size: 13, color: C.text },
+    ] }));
 
-      { text: 'Aerospace Educators & STEM Labs', size: 12.5, bold: true, color: C.green, spaceAfterPt: 3 },
-      { text: 'Teach Barrowman aerodynamics, 6-DOF attitude control, orbital staging, and lunar descent visually with live force vectors and destructive fault injection.', size: 11, color: C.text, lineSpacingPct: 120, spaceAfterPt: 10 },
+  return wrapSlideXml(s.join('\n'));
+}
 
-      { text: 'ISRO Mission Enthusiasts', size: 12.5, bold: true, color: C.purple, spaceAfterPt: 3 },
-      { text: 'Experience Indian spaceflight hands-on — from RH-200 sounding hops at Sriharikota to LVM3-M4 GTO insertion and Chandrayaan-3 touchdown.', size: 11, color: C.text, lineSpacingPct: 120 },
-    ],
+// ===========================================================================
+// SLIDE 8: Thank You
+// ===========================================================================
+function buildSlide8() {
+  const s = [];
+  s.push(slideChrome({
+    slideNum: 8,
+    kicker: 'THANK YOU',
+    title: 'Thank you',
+    subtitle: 'Questions and live flight welcome.',
   }));
 
-  // Center Column: Future Horizon (Mercury to Jupiter Roadmap)
-  s.push(rectShape({ x: 4.74, y: 1.75, w: 3.85, h: 5.05, fill: C.card, line: C.border, radius: 12000 }));
-  s.push(rectShape({ x: 4.74, y: 1.75, w: 3.85, h: 0.06, fill: C.purple }));
+  s.push(rectShape({ x: 0.65, y: 2.2, w: 12.03, h: 3.9, fill: C.cardAlt, line: C.borderCyan, lineWidthPt: 1.2, radius: 12000 }));
   s.push(textBox({
-    x: 4.97, y: 1.92, w: 3.40, h: 4.70,
-    padL: 0, padT: 0,
+    x: 0.65, y: 2.6, w: 12.03, h: 3.1, padL: 0.3, padR: 0.3, anchor: 'ctr',
     paragraphs: [
-      { text: '02 · ROADMAP TO JUPITER', size: 10, bold: true, color: C.purple, font: 'Consolas', spc: 150, spaceAfterPt: 4 },
-      { text: 'Expanding the Mission Fleet', size: 16, bold: true, color: C.white, spaceAfterPt: 10 },
-
-      { text: 'Phase A · Custom Liquid Orbital Builder', size: 12.5, bold: true, color: C.purple, spaceAfterPt: 3 },
-      { text: 'Let players assemble custom kerolox, methalox, and hydrolox multi-stage orbital launchers in the 3D builder and fly them straight into the orbital engine.', size: 11, color: C.text, lineSpacingPct: 120, spaceAfterPt: 10 },
-
-      { text: 'Phase B · PSLV, Gaganyaan & Mangalyaan', size: 12.5, bold: true, color: C.cyan, spaceAfterPt: 3 },
-      { text: 'Add ISRO PSLV-XL, Gaganyaan crewed abort scenarios, and Mars Orbiter Mission (MOM) trans-Mars Lambert injection windows.', size: 11, color: C.text, lineSpacingPct: 120, spaceAfterPt: 10 },
-
-      { text: 'Phase C · Mercury to Jupiter Transfers', size: 12.5, bold: true, color: C.amber, spaceAfterPt: 3 },
-      { text: 'Unlock interactive gravity-assist trajectories across the rendered Solar System from Mercury and Venus aerocapture to Jovian moon tours.', size: 11, color: C.text, lineSpacingPct: 120 },
-    ],
-  }));
-
-  // Right Column: Live Judge Walkthrough & Technical Summary
-  s.push(rectShape({ x: 8.83, y: 1.75, w: 3.85, h: 5.05, fill: C.cardAlt, line: C.borderCyan, lineWidthPt: 1.3, radius: 12000 }));
-  s.push(rectShape({ x: 8.83, y: 1.75, w: 3.85, h: 0.06, fill: C.green }));
-  s.push(textBox({
-    x: 9.06, y: 1.92, w: 3.40, h: 4.70,
-    padL: 0, padT: 0,
-    paragraphs: [
-      { text: '03 · LIVE DEMO WALKTHROUGH', size: 10, bold: true, color: C.green, font: 'Consolas', spc: 150, spaceAfterPt: 4 },
-      { text: '90-Second Judge Tour', size: 16, bold: true, color: C.white, spaceAfterPt: 10 },
-
-      { text: 'Step 1 · Snap & Grade in 3D Builder', size: 12, bold: true, color: C.cyan, spaceAfterPt: 2 },
-      { text: 'Assemble a 2-stage rocket or drop an .ork file, toggle internal cutaway, and inspect live CG/CP stability.', size: 10.8, color: C.text, spaceAfterPt: 8 },
-
-      { text: 'Step 2 · Launch & Inspect Force Vectors', size: 12, bold: true, color: C.green, spaceAfterPt: 2 },
-      { text: 'Fly from Sriharikota, pause at a detected flaw with 3D Thrust/Drag/Lift arrows, and run the 19-flight sweep.', size: 10.8, color: C.text, spaceAfterPt: 8 },
-
-      { text: 'Step 3 · Fly LVM3-M4 & Inject a Fault', size: 12, bold: true, color: C.purple, spaceAfterPt: 2 },
-      { text: 'Watch S200 & L110 staging to GTO, then trigger a Gimbal Lock or Vikas Engine-Out to see live health & IIP impact.', size: 10.8, color: C.text, spaceAfterPt: 8 },
-
-      { text: 'Step 4 · Touch Down at Shiv Shakti Point', size: 12, bold: true, color: C.amber, spaceAfterPt: 2 },
-      { text: 'Pilot the lunar lander down to 69.37°S, 32.35°E avoiding boulder hazards for a soft landing score.', size: 10.8, color: C.text, spaceAfterPt: 12 },
-
-      { text: 'THANK YOU · QUESTIONS & LIVE FLIGHT', size: 11, bold: true, color: C.white, font: 'Consolas', align: 'ctr', spc: 120 },
+      { text: 'ASTRA SPACEFLIGHT', size: 14, bold: true, color: C.cyan, font: 'Consolas', align: 'ctr', spc: 200, spaceAfterPt: 14 },
+      { text: 'Every rocket design becomes a playable mission.', size: 26, bold: true, color: C.white, font: 'Segoe UI', align: 'ctr', spaceAfterPt: 14 },
+      { text: 'Ridhima Pandey · Kshitij Jha · Vidit Agarwal · Medhansh Khattar', size: 14, color: C.muted, font: 'Segoe UI', align: 'ctr' },
     ],
   }));
 
@@ -1078,6 +817,7 @@ async function generatePptx() {
     buildSlide5(),
     buildSlide6(),
     buildSlide7(),
+    buildSlide8(),
   ];
 
   // 1. [Content_Types].xml
@@ -1308,14 +1048,25 @@ async function generatePptx() {
     ? fs.readFileSync(SPACE_ART_OUT)
     : fs.readFileSync(UPLOADED_IMG);
   zip.file('ppt/media/slide1_space.jpg', spaceArtBytes);
+  zip.file('ppt/media/slide4_flight.jpg', fs.readFileSync(path.join(ROOT, 'screenshots', 'mobile', '04-launch.jpg')));
+  zip.file('ppt/media/slide4_build.jpg', fs.readFileSync(path.join(ROOT, 'screenshots', 'mobile', '03-build-parts.jpg')));
+  zip.file('ppt/media/slide4_desktop.jpg', fs.readFileSync(path.join(ROOT, 'screenshots', 'desktop-build-pad.jpg')));
+  const shotFlight = path.join(ROOT, 'screenshots', 'mobile', '04-launch.jpg');
+  const shotBuild = path.join(ROOT, 'screenshots', 'mobile', '03-build-parts.jpg');
+  zip.file('ppt/media/slide6_flight.jpg', fs.readFileSync(shotFlight));
+  zip.file('ppt/media/slide6_build.jpg', fs.readFileSync(shotBuild));
 
   // 7. Write slides & slide relationships
   slides.forEach((xml, idx) => {
     const num = idx + 1;
     zip.file(`ppt/slides/slide${num}.xml`, xml);
+    const imgRel = (id, target) => `
+  <Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/${target}"/>`;
     const extraRel = num === 1
-      ? `\n  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/slide1_space.jpg"/>`
-      : '';
+      ? imgRel('rId2', 'slide1_space.jpg')
+      : num === 4
+        ? imgRel('rId2', 'slide4_flight.jpg') + imgRel('rId3', 'slide4_build.jpg') + imgRel('rId4', 'slide4_desktop.jpg')
+        : '';
     zip.file(`ppt/slides/_rels/slide${num}.xml.rels`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>${extraRel}
@@ -1324,7 +1075,9 @@ async function generatePptx() {
 
   const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
   fs.writeFileSync(PPTX_OUT, buf);
+  fs.writeFileSync(PPT_OUT, buf);
   console.log(`Wrote 7-slide PPTX (${(buf.length / 1024).toFixed(1)} KB) -> ${PPTX_OUT}`);
+  console.log(`Wrote 7-slide PPT  (${(buf.length / 1024).toFixed(1)} KB) -> ${PPT_OUT}`);
 }
 
 await generatePptx();

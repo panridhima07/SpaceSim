@@ -102,36 +102,86 @@ function rate(y: Y, a: number, k: number, mu: number): Y {
   return [y[1], a * k * c - mu / (r * r) + (y[2] * y[2]) / (r * r * r), a * r * c];
 }
 
+/** Thrust acceleration during burn `s` (or 0 in a coast, s = null) at time tt. */
+function segAccel(s: BurnSegment | null, tt: number): number {
+  return s ? s.ve / Math.max(s.tau - (tt - s.start), 1e-3) : 0;
+}
+
+/**
+ * Classical RK4 on the planar state held in `st` = [t, r, rdot, h], from st[0] to t1 in
+ * steps of at most 4 s. This is `rate` written out on plain numbers (the same operations
+ * in the same order), because guidance runs it a few hundred thousand times per flight.
+ */
+function advancePlanar(st: Float64Array, t1: number, s: BurnSegment | null, k1: number, k2: number, mu: number): void {
+  let t = st[0];
+  let y0 = st[1], y1 = st[2], y2 = st[3];
+  const n = Math.max(1, Math.ceil((t1 - t) / 4));
+  const h = (t1 - t) / n;
+  for (let i = 0; i < n; i++) {
+    let a: number, k: number, c: number, r: number;
+    // a1 = rate(y, accel(t), k1 + k2 t)
+    a = segAccel(s, t);
+    k = k1 + k2 * t;
+    c = 1 / Math.sqrt(1 + k * k);
+    r = y0;
+    const a10 = y1;
+    const a11 = a * k * c - mu / (r * r) + (y2 * y2) / (r * r * r);
+    const a12 = a * r * c;
+    // a2 at t + h/2, y + (h/2) a1
+    const tm = t + h / 2;
+    let u0 = y0 + (h / 2) * a10, u1 = y1 + (h / 2) * a11, u2 = y2 + (h / 2) * a12;
+    a = segAccel(s, tm);
+    k = k1 + k2 * tm;
+    c = 1 / Math.sqrt(1 + k * k);
+    r = u0;
+    const a20 = u1;
+    const a21 = a * k * c - mu / (r * r) + (u2 * u2) / (r * r * r);
+    const a22 = a * r * c;
+    // a3 at t + h/2, y + (h/2) a2
+    u0 = y0 + (h / 2) * a20; u1 = y1 + (h / 2) * a21; u2 = y2 + (h / 2) * a22;
+    r = u0;
+    const a30 = u1;
+    const a31 = a * k * c - mu / (r * r) + (u2 * u2) / (r * r * r);
+    const a32 = a * r * c;
+    // a4 at t + h, y + h a3
+    const te = t + h;
+    u0 = y0 + h * a30; u1 = y1 + h * a31; u2 = y2 + h * a32;
+    a = segAccel(s, te);
+    k = k1 + k2 * te;
+    c = 1 / Math.sqrt(1 + k * k);
+    r = u0;
+    const a40 = u1;
+    const a41 = a * k * c - mu / (r * r) + (u2 * u2) / (r * r * r);
+    const a42 = a * r * c;
+    y0 = y0 + (h / 6) * (a10 + 2 * a20 + 2 * a30 + a40);
+    y1 = y1 + (h / 6) * (a11 + 2 * a21 + 2 * a31 + a41);
+    y2 = y2 + (h / 6) * (a12 + 2 * a22 + 2 * a32 + a42);
+    t += h;
+  }
+  st[0] = t;
+  st[1] = y0;
+  st[2] = y1;
+  st[3] = y2;
+}
+
 /** Fly the steering law forward and return the state at cutoff. */
 export function predictCutoff(state: PlanarState, law: SteeringLaw, mu: number, segs: BurnSegment[]): PlanarState {
-  let y: Y = [state.r, state.rdot, state.h];
-  let t = 0;
-  const advance = (t1: number, accel: (t: number) => number): void => {
-    const n = Math.max(1, Math.ceil((t1 - t) / 4));
-    const h = (t1 - t) / n;
-    for (let i = 0; i < n; i++) {
-      const f = (tt: number, yy: Y): Y => rate(yy, accel(tt), law.k1 + law.k2 * tt, mu);
-      const a1 = f(t, y);
-      const a2 = f(t + h / 2, [y[0] + (h / 2) * a1[0], y[1] + (h / 2) * a1[1], y[2] + (h / 2) * a1[2]]);
-      const a3 = f(t + h / 2, [y[0] + (h / 2) * a2[0], y[1] + (h / 2) * a2[1], y[2] + (h / 2) * a2[2]]);
-      const a4 = f(t + h, [y[0] + h * a3[0], y[1] + h * a3[1], y[2] + h * a3[2]]);
-      y = [
-        y[0] + (h / 6) * (a1[0] + 2 * a2[0] + 2 * a3[0] + a4[0]),
-        y[1] + (h / 6) * (a1[1] + 2 * a2[1] + 2 * a3[1] + a4[1]),
-        y[2] + (h / 6) * (a1[2] + 2 * a2[2] + 2 * a3[2] + a4[2]),
-      ];
-      t += h;
-    }
-  };
+  const st = new Float64Array(4);
+  st[0] = 0;
+  st[1] = state.r;
+  st[2] = state.rdot;
+  st[3] = state.h;
+  const k1 = law.k1;
+  const k2 = law.k2;
   for (const s of segs) {
     if (law.T <= s.start) break;
-    if (s.start > t) advance(s.start, () => 0);
+    if (s.start > st[0]) advancePlanar(st, s.start, null, k1, k2, mu);
     const end = Math.min(s.start + s.duration, law.T);
-    if (end > t) advance(end, (tt) => s.ve / Math.max(s.tau - (tt - s.start), 1e-3));
+    if (end > st[0]) advancePlanar(st, end, s, k1, k2, mu);
   }
   // Cutoff time falls in a coast (before the next burn or after the last): fall freely to it.
-  if (law.T > t) advance(law.T, () => 0);
-  return { r: y[0], rdot: y[1], h: y[2] };
+  if (law.T > st[0]) advancePlanar(st, law.T, null, k1, k2, mu);
+  return { r: st[1], rdot: st[2], h: st[3] };
 }
 
 function solve3(m: number[][], b: number[]): number[] | null {

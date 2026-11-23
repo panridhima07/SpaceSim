@@ -69,7 +69,15 @@ const TOP_P = (() => {
 })();
 const TOP_RHO = TOP_P / (R_AIR * TOP_T);
 
-function standardAtTop(h: number): { T: number; P: number } {
+// Per-layer constants of the two formulas below, hoisted out of the per-call path.
+const LAYER_RT = BASES.map((b) => R_AIR * b.T);
+const LAYER_EXP = BASES.map((b) => -G / (b.lapse * R_AIR));
+
+// standardAtTop writes its result here instead of allocating a pair per call.
+let stdT = 0;
+let stdP = 0;
+
+function standardAtTop(h: number): void {
   // Find the layer containing h (h in [0, H_TOP]).
   let idx = 0;
   for (let i = BASES.length - 1; i >= 0; i--) {
@@ -83,11 +91,12 @@ function standardAtTop(h: number): { T: number; P: number } {
   const T = base.T + base.lapse * dh;
   let P: number;
   if (base.lapse === 0) {
-    P = base.P * Math.exp((-G * dh) / (R_AIR * base.T));
+    P = base.P * Math.exp((-G * dh) / LAYER_RT[idx]);
   } else {
-    P = base.P * Math.pow(T / base.T, -G / (base.lapse * R_AIR));
+    P = base.P * Math.pow(T / base.T, LAYER_EXP[idx]);
   }
-  return { T, P };
+  stdT = T;
+  stdP = P;
 }
 
 export const atmosphere: AtmosphereFn = (altitude: number): Atmosphere => {
@@ -98,7 +107,9 @@ export const atmosphere: AtmosphereFn = (altitude: number): Atmosphere => {
   let rho: number;
 
   if (h <= H_TOP) {
-    ({ T, P } = standardAtTop(h));
+    standardAtTop(h);
+    T = stdT;
+    P = stdP;
     rho = P / (R_AIR * T);
   } else {
     // Above 86 km: exponential decay of density from the model top.

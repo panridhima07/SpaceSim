@@ -91,6 +91,7 @@ function copySample(s: FlightSample): FlightSample {
     if (s[key] !== undefined) out[key] = s[key];
   }
   if (s.health !== undefined) out.health = { ...s.health };
+  if (s.payloadOffset !== undefined) out.payloadOffset = [s.payloadOffset[0], s.payloadOffset[1], s.payloadOffset[2]];
   return out;
 }
 
@@ -157,6 +158,8 @@ function interpolateSample(a: FlightSample, b: FlightSample, t: number): FlightS
   }
   const health = lerpHealth(a.health, b.health, f);
   if (health !== undefined) out.health = health;
+  // The payload sits on the stage (offset zero) until the sample where it has left.
+  if (b.payloadOffset !== undefined) out.payloadOffset = lerpVec3(a.payloadOffset ?? [0, 0, 0], b.payloadOffset, f);
   return out;
 }
 

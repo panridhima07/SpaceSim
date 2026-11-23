@@ -11,7 +11,15 @@ npm test          # node --test over test/*.test.ts
 npm run launch    # node examples/launch-to-orbit.ts
 npm run lvm3      # node examples/lvm3-gto.ts
 npm run moon      # node examples/lunar-transfer.ts
+npm run dispersions   # node examples/dispersions.ts [runs] [seed]
+npm run bench     # node bench/bench.ts
 ```
+
+`npm run bench` times four fixed jobs (two full ascents, debris impact prediction, a ten-day orbit propagation) and prints a fingerprint of each result, so a speed change can be checked for not having changed the answer.
+
+`npm run dispersions` flies the same ascent many times with random scatter in thrust, specific impulse, dry mass, propellant load, drag and wind (`runDispersions` in `src/sim/montecarlo.ts`), and prints the mean, spread and 5 % / 95 % values of the injection orbit. The same seed always gives the same flights. Closed-loop guidance absorbs the scatter: the orbit comes out the same and the cost shows up as propellant left over.
+
+In wind, the open-loop turn follows the velocity over the ground and leans into the air-relative velocity only where dynamic pressure is high (`loadReliefQ`, default 10 kPa). Following the air-relative velocity all the way up keeps the angle of attack at zero but is unstable sideways: a nose turned into the wind thrusts the vehicle further upwind.
 
 Trimmed output of `npm run launch` (two-stage rocket from Sriharikota to a 200 x 600 km transfer orbit, then a circularisation burn at apogee):
 

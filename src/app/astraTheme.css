@@ -8,10 +8,10 @@
 /* ---------- Tokens ---------- */
 
 .sfb-root {
-  --sfb-panel: rgba(6, 11, 20, 0.68);
-  --sfb-line: rgba(150, 195, 255, 0.16);
-  --sfb-accent: #7fd7ff;
-  --sfb-muted: #7f93b2;
+  --sfb-panel: rgba(17, 17, 19, 0.78);
+  --sfb-line: rgba(255, 255, 255, 0.08);
+  --sfb-accent: #f5a65b;
+  --sfb-muted: #8a8a90;
   /* Flat: a soft cast shadow and a hairline top highlight. No edge, no underside. */
   --sfb-slab:
     0 14px 50px rgba(0, 0, 0, 0.45),
@@ -20,7 +20,7 @@
 
 /* Build mode used a blue accent; the reference is cyan everywhere. */
 .sfb-root.sfb-builder {
-  --sfb-accent: #7fd7ff;
+  --sfb-accent: #f5a65b;
 }
 
 /* ---------- Panels: flat glass ---------- */
@@ -28,7 +28,7 @@
 .sfb-root .sfb-panel {
   background: var(--sfb-panel);
   border: 1px solid var(--sfb-line);
-  border-radius: 14px;
+  border-radius: 10px;
   backdrop-filter: blur(18px) saturate(1.4);
   -webkit-backdrop-filter: blur(18px) saturate(1.4);
   box-shadow: var(--sfb-slab);
@@ -51,15 +51,17 @@
 }
 
 .sfb-root .sfb-section-title {
+  font-family: var(--sfb-mono);
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.28em;
-  color: var(--sfb-accent);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--sfb-muted);
 }
 
 .sfb-root .sfb-field-label {
   font-size: 10px;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.12em;
   color: var(--sfb-muted);
 }
 
@@ -108,7 +110,7 @@
 .sfb-root:not(.sfb-mobile) .sfb-title {
   font-size: 12px;
   font-weight: 400;
-  letter-spacing: 0.28em;
+  letter-spacing: 0.14em;
   color: var(--sfb-muted);
 }
 
@@ -123,7 +125,7 @@
 
 .sfb-root:not(.sfb-mobile) .sfb-title i {
   font-size: 12px;
-  letter-spacing: 0.28em;
+  letter-spacing: 0.14em;
   color: var(--sfb-muted);
 }
 
@@ -152,7 +154,7 @@
   bottom: 12px;
   padding: 8px 10px;
   gap: 8px;
-  border-radius: 14px;
+  border-radius: 10px;
 }
 
 /* ---------- Buttons: flat, no raised edge ---------- */
@@ -161,17 +163,17 @@
   font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.06em;
-  background: rgba(18, 30, 52, 0.55);
+  background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--sfb-line);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 8px 12px;
   box-shadow: none;
 }
 
 @media (hover: hover) {
   .sfb-root .sfb-btn:hover:not(:disabled) {
-    background: rgba(40, 70, 120, 0.5);
-    border-color: rgba(127, 215, 255, 0.5);
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.16);
     transform: none;
     box-shadow: none;
     filter: none;
@@ -179,8 +181,8 @@
 
   /* A latched button keeps its lit fill under the pointer. */
   .sfb-root .sfb-btn.is-active:hover:not(:disabled) {
-    background: rgba(127, 215, 255, 0.16);
-    border-color: #7fd7ff;
+    background: rgba(245, 166, 91, 0.12);
+    border-color: #f5a65b;
   }
 }
 
@@ -192,8 +194,8 @@
 
 /* Latched on: lit fill and bright border, no pressed-down offset. */
 .sfb-root .sfb-btn.is-active {
-  background: rgba(127, 215, 255, 0.16);
-  border-color: #7fd7ff;
+  background: rgba(245, 166, 91, 0.12);
+  border-color: #f5a65b;
   transform: none;
   box-shadow: none;
 }
@@ -202,28 +204,28 @@
   background: rgba(255, 255, 255, 0.04);
 }
 
-/* The one highlighted action on screen. */
+/* The one highlighted action on screen: the white key. No gradient, no glow. */
 .sfb-root .sfb-btn-primary {
-  background: linear-gradient(180deg, rgba(127, 215, 255, 0.95), rgba(70, 160, 230, 0.95));
+  background: #f4f4f2;
   border-color: transparent;
-  color: #031018;
-  font-weight: 700;
-  box-shadow: 0 0 24px rgba(127, 215, 255, 0.35);
+  color: #0a0a0b;
+  font-weight: 600;
+  box-shadow: none;
 }
 
 @media (hover: hover) {
   .sfb-root .sfb-btn-primary:hover:not(:disabled) {
-    background: linear-gradient(180deg, rgba(127, 215, 255, 0.95), rgba(70, 160, 230, 0.95));
+    background: #fff;
     border-color: transparent;
-    filter: brightness(1.08);
-    box-shadow: 0 0 36px rgba(127, 215, 255, 0.6);
+    filter: none;
+    box-shadow: none;
   }
 }
 
 .sfb-root .sfb-btn-primary:active:not(:disabled) {
-  background: linear-gradient(180deg, rgba(127, 215, 255, 0.95), rgba(70, 160, 230, 0.95));
+  background: #f4f4f2;
   transform: scale(0.97);
-  box-shadow: 0 0 22px rgba(127, 215, 255, 0.5);
+  box-shadow: none;
 }
 
 /* Variants restore the properties the generic rule above just reset. */
@@ -274,13 +276,13 @@
 .sfb-root .sfb-select {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--sfb-line);
-  border-radius: 10px;
+  border-radius: 8px;
   box-shadow: none;
 }
 
 .sfb-root .sfb-input:focus,
 .sfb-root .sfb-select:focus {
-  border-color: #7fd7ff;
+  border-color: #f5a65b;
   box-shadow: none;
 }
 
@@ -289,31 +291,32 @@
 .sfb-root .sfb-clock {
   font-size: 15px;
   letter-spacing: 0.12em;
-  color: #fff;
-  text-shadow: 0 0 14px rgba(127, 215, 255, 0.6);
+  color: #ededee;
+  text-shadow: none;
 }
 
 .sfb-root .sfb-phase {
   padding: 5px 12px;
   border: 1px solid var(--sfb-line);
   border-radius: 999px;
-  background: rgba(10, 20, 36, 0.5);
+  background: rgba(20, 20, 23, 0.5);
   font-size: 11px;
-  letter-spacing: 0.2em;
-  color: #7fd7ff;
+  letter-spacing: 0.14em;
+  color: #f5a65b;
   box-shadow: none;
 }
 
 .sfb-root .sfb-tele dt {
   font-size: 9px;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.14em;
   color: var(--sfb-muted);
 }
 
 .sfb-root .sfb-tele dd {
   font-size: 19px;
-  font-weight: 500;
-  color: #fff;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: #ededee;
 }
 
 /* Flaw cards lose their cast edge. */
@@ -337,7 +340,7 @@
 
 /* Save / Load and challenge modals: the reference dim with a light blur. */
 .sfb-root .sfb-b-modal-backdrop {
-  background: rgba(0, 3, 10, 0.55);
+  background: rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
 }
@@ -347,47 +350,47 @@
   padding: 5px 12px;
   border-radius: 999px;
   font-size: 11px;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.14em;
   color: var(--sfb-muted);
-  background: rgba(10, 20, 36, 0.5);
+  background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--sfb-line);
 }
 
 .sfb-root .sfb-b-cat.is-active {
-  border-color: #7fd7ff;
-  color: #fff;
-  background: rgba(127, 215, 255, 0.16);
+  border-color: #f5a65b;
+  color: #f5a65b;
+  background: rgba(245, 166, 91, 0.12);
 }
 
 /* Part cards: left-aligned flat buttons with a dim second line. */
 .sfb-root .sfb-b-part-card {
-  background: rgba(18, 30, 52, 0.55);
+  background: rgba(28, 28, 31, 0.55);
   border: 1px solid var(--sfb-line);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 8px 10px;
 }
 
 .sfb-root .sfb-b-part-card:hover {
-  background: rgba(40, 70, 120, 0.5);
-  border-color: rgba(127, 215, 255, 0.5);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.16);
 }
 
 /* Selected card. */
 .sfb-root .sfb-b-part-card.is-placing,
 .sfb-root .sfb-b-part-card.is-placing:hover {
-  background: rgba(127, 215, 255, 0.16);
-  border-color: #7fd7ff;
-  box-shadow: 0 0 0 1px rgba(127, 215, 255, 0.25) inset;
+  background: rgba(245, 166, 91, 0.12);
+  border-color: #f5a65b;
+  box-shadow: 0 0 0 1px rgba(245, 166, 91, 0.25) inset;
 }
 
 .sfb-root .sfb-b-stack-row {
-  background: rgba(18, 30, 52, 0.55);
+  background: rgba(28, 28, 31, 0.55);
   border-radius: 10px;
 }
 
 .sfb-root .sfb-b-stack-row.is-selected {
-  background: rgba(127, 215, 255, 0.16);
-  border-color: #7fd7ff;
+  background: rgba(245, 166, 91, 0.12);
+  border-color: #f5a65b;
 }
 
 /* ---------- Motion ---------- */
@@ -433,13 +436,13 @@
 .sfb-root .sfb-b-ctrl-label,
 .sfb-root .sfb-b-stat-k {
   font-size: 10px;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.12em;
   color: var(--sfb-muted);
 }
 
 .sfb-root .sfb-b-part-list,
 .sfb-root .sfb-b-right {
-  scrollbar-color: rgba(127, 215, 255, 0.3) transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
 }
 
 .sfb-root .sfb-b-sublist {
@@ -447,16 +450,22 @@
 }
 
 .sfb-root .sfb-b-saved-card,
-.sfb-root .sfb-b-chal-item {
-  background: rgba(18, 30, 52, 0.55);
+.sfb-root .sfb-b-chal-item,
+.sfb-root .sfb-b-export-btn {
+  background: rgba(28, 28, 31, 0.55);
   border: 1px solid var(--sfb-line);
   border-radius: 10px;
 }
 
+.sfb-root .sfb-b-export-btn:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .sfb-root.sfb-mobile .sfb-dock .sfb-btn-launch {
   box-shadow:
-    0 0 0 5px rgba(127, 215, 255, 0.16),
-    0 0 26px rgba(127, 215, 255, 0.4);
+    0 0 0 5px rgba(255, 255, 255, 0.06),
+    0 6px 18px rgba(0, 0, 0, 0.45);
 }
 
 .sfb-root.sfb-mobile .sfb-btn {
@@ -477,4 +486,474 @@
 .sfb-root.sfb-mobile .sfb-hud-build {
   border-color: var(--sfb-accent);
   color: var(--sfb-accent);
+}
+
+/* ==========================================================================
+   Builder: laptop layout
+   Search on top of the palette, category rail down its side, compact part cards,
+   a floating view bar for trackpads, and a drag label that follows the pointer.
+   Phones (.sfb-mobile) keep their drawers; overrides for them are at the end.
+   ========================================================================== */
+
+.sfb-root.sfb-builder .sfb-b-palette {
+  top: 70px;
+  bottom: 12px;
+  width: 304px;
+  padding: 10px;
+  gap: 8px;
+}
+
+.sfb-root.sfb-builder .sfb-b-right {
+  top: 70px;
+  bottom: 12px;
+  width: 290px;
+}
+
+/* The account button sits over the palette's top-left corner; the search box starts
+   to its right. */
+.sfb-root.sfb-builder .sfb-b-search {
+  flex: none;
+  padding-left: 48px;
+}
+
+.sfb-root.sfb-builder .sfb-b-search-input {
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.sfb-root.sfb-builder .sfb-b-pal-body {
+  display: flex;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.sfb-root.sfb-builder .sfb-b-pal-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Category rail */
+.sfb-root.sfb-builder .sfb-b-cats {
+  flex: none;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  width: 60px;
+  gap: 3px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.sfb-root.sfb-builder .sfb-b-cat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  padding: 5px 2px 4px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  line-height: 1.1;
+  transition:
+    transform 120ms var(--sfb-ease-out),
+    background-color 150ms var(--sfb-ease-out),
+    border-color 150ms var(--sfb-ease-out),
+    color 150ms var(--sfb-ease-out);
+}
+
+.sfb-root.sfb-builder .sfb-b-cat:active {
+  transform: scale(0.97);
+}
+
+.sfb-root.sfb-builder .sfb-b-cat-ico {
+  display: flex;
+  color: var(--sfb-muted);
+}
+
+.sfb-root.sfb-builder .sfb-b-cat.is-active .sfb-b-cat-ico {
+  color: var(--sfb-accent);
+}
+
+@media (hover: hover) {
+  .sfb-root.sfb-builder .sfb-b-cat:hover:not(.is-active) {
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.16);
+  }
+}
+
+/* "Only parts that fit" switch */
+.sfb-root.sfb-builder .sfb-b-fits {
+  appearance: none;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--sfb-line);
+  background: rgba(20, 20, 23, 0.5);
+  color: var(--sfb-muted);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.sfb-root.sfb-builder .sfb-b-fits-box {
+  flex: none;
+  width: 26px;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  position: relative;
+  transition: background-color 150ms var(--sfb-ease-out);
+}
+
+.sfb-root.sfb-builder .sfb-b-fits-box::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 150ms var(--sfb-ease-out);
+}
+
+.sfb-root.sfb-builder .sfb-b-fits.is-on {
+  color: #fff;
+  border-color: rgba(245, 166, 91, 0.45);
+}
+
+.sfb-root.sfb-builder .sfb-b-fits.is-on .sfb-b-fits-box {
+  background: var(--sfb-accent);
+}
+
+.sfb-root.sfb-builder .sfb-b-fits.is-on .sfb-b-fits-box::after {
+  transform: translateX(12px);
+  background: #0a0a0b;
+}
+
+/* Part cards */
+.sfb-root.sfb-builder .sfb-b-part-list {
+  gap: 4px;
+}
+
+.sfb-root.sfb-builder .sfb-b-part-group {
+  flex: none;
+  margin-top: 6px;
+  padding: 2px 2px 1px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--sfb-muted);
+}
+
+.sfb-root.sfb-builder .sfb-b-part-group:first-child {
+  margin-top: 0;
+}
+
+.sfb-root.sfb-builder .sfb-b-part-card {
+  flex: none;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.sfb-root.sfb-builder .sfb-b-part-card:active {
+  transform: scale(0.97);
+}
+
+.sfb-root.sfb-builder .sfb-b-part-ico {
+  flex: none;
+  display: flex;
+  color: var(--sfb-accent);
+  opacity: 0.9;
+}
+
+.sfb-root.sfb-builder .sfb-b-part-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sfb-root.sfb-builder .sfb-b-part-name,
+.sfb-root.sfb-builder .sfb-b-part-card .sfb-b-part-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sfb-root.sfb-builder .sfb-b-part-card .sfb-b-part-sub {
+  font-family: inherit;
+  font-size: 10.5px;
+}
+
+.sfb-root.sfb-builder .sfb-b-part-size {
+  flex: none;
+  min-width: 24px;
+  padding: 1px 5px;
+  border-radius: 6px;
+  border: 1px solid var(--sfb-line);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-align: center;
+  color: var(--sfb-muted);
+}
+
+.sfb-root.sfb-builder .sfb-b-part-card.is-misfit {
+  opacity: 0.55;
+}
+
+.sfb-root.sfb-builder .sfb-b-pal-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 2px;
+}
+
+.sfb-root.sfb-builder .sfb-b-pal-note {
+  flex: none;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--sfb-muted);
+}
+
+.sfb-root.sfb-builder .sfb-b-link {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--sfb-accent);
+  text-decoration: underline;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+/* Right panel: the part list never pushes the editor off a short screen. */
+.sfb-root.sfb-builder:not(.sfb-mobile) .sfb-b-stack {
+  flex: none;
+  max-height: 30vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+
+.sfb-root.sfb-builder .sfb-b-inspector,
+.sfb-root.sfb-builder .sfb-b-flaws {
+  flex: none;
+}
+
+.sfb-root.sfb-builder .sfb-b-stack-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--sfb-muted);
+}
+
+.sfb-root.sfb-builder .sfb-b-mobile-only {
+  display: none;
+}
+
+.sfb-root.sfb-builder .sfb-b-sym-btns {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+}
+
+/* Top bar stats read as plain words now. */
+.sfb-root.sfb-builder .sfb-b-stat-k {
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.sfb-root.sfb-builder .sfb-b-stat-v {
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.sfb-root.sfb-builder .sfb-b-stat {
+  cursor: help;
+  pointer-events: auto;
+}
+
+/* Floating view bar */
+.sfb-root.sfb-builder .sfb-b-viewbar {
+  position: fixed;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  z-index: 3;
+  white-space: nowrap;
+}
+
+.sfb-root.sfb-builder .sfb-b-viewbar .sfb-btn {
+  padding: 6px 10px;
+  font-size: 11.5px;
+}
+
+.sfb-root.sfb-builder .sfb-b-viewbar .sfb-b-view-icon {
+  width: 32px;
+  padding: 3px 0 5px;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.sfb-root.sfb-builder .sfb-b-view-hint {
+  padding: 0 6px 0 4px;
+  font-size: 11px;
+  color: var(--sfb-muted);
+}
+
+.sfb-root.sfb-builder .sfb-b-tutorial {
+  bottom: 68px;
+}
+
+/* Label that follows the pointer during a drag */
+.sfb-root.sfb-builder .sfb-b-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 9500;
+  pointer-events: none;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: var(--sfb-accent);
+  color: #0a0a0b;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  will-change: transform;
+}
+
+.sfb-root.sfb-builder.is-dragging-part,
+.sfb-root.sfb-builder.is-dragging-part * {
+  cursor: grabbing !important;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Narrow laptop windows: drop the extras before anything overlaps. */
+@media (max-width: 1320px) {
+  .sfb-root.sfb-builder .sfb-b-view-hint {
+    display: none;
+  }
+}
+
+@media (max-width: 1180px) {
+  .sfb-root.sfb-builder:not(.sfb-mobile) .sfb-b-name {
+    display: none;
+  }
+
+  .sfb-root.sfb-builder:not(.sfb-mobile) .sfb-b-palette {
+    width: 272px;
+  }
+
+  .sfb-root.sfb-builder:not(.sfb-mobile) .sfb-b-right {
+    width: 262px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sfb-root.sfb-builder .sfb-b-fits-box,
+  .sfb-root.sfb-builder .sfb-b-fits-box::after,
+  .sfb-root.sfb-builder .sfb-b-cat {
+    transition: none;
+  }
+
+  .sfb-root.sfb-builder .sfb-b-part-card:active {
+    transform: none;
+  }
+}
+
+/* ----- Phones keep their bottom drawers ----- */
+
+.sfb-root.sfb-builder.sfb-mobile .sfb-b-palette,
+.sfb-root.sfb-builder.sfb-mobile .sfb-b-right {
+  top: auto;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 68px);
+  width: auto;
+}
+
+.sfb-root.sfb-builder.sfb-mobile .sfb-b-viewbar,
+.sfb-root.sfb-builder.sfb-mobile .sfb-b-drag-ghost {
+  display: none;
+}
+
+.sfb-root.sfb-builder.sfb-mobile .sfb-b-mobile-only {
+  display: inline-flex;
+}
+
+.sfb-root.sfb-builder.sfb-mobile .sfb-b-search {
+  padding-left: 0;
+}
+
+.sfb-root.sfb-builder.sfb-mobile .sfb-b-search-input {
+  min-height: 44px;
+}
+
+.sfb-root.sfb-builder.sfb-mobile .sfb-b-pal-body {
+  flex-direction: column;
+}
+
+.sfb-root.sfb-builder.sfb-mobile .sfb-b-cats {
+  flex-direction: row;
+  width: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.sfb-root.sfb-builder.sfb-mobile .sfb-b-cat {
+  flex: none;
+  width: 62px;
+  min-height: 44px;
+}
+
+.sfb-root.sfb-builder.sfb-mobile .sfb-b-fits {
+  min-height: 44px;
+}
+
+.sfb-root.sfb-builder.sfb-mobile .sfb-b-part-card {
+  min-height: 48px;
+  cursor: pointer;
+}
+
+/* Heading where a stage of a multi-stage rocket begins. */
+.sfb-root.sfb-builder .sfb-b-stage-head {
+  list-style: none;
+  margin: 10px 0 4px;
+  padding: 0 2px 4px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--sfb-accent);
+  border-bottom: 1px solid color-mix(in srgb, var(--sfb-accent) 35%, transparent);
+}
+.sfb-root.sfb-builder .sfb-b-stage-head:first-child {
+  margin-top: 0;
 }

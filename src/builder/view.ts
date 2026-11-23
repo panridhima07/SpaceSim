@@ -4,10 +4,13 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import type { RocketModel } from '../types';
+import type { Component, RocketModel } from '../types';
 import type { SnapPoint } from './snap';
 import { buildCgCpMarkers, buildRocketMesh, disposeGroup } from '../render/rocketMesh';
 import { applyFlatStyle } from '../render/effects';
+import { buildBuildStand } from '../render/buildStand';
+import { buildGhostPart, buildJointCollar, buildSnapSocket, playSnapPop } from '../render/parts/connectors';
+import { aftRadiusOf, foreRadiusOf, isExternal } from './design';
 
 export interface BuilderViewUpdate {
   rocket: RocketModel;
@@ -25,25 +28,55 @@ export interface BuilderView {
   setEnabled(on: boolean): void;
   resize(width: number, height: number): void;
   render(renderer: THREE.WebGLRenderer): void;
-  frameRocket(): void;
+  /**
+   * Bring the whole rocket into view. With `keepAngle` the camera keeps the direction the
+   * user turned it to and only re-centres and backs off as far as needed.
+   */
+  frameRocket(keepAngle?: boolean): void;
   /** Raycast the rocket mesh at client coordinates and return the hit component id, or null. */
   pickPart(clientX: number, clientY: number): string | null;
-  /** Render glowing 3D snap rings at valid snap points. */
-  setSnapPoints(snaps: SnapPoint[], hoveredId?: string | null): void;
-  /** Pick the snap point under client coordinates (generous hit sphere for touch). */
-  pickSnapPoint(clientX: number, clientY: number): SnapPoint | null;
+  /**
+   * Render 3D snap sockets at valid snap points. With `ghost`, a see-through preview of
+   * that part is shown at the hovered snap point.
+   */
+  setSnapPoints(snaps: SnapPoint[], hoveredId?: string | null, ghost?: Component | null): void;
+  /**
+   * Pick the snap point under client coordinates (generous hit sphere for touch).
+   * `maxDist` is how far (px) the pointer may be from a ring and still catch it; pass
+   * Infinity to always return the closest ring (used while dragging a part).
+   */
+  pickSnapPoint(clientX: number, clientY: number, maxDist?: number): SnapPoint | null;
+  /** Move the camera toward (factor < 1) or away from (factor > 1) the rocket. */
+  zoomBy(factor: number): void;
+  /** Metres along the rocket axis covered by one screen pixel at the current zoom. */
+  metersPerPixel(): number;
   /** Capture a small thumbnail data URL of the current build scene. */
   captureThumbnail(renderer: THREE.WebGLRenderer): string | undefined;
+  /** True while a view-driven animation (joint pop) needs continuous rendering. */
+  isAnimating?(): boolean;
   dispose(): void;
 }
 
-const BG_COLOR = 0x0c1320;
+const BG_COLOR = 0x0b0b0d;
 const RULER_COLOR = 0x4da3ff;
-const GRID_MAIN = 0x24344d;
-const GRID_SUB = 0x162234;
+const GRID_MAIN = 0x2c2c31;
+const GRID_SUB = 0x19191c;
 const SELECT_EMISSIVE = new THREE.Color(0x1f5f99);
+/** How long the click-together pop of a new joint lasts, ms. */
+const POP_MS = 240;
 
-function makeLabelSprite(text: string): THREE.Sprite {
+/** Shared ruler-label textures keyed by text; never disposed per sprite. */
+const LABEL_CACHE_MAX = 200;
+const labelTextures = new Map<string, THREE.CanvasTexture>();
+
+function disposeLabelTextures(): void {
+  for (const t of labelTextures.values()) t.dispose();
+  labelTextures.clear();
+}
+
+function labelTexture(text: string): THREE.CanvasTexture {
+  const hit = labelTextures.get(text);
+  if (hit) return hit;
   const canvas = document.createElement('canvas');
   canvas.width = 128;
   canvas.height = 40;
@@ -58,9 +91,20 @@ function makeLabelSprite(text: string): THREE.Sprite {
   }
   const tex = new THREE.CanvasTexture(canvas);
   tex.needsUpdate = true;
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
-  const sprite = new THREE.Sprite(mat);
-  return sprite;
+  if (labelTextures.size >= LABEL_CACHE_MAX) {
+    const oldest = labelTextures.keys().next().value;
+    if (oldest !== undefined) {
+      labelTextures.get(oldest)?.dispose();
+      labelTextures.delete(oldest);
+    }
+  }
+  labelTextures.set(text, tex);
+  return tex;
+}
+
+function makeLabelSprite(text: string): THREE.Sprite {
+  const mat = new THREE.SpriteMaterial({ map: labelTexture(text), transparent: true, depthTest: false });
+  return new THREE.Sprite(mat);
 }
 
 function buildRuler(height: number, maxRadius: number): THREE.Group {
@@ -136,20 +180,35 @@ export function createBuilderView(domElement: HTMLElement): BuilderView {
   let rocketGroup: THREE.Group | null = null;
   let markers: ReturnType<typeof buildCgCpMarkers> | null = null;
   let rulerGroup: THREE.Group | null = null;
+  let standGroup: THREE.Group | null = null;
   let snapGroup: THREE.Group | null = null;
   let activeSnaps: SnapPoint[] = [];
   let rocketLengthActual = 0;
   let currentLength = 0.4;
   let currentMaxR = 0.02;
   let hasFramed = false;
+  let collars: THREE.Group[] = [];
+  let knownIds: Set<string> | null = null;
+  let popIds = new Set<string>();
+  let popStart = 0;
 
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
 
-  function frameRocket(): void {
+  function frameRocket(keepAngle = false): void {
     const h = Math.max(currentLength, 0.25);
     const midY = h * 0.5;
     const dist = Math.max(h * 1.75, currentMaxR * 12, 0.45);
+    if (keepAngle && hasFramed) {
+      const dir = camera.position.clone().sub(controls.target);
+      if (dir.lengthSq() > 1e-9) {
+        dir.setLength(dist);
+        controls.target.set(0, midY, 0);
+        camera.position.copy(controls.target).add(dir);
+        controls.update();
+        return;
+      }
+    }
     controls.target.set(0, midY, 0);
     camera.position.set(dist * 0.22, midY + dist * 0.12, dist);
     controls.update();
@@ -187,11 +246,45 @@ export function createBuilderView(domElement: HTMLElement): BuilderView {
       rulerGroup = null;
     }
 
+    if (standGroup) {
+      scene.remove(standGroup);
+      disposeGroup(standGroup);
+      standGroup = null;
+    }
+
     rocketLengthActual = rocket.length;
     currentLength = Math.max(rocket.length, 0.1);
     currentMaxR = Math.max(rocket.maxRadius, 0.012);
 
     const body = buildRocketMesh(rocket, { cutaway });
+
+    // A coupler band at every joint between stacked parts, so they read as clicked together.
+    collars = [];
+    const stack = rocket.components.filter(isExternal).sort((a, b) => a.x - b.x);
+    for (let i = 0; i + 1 < stack.length; i++) {
+      const fore = stack[i];
+      const aft = stack[i + 1];
+      const joint = fore.x + fore.length;
+      if (Math.abs(joint - aft.x) > 1e-4) continue;
+      const r = Math.min(aftRadiusOf(fore), foreRadiusOf(aft));
+      if (!(r > 0)) continue;
+      const collar = buildJointCollar(r, 'ok');
+      collar.position.y = -joint;
+      collar.userData.partIds = [fore.id, aft.id];
+      collars.push(collar);
+      body.add(collar);
+    }
+    // Parts that were not there last time pop as they click in.
+    const ids = new Set(rocket.components.map((c) => c.id));
+    if (knownIds) {
+      const added = [...ids].filter((id) => !knownIds!.has(id));
+      if (added.length > 0 && added.length <= 2) {
+        popIds = new Set(added);
+        popStart = performance.now();
+      }
+    }
+    knownIds = ids;
+
     applyFlatStyle(body);
     // Stand rocket upright with aft end on the y = 0 floor.
     body.position.y = rocket.length;
@@ -209,9 +302,16 @@ export function createBuilderView(domElement: HTMLElement): BuilderView {
     rulerGroup = buildRuler(currentLength, currentMaxR);
     scene.add(rulerGroup);
 
-    // Resize floor grid proportionally to rocket size.
+    // Launch pad under the tail; its rod stands in the gap between fins.
+    standGroup = buildBuildStand({ maxRadius: currentMaxR, rocketLength: currentLength });
+    applyFlatStyle(standGroup);
+    standGroup.rotation.y = 0.9;
+    scene.add(standGroup);
+
+    // Resize floor grid proportionally to rocket size; the pad's feet stand on it.
     const gridScale = Math.max(0.4, Math.min(8, currentLength * 2.5));
     grid.scale.set(gridScale, 1, gridScale);
+    grid.position.y = new THREE.Box3().setFromObject(standGroup).min.y;
 
     if (!hasFramed || refitCamera) {
       frameRocket();
@@ -233,7 +333,7 @@ export function createBuilderView(domElement: HTMLElement): BuilderView {
     return null;
   }
 
-  function setSnapPoints(snaps: SnapPoint[], hoveredId: string | null = null): void {
+  function setSnapPoints(snaps: SnapPoint[], hoveredId: string | null = null, ghost: Component | null = null): void {
     activeSnaps = snaps;
     if (snapGroup) {
       scene.remove(snapGroup);
@@ -247,22 +347,24 @@ export function createBuilderView(domElement: HTMLElement): BuilderView {
     for (const s of snaps) {
       const y = rocketLengthActual - s.stationX;
       const isHovered = hoveredId === s.id;
-      const color = isHovered ? 0xffffff : s.diameterMatch ? 0x4da3ff : 0xffb454;
       const ringR = Math.max(s.radius * 1.18, 0.016);
-      const tubeR = Math.max(ringR * (isHovered ? 0.14 : 0.09), 0.0022);
-
-      const ringGeo = new THREE.TorusGeometry(ringR, tubeR, 12, 48);
-      ringGeo.rotateX(Math.PI / 2);
-      const ringMat = new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: isHovered ? 0.98 : 0.85,
-        depthTest: false,
+      const socket = buildSnapSocket(s.radius, {
+        kind: s.kind === 'inside' ? 'internal' : 'external',
+        state: isHovered ? 'hover' : s.diameterMatch ? 'idle' : 'mismatch',
       });
-      const ring = new THREE.Mesh(ringGeo, ringMat);
-      ring.position.y = y;
-      ring.renderOrder = 20;
-      grp.add(ring);
+      socket.position.y = y;
+      grp.add(socket);
+
+      if (isHovered && ghost) {
+        const preview = buildGhostPart(ghost, {
+          color: s.diameterMatch ? 0x3ddc97 : 0xf2b84b,
+          hostRadius: s.radius,
+        });
+        // On top of the stack the new part sits above the nose; elsewhere it hangs from the joint.
+        const len = Number.isFinite(ghost.length) ? Math.max(ghost.length, 0) : 0;
+        preview.position.y = s.kind === 'top' ? y + len : y;
+        grp.add(preview);
+      }
 
       // Generous invisible hit sphere for effortless touch tapping & drag-over.
       const hitR = Math.max(ringR * 1.7, currentLength * 0.09, 0.032);
@@ -277,7 +379,7 @@ export function createBuilderView(domElement: HTMLElement): BuilderView {
     scene.add(grp);
   }
 
-  function pickSnapPoint(clientX: number, clientY: number): SnapPoint | null {
+  function pickSnapPoint(clientX: number, clientY: number, maxDist = 56): SnapPoint | null {
     if (!snapGroup || activeSnaps.length === 0) return null;
     const rect = domElement.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
@@ -289,9 +391,9 @@ export function createBuilderView(domElement: HTMLElement): BuilderView {
       const snap = h.object.userData?.snap as SnapPoint | undefined;
       if (snap) return snap;
     }
-    // Fallback: closest snap point projected to screen within 56px (great for phone taps).
+    // Fallback: closest snap point projected to screen within maxDist px.
     let best: SnapPoint | null = null;
-    let bestDist = 56;
+    let bestDist = maxDist;
     const v = new THREE.Vector3();
     for (const s of activeSnaps) {
       v.set(0, rocketLengthActual - s.stationX, 0).project(camera);
@@ -306,6 +408,22 @@ export function createBuilderView(domElement: HTMLElement): BuilderView {
     return best;
   }
 
+  function zoomBy(factor: number): void {
+    const offset = camera.position.clone().sub(controls.target);
+    const dist = Math.min(controls.maxDistance, Math.max(controls.minDistance, offset.length() * factor));
+    offset.setLength(dist);
+    camera.position.copy(controls.target).add(offset);
+    controls.update();
+  }
+
+  function metersPerPixel(): number {
+    const rect = domElement.getBoundingClientRect();
+    if (rect.height <= 0) return 0;
+    const dist = camera.position.distanceTo(controls.target);
+    const visible = 2 * dist * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+    return visible / rect.height;
+  }
+
   function setEnabled(on: boolean): void {
     controls.enabled = on;
     if (on) controls.update();
@@ -318,6 +436,13 @@ export function createBuilderView(domElement: HTMLElement): BuilderView {
 
   function render(renderer: THREE.WebGLRenderer): void {
     controls.update();
+    if (popIds.size > 0) {
+      const t = (performance.now() - popStart) / POP_MS;
+      for (const c of collars) {
+        if ((c.userData.partIds as string[]).some((id) => popIds.has(id))) playSnapPop(c, t);
+      }
+      if (t >= 1) popIds = new Set();
+    }
     renderer.render(scene, camera);
   }
 
@@ -358,7 +483,13 @@ export function createBuilderView(domElement: HTMLElement): BuilderView {
     controls.dispose();
     if (rocketGroup) disposeGroup(rocketGroup);
     if (rulerGroup) disposeGroup(rulerGroup);
+    if (standGroup) disposeGroup(standGroup);
     if (snapGroup) disposeGroup(snapGroup);
+    disposeLabelTextures();
+  }
+
+  function isAnimating(): boolean {
+    return popIds.size > 0;
   }
 
   return {
@@ -372,7 +503,10 @@ export function createBuilderView(domElement: HTMLElement): BuilderView {
     pickPart,
     setSnapPoints,
     pickSnapPoint,
+    zoomBy,
+    metersPerPixel,
     captureThumbnail,
+    isAnimating,
     dispose,
   };
 }

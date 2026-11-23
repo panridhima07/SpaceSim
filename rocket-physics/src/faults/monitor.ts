@@ -1,5 +1,5 @@
 import { G0 } from '../constants.ts';
-import { atmosphere } from '../env/atmosphere.ts';
+import { atmosphereInto, type AtmosphereState } from '../env/atmosphere.ts';
 import { thrustCurveAt } from '../propulsion/engine.ts';
 import type { FlightComputer, Simulation } from '../sim/simulation.ts';
 import { stageMass } from '../vehicle/massprops.ts';
@@ -90,11 +90,20 @@ export class FaultMonitor {
   private readonly offs: number[];
   private readonly skinCapacity: number;
   private readonly boilOff: number[];
+  // Per-tank numbers that depend only on the vehicle and the spec, worked out once
+  // (same expressions as before, so the same values). Indexed like the propellant array.
+  private readonly vapour: number[];
+  private readonly buckleStress: number[];
+  private readonly boilRate: number[];
   private readonly sepTimers: number[];
   private readonly faults = new Map<string, Fault>();
   private readonly criticalSeen = new Set<string>();
   private readonly newCriticals: Fault[] = [];
   private readonly healthPeaks = new Map<string, HealthPeak>();
+  /** The same peak records as `healthPeaks`, in HEALTH_KEYS order, for the per-step update. */
+  private readonly peakList: HealthPeak[] = [];
+  /** Scratch atmosphere state for the skin-temperature model. */
+  private readonly air: AtmosphereState = { temperature: 0, pressure: 0, density: 0, speedOfSound: 0, viscosity: 0, meanFreePath: 0 };
 
   private initialized = false;
   private prevAttached: boolean[];
@@ -118,6 +127,27 @@ export class FaultMonitor {
 
     const totalTanks = vehicle.stages.reduce((acc, s) => acc + s.tanks.length, 0);
     this.boilOff = new Array<number>(totalTanks).fill(0);
+    this.vapour = new Array<number>(totalTanks).fill(0);
+    this.buckleStress = new Array<number>(totalTanks).fill(0);
+    this.boilRate = new Array<number>(totalTanks).fill(0);
+    for (let i = 0; i < vehicle.stages.length; i++) {
+      const stage = vehicle.stages[i];
+      const stageSpec = spec.stages[i];
+      for (let k = 0; k < stage.tanks.length; k++) {
+        const ts = stageSpec.tanks[k];
+        if (ts.fluid === null) continue;
+        const tk = stage.tanks[k];
+        const r = tk.radius ?? stage.radius;
+        const fluid = FLUIDS[ts.fluid];
+        const idx = this.offs[i] + k;
+        this.vapour[idx] = vapourPressure(fluid, fluid.storageTemp);
+        this.buckleStress[idx] = shellBucklingStress(MATERIALS[ts.material].youngsModulus, ts.wallThickness, r);
+        if (isCryogenic(fluid) && ts.insulationU > 0) {
+          const leak = heatLeak(ts.insulationU, tankSurfaceArea(r, tk.length), spec.ambientTemp, fluid.storageTemp);
+          this.boilRate[idx] = boilOffRate(leak, fluid.latentHeat);
+        }
+      }
+    }
     for (let i = 0; i < vehicle.stages.length; i++) {
       const stage = vehicle.stages[i];
       const stageSpec = spec.stages[i];
@@ -143,10 +173,26 @@ export class FaultMonitor {
       fairingPressure: NaN,
       depressRate: 0,
     };
-    this.health = {};
+    // One literal with the keys in HEALTH_KEYS order (the order the loop used to create
+    // them in), so the object keeps a fixed shape and the per-step writes stay fast.
+    this.health = {
+      maxQ: 0,
+      qAlpha: 0,
+      axialG: 0,
+      skin: 0,
+      fairingDp: 0,
+      depressRate: 0,
+      tankBurst: 0,
+      caseBurst: 0,
+      tankBuckling: 0,
+      cavitation: 0,
+      nozzle: 0,
+      payloadHeat: 0,
+    };
     for (const key of HEALTH_KEYS) {
-      this.health[key] = 0;
-      this.healthPeaks.set(key, { key, value: 0, t: 0 });
+      const peak: HealthPeak = { key, value: 0, t: 0 };
+      this.healthPeaks.set(key, peak);
+      this.peakList.push(peak);
     }
   }
 
@@ -181,14 +227,14 @@ export class FaultMonitor {
     }
   }
 
-  private recordHealth(key: string, value: number, mt: number): void {
+  /** Clamp a health value, update its peak record, and return the value to store. */
+  private track(peak: HealthPeak, value: number, mt: number): number {
     const v = Number.isFinite(value) ? Math.max(0, value) : 0;
-    this.health[key] = v;
-    const peak = this.healthPeaks.get(key);
-    if (peak && v > peak.value) {
+    if (v > peak.value) {
       peak.value = v;
       peak.t = mt;
     }
+    return v;
   }
 
   drainNewCriticals(): Fault[] {
@@ -389,7 +435,7 @@ export class FaultMonitor {
           const load = equivalentAxialLoad(mAbove * a + Math.max(0, d.drag), moment, r);
           const compress = load / (2 * Math.PI * r * ts.wallThickness);
           const relief = axialPressureStress(ts.ullagePressure - d.pressure, r, ts.wallThickness);
-          const util = (compress - relief) / shellBucklingStress(mat.youngsModulus, ts.wallThickness, r);
+          const util = (compress - relief) / this.buckleStress[this.offs[i] + k];
           hTankBuckling = Math.max(hTankBuckling, Math.max(0, util));
           if (util > 0.6) {
             const severity: FaultSeverity = util > 1.0 ? 'critical' : 'warning';
@@ -411,7 +457,7 @@ export class FaultMonitor {
 
         // cavitation:i:k
         if (st.engineOn && st.throttle > 0) {
-          const pAvail = ts.ullagePressure + head - vapourPressure(fluid, fluid.storageTemp);
+          const pAvail = ts.ullagePressure + head - this.vapour[this.offs[i] + k];
           const cavUtil = pAvail <= 0 ? 2 : ts.npshRequired / pAvail;
           hCavitation = Math.max(hCavitation, cavUtil);
           const margin = pAvail - ts.npshRequired;
@@ -439,9 +485,7 @@ export class FaultMonitor {
         // boil-off:i:k
         if (isCryogenic(fluid) && ts.insulationU > 0) {
           if (dt > 0) {
-            const area = tankSurfaceArea(r, tk.length);
-            const leak = heatLeak(ts.insulationU, area, this.spec.ambientTemp, fluid.storageTemp);
-            this.boilOff[this.offs[i] + k] += boilOffRate(leak, fluid.latentHeat) * dt;
+            this.boilOff[this.offs[i] + k] += this.boilRate[this.offs[i] + k] * dt;
           }
           const frac = this.boilOff[this.offs[i] + k] / tk.propellantMass;
           if (frac > 0.01) {
@@ -650,7 +694,7 @@ export class FaultMonitor {
     // 8. skin-temp
     const skinMat = MATERIALS[this.spec.noseSkin.material];
     if ((sim.rt.fairingAttached || !this.vehicle.fairing) && dt > 0) {
-      const Tinf = Math.min(300, atmosphere(d.altitude).temperature);
+      const Tinf = Math.min(300, atmosphereInto(this.air, d.altitude).temperature);
       const Taw = recoveryTemperature(Tinf, d.mach);
       this.skinTemp = skinStep(
         this.skinTemp,
@@ -705,18 +749,20 @@ export class FaultMonitor {
 
     this.prevFairingAttached = sim.rt.fairingAttached;
 
-    this.recordHealth('maxQ', hMaxQ, mt);
-    this.recordHealth('qAlpha', hQAlpha, mt);
-    this.recordHealth('axialG', hAxialG, mt);
-    this.recordHealth('skin', hSkin, mt);
-    this.recordHealth('fairingDp', hFairingDp, mt);
-    this.recordHealth('depressRate', hDepressRate, mt);
-    this.recordHealth('tankBurst', hTankBurst, mt);
-    this.recordHealth('caseBurst', hCaseBurst, mt);
-    this.recordHealth('tankBuckling', hTankBuckling, mt);
-    this.recordHealth('cavitation', hCavitation, mt);
-    this.recordHealth('nozzle', hNozzle, mt);
-    this.recordHealth('payloadHeat', hPayloadHeat, mt);
+    const health = this.health;
+    const pk = this.peakList;
+    health.maxQ = this.track(pk[0], hMaxQ, mt);
+    health.qAlpha = this.track(pk[1], hQAlpha, mt);
+    health.axialG = this.track(pk[2], hAxialG, mt);
+    health.skin = this.track(pk[3], hSkin, mt);
+    health.fairingDp = this.track(pk[4], hFairingDp, mt);
+    health.depressRate = this.track(pk[5], hDepressRate, mt);
+    health.tankBurst = this.track(pk[6], hTankBurst, mt);
+    health.caseBurst = this.track(pk[7], hCaseBurst, mt);
+    health.tankBuckling = this.track(pk[8], hTankBuckling, mt);
+    health.cavitation = this.track(pk[9], hCavitation, mt);
+    health.nozzle = this.track(pk[10], hNozzle, mt);
+    health.payloadHeat = this.track(pk[11], hPayloadHeat, mt);
 
     this.channels = {
       skinTemp: this.skinTemp,

@@ -237,3 +237,33 @@ describe('flyMission lvm3-m4', () => {
     expect(JSON.parse(JSON.stringify(failed))).toEqual(failed);
   }, 60_000);
 });
+
+describe('payload separation', () => {
+  it('releases the payload after cutoff and lets it drift at the spring speed', () => {
+    const def = getMission('lvm3-m4')!;
+    const pay = def.payload!;
+    const record = flyMission(def);
+    expect(record.reachedTarget).toBe(true);
+    const tSep = record.payloadSeparation!;
+    expect(tSep).toBeGreaterThan(0);
+    // Separation comes `deployAfter` seconds after the last engine stops.
+    const lastBurn = record.samples.filter((s) => s.thrust > 0).pop()!;
+    expect(Math.abs(tSep - lastBurn.t - pay.deployAfter)).toBeLessThan(2);
+    const before = record.samples.filter((s) => s.t <= tSep);
+    expect(before.every((s) => s.payloadOffset === undefined)).toBe(true);
+    // Two free bodies in nearly the same orbit separate at the relative speed the springs gave them.
+    const last = record.samples[record.samples.length - 1];
+    const gap = Math.hypot(...last.payloadOffset!);
+    expect(gap / (last.t - tSep)).toBeGreaterThan(pay.springSpeed * 0.9);
+    expect(gap / (last.t - tSep)).toBeLessThan(pay.springSpeed * 1.1);
+    // The stage is lighter by the payload afterwards.
+    expect(Math.abs(before[before.length - 1].mass - last.mass - def.vehicle().payload.mass)).toBeLessThan(1);
+    expect(record.markers.some((m) => /Chandrayaan-3 separation/.test(m.label) && m.reference === pay.realDeployT)).toBe(true);
+  }, 60000);
+
+  it('keeps the payload on a vehicle that never reaches orbit', () => {
+    const record = flyMission(getMission('lvm3-m4')!, { failureCase: 'c25-shutdown' });
+    expect(record.payloadSeparation ?? null).toBeNull();
+    expect(record.samples.every((s) => s.payloadOffset === undefined)).toBe(true);
+  }, 60000);
+});

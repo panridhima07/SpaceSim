@@ -1,5 +1,27 @@
-import JSZip from 'jszip';
 import { DOMParser as XmldomParser } from '@xmldom/xmldom';
+import {
+  MAX_CHILDREN,
+  MAX_COUNT,
+  MAX_TOTAL_PARTS,
+  MAX_FIN_POINTS,
+  MAX_INFLATED_BYTES,
+  MAX_LENGTH_M,
+  MAX_NEST_DEPTH,
+  MAX_SIDE_BODIES,
+  MAX_STACK_PARTS,
+  MAX_ZIP_ENTRIES,
+  SizeLimitError,
+  assertFileSize,
+  assertSafeXmlText,
+  clampCount,
+  clampLength,
+  clampMass,
+  clampOffset,
+  clampRadius,
+  inflateCapped,
+  readZipEntry,
+  type ZipBudget,
+} from '../io/limits';
 import type {
   BodyTube,
   Component,
@@ -60,6 +82,7 @@ let sideSink: SideBody[] | null = null;
 
 /** Parse OpenRocket XML text into a RocketModel. Throws only if the text is not an OpenRocket design. */
 export function parseOrkXml(xml: string): RocketModel {
+  assertSafeXmlText(xml);
   const warnings: string[] = [];
   const sideBodies: SideBody[] = [];
   sideSink = sideBodies;
@@ -103,12 +126,18 @@ export function parseOrkXml(xml: string): RocketModel {
 
   // Pass A: collect external components (fore to aft) with their raw radii.
   const raws: (ExternalRaw & { stageIndex: number })[] = [];
+  let capWarned = false;
   for (let sIdx = 0; sIdx < stageContainers.length; sIdx++) {
     const container = stageContainers[sIdx];
     const subs = child(container, 'subcomponents');
     if (!subs) continue;
     for (const el of kids(subs)) {
       const tag = tagOf(el);
+      if (raws.length >= MAX_STACK_PARTS && EXTERNAL_TAGS.has(tag)) {
+        if (!capWarned) warnings.push(`Only the first ${MAX_STACK_PARTS} body parts were read; the rest were ignored.`);
+        capWarned = true;
+        continue;
+      }
       if (tag === 'nosecone') {
         // A flipped nose (tail cone) has its wide end forward and its tip aft.
         const wide = radiusOf(el, 'aftradius');
@@ -138,7 +167,7 @@ export function parseOrkXml(xml: string): RocketModel {
   for (const r of raws) {
     const beforeCount = components.length;
     if (stageStarts[r.stageIndex] === -1) stageStarts[r.stageIndex] = beforeCount;
-    const rawLength = num(r.el, 'length') ?? 0;
+    const rawLength = Math.min(MAX_LENGTH_M, num(r.el, 'length') ?? 0);
     if (rawLength < 0) warnings.push(`"${nameOf(r.el)}" has a negative length (${rawLength} m); using 0.`);
     const length = Math.max(0, rawLength);
     const x = cursor;
@@ -161,7 +190,7 @@ export function parseOrkXml(xml: string): RocketModel {
   components.forEach((c, i) => { c.id = `c${i}`; });
 
   const stages: StageBoundary[] = stageContainers.map((container, sIdx) => {
-    const mOver = num(container, 'overridemass');
+    const mOver = massOf(container, 'overridemass');
     const subOver = textOf(child(container, 'overridesubcomponentsmass')) === 'true';
     return {
       name: nameOf(container) || `Stage ${sIdx + 1}`,
@@ -204,16 +233,20 @@ export function parseOrkXml(xml: string): RocketModel {
  * before 1.1.9 saved these), in UTF-8 or UTF-16.
  */
 export async function decodeOrkText(bytes: Uint8Array): Promise<string> {
+  assertFileSize(bytes.length);
   let raw = bytes;
   if (raw.length >= 2 && raw[0] === 0x1f && raw[1] === 0x8b) {
-    const Stream = (globalThis as unknown as { DecompressionStream?: new (f: string) => unknown }).DecompressionStream;
-    if (!Stream) throw new Error('This is a gzip-compressed .ork file, which this device cannot unpack.');
+    let inflated: Uint8Array | undefined;
     try {
-      const piped = new Blob([raw as unknown as BlobPart]).stream().pipeThrough(new Stream('gzip') as never);
-      raw = new Uint8Array(await new Response(piped as unknown as BodyInit).arrayBuffer());
-    } catch {
+      inflated = await inflateCapped(raw, 'gzip', MAX_INFLATED_BYTES);
+    } catch (err) {
+      if (err instanceof SizeLimitError) {
+        throw new Error('The gzip-compressed .ork file expands to more than the allowed size and was rejected.');
+      }
       throw new Error('The gzip-compressed .ork file is damaged.');
     }
+    if (!inflated) throw new Error('This is a gzip-compressed .ork file, which this device cannot unpack.');
+    raw = inflated;
   }
   if (raw.length >= 2 && raw[0] === 0xff && raw[1] === 0xfe) return new TextDecoder('utf-16le').decode(raw);
   if (raw.length >= 2 && raw[0] === 0xfe && raw[1] === 0xff) return new TextDecoder('utf-16be').decode(raw);
@@ -222,18 +255,21 @@ export async function decodeOrkText(bytes: Uint8Array): Promise<string> {
 
 /** Parse a .ork file (plain or gzip XML, or a zip archive containing rocket.ork). */
 export async function parseOrkFile(data: ArrayBuffer | Uint8Array): Promise<RocketModel> {
+  assertFileSize(data.byteLength);
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
   if (bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b) {
-    let zip: JSZip;
+    const { default: JSZip } = await import('jszip');
+    let zip: Awaited<ReturnType<typeof JSZip.loadAsync>>;
     try {
       zip = await JSZip.loadAsync(bytes);
     } catch {
       throw new Error('The .ork archive is damaged and cannot be opened.');
     }
-    const files = Object.values(zip.files).filter((f) => !f.dir);
+    const files = Object.values(zip.files).filter((f) => !f.dir).slice(0, MAX_ZIP_ENTRIES);
     const entry = zip.file('rocket.ork') ?? files.find((f) => /\.ork$/i.test(f.name)) ?? files[0];
     if (!entry) throw new Error('The .ork archive contains no files.');
-    return parseOrkXml(await decodeOrkText(await entry.async('uint8array')));
+    const budget: ZipBudget = { used: 0 };
+    return parseOrkXml(await decodeOrkText((await readZipEntry(entry, budget, 'uint8array')) as Uint8Array));
   }
   return parseOrkXml(await decodeOrkText(bytes));
 }
@@ -362,10 +398,21 @@ function numOf(n: XNode | undefined): number | undefined {
   return Number.isFinite(v) ? v : undefined;
 }
 
-/** A size that cannot be negative; negative values in the file become 0. */
+/** A size that cannot be negative; negative values in the file become 0, huge ones are capped at 100 m. */
 function size(el: XNode, name: string): number | undefined {
   const v = num(el, name);
-  return v === undefined ? undefined : Math.max(0, v);
+  return v === undefined ? undefined : clampLength(v);
+}
+
+/** A length in metres, 0 when absent, clamped to [0, 100]. */
+function lengthOf(el: XNode, name: string): number {
+  return clampLength(num(el, name) ?? 0);
+}
+
+/** A mass in kg, undefined when absent, clamped to [0, 1e6]. */
+function massOf(el: XNode, name: string): number | undefined {
+  const v = num(el, name);
+  return v === undefined ? undefined : clampMass(v);
 }
 
 function num(el: XNode, name: string): number | undefined {
@@ -390,7 +437,7 @@ function radiusOf(el: XNode, name: string): number | undefined {
   if (t === undefined) return undefined;
   const m = /^auto\s+(.+)$/i.exec(t);
   const v = m ? parseNum(m[1]) : parseNum(t);
-  return Number.isFinite(v) && v >= 0 ? v : undefined;
+  return Number.isFinite(v) && v >= 0 ? clampRadius(v) : undefined;
 }
 
 function materialOf(el: XNode): { density: number; surface: boolean } {
@@ -410,10 +457,10 @@ function bulkDensity(el: XNode): number {
 
 function overrides(el: XNode, x: number): { massOverride?: number; cgOverride?: number } {
   const o: { massOverride?: number; cgOverride?: number } = {};
-  const m = num(el, 'overridemass');
+  const m = massOf(el, 'overridemass');
   if (m !== undefined && m > 0) o.massOverride = m;
   const cg = num(el, 'overridecg');
-  if (cg !== undefined) o.cgOverride = x + cg;
+  if (cg !== undefined) o.cgOverride = clampOffset(x + clampOffset(cg));
   return o;
 }
 
@@ -445,7 +492,7 @@ function base(el: XNode, x: number, length: number, density: number): BaseFields
 function placeAt(el: XNode, parent: Frame, childLength: number, defaultMethod: string): number {
   const p = child(el, 'position') ?? child(el, 'axialoffset');
   const method = (p?.getAttribute('type') || p?.getAttribute('method') || defaultMethod).toLowerCase();
-  const value = numOf(p) ?? 0;
+  const value = clampOffset(numOf(p) ?? 0);
   switch (method) {
     case 'bottom': return parent.x + parent.length - childLength + value;
     case 'middle': return parent.x + (parent.length - childLength) / 2 + value;
@@ -510,7 +557,7 @@ function makeNose(el: XNode, x: number, length: number, aft: number, warnings: s
     shape,
     shapeParam: num(el, 'shapeparameter') ?? 1,
     baseRadius: aft,
-    thickness: size(el, 'thickness') ?? 0,
+    thickness: Math.min(aft, size(el, 'thickness') ?? 0),
     ...(flipped ? { flipped: true } : {}),
   };
 }
@@ -520,7 +567,7 @@ function makeBodyTube(el: XNode, x: number, length: number, radius: number): Bod
     ...base(el, x, length, bulkDensity(el)),
     kind: 'bodytube',
     outerRadius: radius,
-    thickness: num(el, 'thickness') ?? 0,
+    thickness: Math.min(radius, clampLength(num(el, 'thickness') ?? 0)),
   };
 }
 
@@ -532,7 +579,7 @@ function makeTransition(el: XNode, x: number, length: number, fore: number, aft:
     kind: 'transition',
     foreRadius: fore,
     aftRadius: aft,
-    thickness: size(el, 'thickness') ?? 0,
+    thickness: Math.min(Math.max(fore, aft), size(el, 'thickness') ?? 0),
     ...(curved
       ? { shape: shapeRaw as NoseShape, shapeParam: num(el, 'shapeparameter') ?? 1, clipped: flag(el, 'shapeclipped') }
       : {}),
@@ -544,10 +591,11 @@ function shoulderRings(el: XNode, parent: NoseCone | Transition): Ring[] {
   const out: Ring[] = [];
   for (const which of ['fore', 'aft'] as const) {
     const p = `${which}shoulder`;
-    const r = num(el, `${p}radius`);
-    const len = num(el, `${p}length`) ?? 0;
+    const rRaw = num(el, `${p}radius`);
+    const r = rRaw === undefined ? undefined : clampRadius(rRaw);
+    const len = lengthOf(el, `${p}length`);
     if (r === undefined || !(r > 0) || !(len > 0)) continue;
-    const t = num(el, `${p}thickness`) ?? 0;
+    const t = clampRadius(num(el, `${p}thickness`) ?? 0);
     const inner = t > 0 && t < r ? r - t : 0;
     const capped = (str(el, `${p}capped`) ?? '').toLowerCase() === 'true';
     const x = which === 'aft' ? parent.x + parent.length : parent.x - len;
@@ -563,7 +611,7 @@ function shoulderRings(el: XNode, parent: NoseCone | Transition): Ring[] {
 }
 
 function makeFins(el: XNode, tag: string, parent: Frame, warnings: string[]): FinSet {
-  const count = Math.max(1, Math.round(num(el, 'fincount') ?? 3));
+  const count = clampCount(num(el, 'fincount'), 3);
   const thickness = size(el, 'thickness') ?? 0;
   const cant = (num(el, 'cant') ?? 0) * DEG;
 
@@ -583,7 +631,8 @@ function makeFins(el: XNode, tag: string, parent: Frame, warnings: string[]): Fi
         if (tagOf(p) !== 'point') continue;
         const px = parseFloat(p.getAttribute('x') ?? '');
         const py = parseFloat(p.getAttribute('y') ?? '');
-        if (Number.isFinite(px) && Number.isFinite(py)) points.push([px, py]);
+        if (Number.isFinite(px) && Number.isFinite(py)) points.push([clampOffset(px), clampOffset(py)]);
+        if (points.length >= MAX_FIN_POINTS) break;
       }
     }
     // Shoelace area: a self-crossing or collapsed outline encloses nothing.
@@ -609,7 +658,7 @@ function makeFins(el: XNode, tag: string, parent: Frame, warnings: string[]): Fi
     span = size(el, 'height') ?? 0;
     // OpenRocket stores either a sweep length or a sweep angle.
     const sweepAngle = num(el, 'sweepangle');
-    sweepLength = num(el, 'sweeplength') ?? (sweepAngle !== undefined ? span * Math.tan(sweepAngle * DEG) : 0);
+    sweepLength = clampOffset(num(el, 'sweeplength') ?? (sweepAngle !== undefined ? span * Math.tan(sweepAngle * DEG) : 0));
   }
 
   const length = rootChord;
@@ -655,8 +704,8 @@ function readMotor(mountEl: XNode): MotorRef | undefined {
   return {
     manufacturer: str(m, 'manufacturer') ?? '',
     designation: str(m, 'designation') ?? '',
-    diameter: num(m, 'diameter') ?? 0,
-    length: num(m, 'length') ?? 0,
+    diameter: clampLength(num(m, 'diameter') ?? 0),
+    length: lengthOf(m, 'length'),
     // Missing, "None" or unparsable delay becomes NaN (plugged / no ejection charge).
     delay: parseFloat(str(m, 'delay') ?? ''),
   };
@@ -711,7 +760,7 @@ function makeInnerTube(el: XNode, x: number, length: number, parent: Frame, warn
     ...base(el, x, length, bulkDensity(el)),
     kind: 'innertube',
     outerRadius,
-    thickness: size(el, 'thickness') ?? 0,
+    thickness: Math.min(outerRadius, size(el, 'thickness') ?? 0),
     isMotorMount: mount !== undefined,
     overhang: mount ? (num(mount, 'overhang') ?? 0) : 0,
     ...(motor ? { motor } : {}),
@@ -722,15 +771,15 @@ function makeInnerTube(el: XNode, x: number, length: number, parent: Frame, warn
 function makeChute(el: XNode, tag: string, parent: Frame): Parachute {
   const isStreamer = tag === 'streamer';
   const mat = materialOf(el);
-  const length = num(el, 'packedlength') ?? 0;
+  const length = lengthOf(el, 'packedlength');
 
   let diameter: number;
   let area: number;
   if (isStreamer) {
-    area = (num(el, 'striplength') ?? 0) * (num(el, 'stripwidth') ?? 0);
+    area = lengthOf(el, 'striplength') * lengthOf(el, 'stripwidth');
     diameter = Math.sqrt((4 * area) / Math.PI); // equal-area circular canopy
   } else {
-    diameter = num(el, 'diameter') ?? 0;
+    diameter = lengthOf(el, 'diameter');
     area = Math.PI * (diameter / 2) ** 2;
   }
 
@@ -752,7 +801,7 @@ function makeChute(el: XNode, tag: string, parent: Frame): Parachute {
     deployAltitude: num(el, 'deployaltitude') ?? 0,
     deployDelay: num(el, 'deploydelay') ?? 0,
     // Canopy (surface density × area) plus shroud lines (count × length × linear density).
-    mass: (mat.surface ? mat.density * area : 0) + (num(el, 'linecount') ?? 0) * (num(el, 'linelength') ?? 0) * densityOfChild(el, 'linematerial'),
+    mass: clampMass((mat.surface ? mat.density * area : 0) + Math.min(MAX_COUNT, Math.max(0, Math.round(num(el, 'linecount') ?? 0))) * lengthOf(el, 'linelength') * densityOfChild(el, 'linematerial')),
   };
 }
 
@@ -763,9 +812,9 @@ function densityOfChild(el: XNode, name: string): number {
 }
 
 function makeMass(el: XNode, parent: Frame): MassComponent {
-  const length = num(el, 'packedlength') ?? 0;
+  const length = lengthOf(el, 'packedlength');
   const x = placeAt(el, parent, length, 'top');
-  return { ...base(el, x, length, 0), kind: 'mass', mass: num(el, 'mass') ?? 0 };
+  return { ...base(el, x, length, 0), kind: 'mass', mass: massOf(el, 'mass') ?? 0 };
 }
 
 /** An inner tube sibling of a ring, in the body frame: its span and outer radius. */
@@ -801,7 +850,7 @@ function makeRing(el: XNode, tag: string, parent: Frame, tubes: SiblingTube[]): 
 
 /** Where an external fitting sits on the body: surface radius, angle, and repeat count. */
 function fitting(el: XNode, parent: Frame, station: number): Pick<Ring, 'mountRadius' | 'angle' | 'instanceCount' | 'instanceSeparation'> {
-  const count = Math.max(1, Math.round(num(el, 'instancecount') ?? 1));
+  const count = clampCount(num(el, 'instancecount'), 1);
   // Degrees: <radialdirection> in old files, <angleoffset> in new ones.
   const angle = (num(el, 'angleoffset') ?? num(el, 'radialdirection') ?? 0) * DEG;
   return {
@@ -843,11 +892,11 @@ function buildInternal(el: XNode, tag: string, parent: Frame, warnings: string[]
       return makeMass(el, parent);
     case 'shockcord': {
       // A shock cord is modelled as a point mass: linear density (kg/m) times cord length.
-      const cord = num(el, 'cordlength') ?? 0;
+      const cord = lengthOf(el, 'cordlength');
       const linear = materialOf(el).density;
       if (cord > 0 && linear > 0) {
         const x = placeAt(el, parent, 0, 'top');
-        return { ...base(el, x, 0, 0), kind: 'mass', mass: linear * cord };
+        return { ...base(el, x, 0, 0), kind: 'mass', mass: clampMass(linear * cord) };
       }
       warnings.push(`Shock cord "${nameOf(el)}" skipped: it needs a cordlength and a linear density.`);
       return undefined;
@@ -864,11 +913,11 @@ function buildInternal(el: XNode, tag: string, parent: Frame, warnings: string[]
  * A parallel stage or pod set: its own nose / tube / transition stack, placed beside
  * the parent and repeated around the rocket axis.
  */
-function makeSideStack(el: XNode, tag: string, parent: Frame, warnings: string[]): SideBody | undefined {
+function makeSideStack(el: XNode, tag: string, parent: Frame, warnings: string[], depth = 0): SideBody | undefined {
   const subs = child(el, 'subcomponents');
   const raws: ExternalRaw[] = [];
   const nested: XNode[] = [];
-  for (const k of subs ? kids(subs) : []) {
+  for (const k of subs ? kids(subs).slice(0, MAX_STACK_PARTS) : []) {
     const t = tagOf(k);
     if (t === 'nosecone') {
       const wide = radiusOf(k, 'aftradius');
@@ -890,13 +939,13 @@ function makeSideStack(el: XNode, tag: string, parent: Frame, warnings: string[]
   }
   resolveRadii(raws, warnings);
 
-  const total = raws.reduce((sum, r) => sum + Math.max(0, num(r.el, 'length') ?? 0), 0);
+  const total = raws.reduce((sum, r) => sum + lengthOf(r.el, 'length'), 0);
   const x0 = placeAt(el, parent, total, 'bottom');
   const components: Component[] = [];
   let cursor = x0;
   let bodyRadius = 0;
   for (const r of raws) {
-    const length = Math.max(0, num(r.el, 'length') ?? 0);
+    const length = lengthOf(r.el, 'length');
     const x = cursor;
     cursor += length;
     const comp: Component = r.tag === 'nosecone'
@@ -907,7 +956,7 @@ function makeSideStack(el: XNode, tag: string, parent: Frame, warnings: string[]
     bodyRadius = Math.max(bodyRadius, r.fore ?? 0, r.aft ?? 0);
     components.push(comp);
     // Bodies hanging off a side body are collected like any other; their own parts go with this one.
-    buildChildren(r.el, frameOf(comp), components, warnings);
+    buildChildren(r.el, frameOf(comp), components, warnings, depth + 1);
   }
   for (const k of nested) warnings.push(`"${nameOf(k)}" is attached to the side body "${nameOf(el)}" itself and was ignored.`);
 
@@ -922,7 +971,7 @@ function makeSideStack(el: XNode, tag: string, parent: Frame, warnings: string[]
 function makeTubeFins(el: XNode, parent: Frame, warnings: string[]): SideBody | undefined {
   const length = size(el, 'length') ?? 0;
   const radius = radiusOf(el, 'radius') ?? radiusOf(el, 'outerradius');
-  const count = Math.max(1, Math.round(num(el, 'fincount') ?? 6));
+  const count = clampCount(num(el, 'fincount'), 6);
   const x = placeAt(el, parent, length, 'bottom');
   const mount = parent.surfaceAt ? parent.surfaceAt(x) : parent.outer;
   // Automatic radius: the size at which `count` tubes just touch each other around the body.
@@ -943,7 +992,7 @@ function makeTubeFins(el: XNode, parent: Frame, warnings: string[]): SideBody | 
 
 /** Count, angle and axis distance of a parallel stage or pod set. */
 function sidePlacement(el: XNode, parent: Frame, bodyRadius: number, station: number): Pick<SideBody, 'count' | 'radialOffset' | 'angle'> {
-  const count = Math.min(64, Math.max(1, Math.round(num(el, 'instancecount') ?? 2)));
+  const count = clampCount(num(el, 'instancecount'), 2);
   const ro = child(el, 'radiusoffset') ?? child(el, 'radialoffset');
   const method = (ro?.getAttribute('method') ?? 'surface').toLowerCase();
   const value = numOf(ro) ?? 0;
@@ -958,30 +1007,44 @@ function sidePlacement(el: XNode, parent: Frame, bodyRadius: number, station: nu
 }
 
 /** Recursively build the internal children of a component, appending them after their parent. */
-function buildChildren(container: XNode, frame: Frame, out: Component[], warnings: string[]): void {
+function buildChildren(container: XNode, frame: Frame, out: Component[], warnings: string[], depth = 0): void {
   const subs = child(container, 'subcomponents');
   if (!subs) return;
-  const tubes: SiblingTube[] = kids(subs)
+  if (depth >= MAX_NEST_DEPTH) {
+    warnings.push(`Components nested more than ${MAX_NEST_DEPTH} levels deep were ignored.`);
+    return;
+  }
+  let siblings = kids(subs);
+  if (siblings.length > MAX_CHILDREN) {
+    warnings.push(`"${nameOf(container)}" has ${siblings.length} sub-components; only the first ${MAX_CHILDREN} were read.`);
+    siblings = siblings.slice(0, MAX_CHILDREN);
+  }
+  const tubes: SiblingTube[] = siblings
     .filter((e) => tagOf(e) === 'innertube')
     .map((e) => {
-      const len = num(e, 'length') ?? 0;
+      const len = lengthOf(e, 'length');
       const x0 = placeAt(e, frame, len, 'top');
       return { x0, x1: x0 + len, outer: radiusOf(e, 'outerradius') ?? frame.inner };
     });
-  for (const el of kids(subs)) {
+  for (const el of siblings) {
+    if (out.length >= MAX_TOTAL_PARTS) {
+      warnings.push(`Stopped reading at ${MAX_TOTAL_PARTS} parts.`);
+      break;
+    }
     const tag = tagOf(el);
     if (EXTERNAL_TAGS.has(tag) || tag === 'stage') {
       warnings.push(`<${tag}> ("${nameOf(el)}") nested inside another component was ignored.`);
       continue;
     }
     if (SIDE_BODY_TAGS.has(tag) && sideSink) {
-      const sb = tag === 'tubefinset' ? makeTubeFins(el, frame, warnings) : makeSideStack(el, tag, frame, warnings);
-      if (sb) sideSink.push(sb);
+      const sb = tag === 'tubefinset' ? makeTubeFins(el, frame, warnings) : makeSideStack(el, tag, frame, warnings, depth);
+      if (sb && sideSink.length < MAX_SIDE_BODIES) sideSink.push(sb);
+      else if (sb) warnings.push(`Only the first ${MAX_SIDE_BODIES} side bodies were read.`);
       continue;
     }
     const comp = buildInternal(el, tag, frame, warnings, tubes);
     if (!comp) continue;
     out.push(comp);
-    buildChildren(el, frameOf(comp), out, warnings);
+    buildChildren(el, frameOf(comp), out, warnings, depth + 1);
   }
 }

@@ -41,16 +41,28 @@ interface CaseRun {
   deploySpeed: number;
 }
 
-function runCaseDetailed(
+/**
+ * Outer step() calls per generator slice. One step(0.05) is up to 25 substeps of 2 ms in the
+ * atmosphere, so 2 steps is about 50 substeps: roughly 1-3 ms on a slow phone.
+ */
+const STEPS_PER_SLICE = 2;
+
+/** Fly one case, yielding after every STEPS_PER_SLICE sim steps so callers can budget time. */
+function* runCaseSteps(
   rocket: RocketModel,
   motor: Motor,
   config: SimConfig,
   deps: PhysicsDeps,
   label: string,
-): CaseRun {
+  progress: StressProgress,
+): Generator<StressProgress, CaseRun, undefined> {
   const sim = createSim(rocket, motor, config, deps);
   sim.ignite();
-  while (!sim.done && sim.state.t < MAX_FLIGHT_S) sim.step(STEP_S);
+  let n = 0;
+  while (!sim.done && sim.state.t < MAX_FLIGHT_S) {
+    sim.step(STEP_S);
+    if (++n % STEPS_PER_SLICE === 0) yield progress;
+  }
 
   const { log, events } = sim;
   let apogee = 0;
@@ -97,6 +109,20 @@ function runCaseDetailed(
     worst,
   };
   return { result, deploySpeed: chute ? chute.speed : NaN };
+}
+
+function runCaseDetailed(
+  rocket: RocketModel,
+  motor: Motor,
+  config: SimConfig,
+  deps: PhysicsDeps,
+  label: string,
+): CaseRun {
+  const gen = runCaseSteps(rocket, motor, config, deps, label, { done: 0, total: 0 });
+  for (;;) {
+    const r = gen.next();
+    if (r.done) return r.value;
+  }
 }
 
 /** Fly one configuration and summarise it. */
@@ -259,21 +285,32 @@ export function* stressTestSteps(
   const total = STRESS_FLIGHT_COUNT;
   let done = 0;
 
+  // Intra-flight slices repeat the progress of the flights already finished.
   const wind: CaseRun[] = [];
   for (const w of WIND_SPEEDS_MS) {
-    wind.push(runCaseDetailed(rocket, motor, { ...base, windSpeed: w }, deps, `Wind ${w} m/s`));
+    wind.push(
+      yield* runCaseSteps(
+        rocket,
+        motor,
+        withSurfaceWind(base, w),
+        deps,
+        `Wind ${w} m/s`,
+        { done, total },
+      ),
+    );
     yield { done: ++done, total };
   }
 
   const rail: CaseRun[] = [];
   for (const deg of RAIL_ANGLES_DEG) {
     rail.push(
-      runCaseDetailed(
+      yield* runCaseSteps(
         rocket,
         motor,
         { ...base, railAngle: deg * RAD_PER_DEG },
         deps,
         `Rail ${deg} deg`,
+        { done, total },
       ),
     );
     yield { done: ++done, total };
@@ -282,7 +319,14 @@ export function* stressTestSteps(
   const delay: CaseRun[] = [];
   for (const d of EJECTION_DELAYS_S) {
     delay.push(
-      runCaseDetailed(rocket, motor, { ...base, ejectionDelay: d }, deps, `Delay ${d} s`),
+      yield* runCaseSteps(
+        rocket,
+        motor,
+        { ...base, ejectionDelay: d },
+        deps,
+        `Delay ${d} s`,
+        { done, total },
+      ),
     );
     yield { done: ++done, total };
   }
@@ -302,4 +346,14 @@ export function stressTest(
     const r = steps.next();
     if (r.done) return r.value;
   }
+}
+
+/** `base` at a different surface wind. Winds aloft keep their shape and scale with it. */
+function withSurfaceWind(base: SimConfig, windSpeed: number): SimConfig {
+  const k = base.windSpeed > 0 ? windSpeed / base.windSpeed : 0;
+  const windLayers =
+    base.windLayers && k > 0
+      ? base.windLayers.map((l) => ({ ...l, speed: l.speed * k }))
+      : undefined;
+  return { ...base, windSpeed, windLayers };
 }

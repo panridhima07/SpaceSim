@@ -1,0 +1,48 @@
+/* Orbit skin: shared tokens and motion rules for every screen (landing, app, mission, auth).
+   Near-black neutral surfaces, hairline borders, amber accent, teal secondary, one white
+   primary action per view. Motion: ease-out in, ease-in out, exits ~20% shorter or more,
+   transitions (not keyframes) for anything reversible. */
+:root {
+  --o-bg: #0a0a0b;
+  --o-surface: rgba(17, 17, 19, 0.78);
+  --o-surface-2: rgba(28, 28, 31, 0.9);
+  --o-line: rgba(255, 255, 255, 0.08);
+  --o-line-strong: rgba(255, 255, 255, 0.16);
+  --o-text: #ededee;
+  --o-muted: #8a8a90;
+  --o-accent: #f5a65b;
+  --o-accent-2: #5fc4b8;
+  --o-cta-bg: #f4f4f2;
+  --o-cta-ink: #0a0a0b;
+  --o-radius: 10px;
+  --o-radius-sm: 6px;
+  --o-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  --o-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --o-ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --o-ease-move: cubic-bezier(0.65, 0, 0.35, 1);
+  --o-t-press: 120ms;
+  --o-t-fast: 160ms;
+  --o-t-enter: 240ms;
+  --o-t-exit: 150ms;
+  --o-t-panel: 360ms;
+  --o-stagger: 30ms;
+}
+
+/* One-shot helpers. Use only for things the user cannot reverse mid-flight. */
+@keyframes o-rise { from { opacity: 0; translate: 0 10px; } }
+@keyframes o-pop { from { opacity: 0; scale: 0.95; } }
+@keyframes o-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(245, 166, 91, 0.55); }
+  100% { box-shadow: 0 0 0 14px rgba(245, 166, 91, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
