@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 
@@ -98,6 +99,11 @@ function htmlHardening(): Plugin {
 // Two pages: the rocket builder (index.html) and the Moon landing view (landing.html).
 export default defineConfig({
   plugins: [htmlHardening()],
+  // One version for the website, the Android versionName/versionCode (android/app/build.gradle)
+  // and the in-app update check (src/app/appUpdate.ts): "version" in package.json.
+  define: {
+    __APP_VERSION__: JSON.stringify(JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')).version),
+  },
   server: {
     port: 3000,
     strictPort: false,

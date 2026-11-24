@@ -13,3 +13,5 @@ astra-spaceflight (1)
 supabase/.temp
 # Screen recordings are far over GitHub's 100 MB file limit
 *.mp4
+# Signed APK / AAB copies from npm run android:release and android:bundle
+release

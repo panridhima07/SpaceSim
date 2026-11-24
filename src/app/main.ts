@@ -94,6 +94,7 @@ import { importRocketFile, type ImportFormat } from '../io/importer';
 import { exportDesign, type ExportFormat } from '../io/exporter';
 import { buildShareUrl, decodeDesignFromHash, SHARE_HASH_KEY } from '../io/shareLink';
 import { saveBlob } from './saveFile';
+import { shareBaseUrl } from './native';
 import {
   evaluateChallenges,
   loadCompletedChallenges,
@@ -1595,7 +1596,8 @@ async function handleCopyShareLink(): Promise<void> {
     return;
   }
   try {
-    const baseUrl = window.location.href.split('#')[0];
+    // Inside the Android app the page is https://localhost; links must point at the website.
+    const baseUrl = shareBaseUrl();
     const url = await buildShareUrl(d, baseUrl);
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(url);

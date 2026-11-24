@@ -75,7 +75,7 @@ Status as of 23 Nov 2026. Nothing below is ticked yet: each item bundles several
 - Transonic wave drag is an uncalibrated placeholder.
 - A demo script was not found.
 
-**Not verified:** whether the `supabase/migrations/` files are applied to the Supabase project; the APK running on the Android emulator; the 3D load time.
+**Not verified:** whether the `supabase/migrations/` files are applied to the Supabase project; the app on a real phone (it runs on the Android 16 emulator as of 24 Nov 2026: sign-in gate, guest builder, Back button, update check); the 3D load time.
 
 Plan, status and validation numbers: [docs/PLAN.md](docs/PLAN.md).
 
@@ -98,6 +98,13 @@ npm run android:apk
 ```
 
 The debug APK lands in `android/app/build/outputs/apk/debug/app-debug.apk`. Install it with `adb install -r <path>` or copy it to the phone. `npm run android:sync` only rebuilds the web part and copies it into the Android project (then run it from Android Studio).
+
+```
+npm run android:release   # signed APK in release/ (to share directly)
+npm run android:bundle    # signed AAB in release/ (for Google Play)
+```
+
+Both need a signing key in `android/keystore.properties`. The app version comes from `"version"` in `package.json`. Signing, the in-app update check, installing on a phone and publishing to Google Play or the App Store: [docs/MOBILE-RELEASE.md](docs/MOBILE-RELEASE.md).
 
 ## Data scripts
 
