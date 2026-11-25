@@ -3,7 +3,7 @@
 import { Capacitor } from '@capacitor/core';
 
 /** The public website. The app uses it for links that must work outside the app. */
-export const PUBLIC_SITE_URL = (import.meta.env?.VITE_PUBLIC_SITE_URL || 'https://space-flight-simulater.vercel.app').replace(
+export const PUBLIC_SITE_URL = (import.meta.env?.VITE_PUBLIC_SITE_URL || 'https://astra-spaceflight.vercel.app').replace(
   /\/+$/,
   '',
 );
