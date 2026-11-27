@@ -1,20 +1,30 @@
-// POST /api/simulate: runs a heavy simulation job (the stress test) on the server.
+// POST /api/simulate: runs a non-interactive simulation job (stress test, single flight or
+// mission) on the server.
 // Vercel Node.js runtime, Web Standard `fetch` handler (export default { fetch }).
 //
 // Same-origin only: no CORS headers are ever sent. Everything in the body is hostile and goes
-// through parseSimJob. Sign-in is optional; a bearer token, when present, must verify with Supabase.
+// through parseAnyJob. Sign-in is optional; a bearer token, when present, must verify with Supabase.
 
-import { SimBudgetError, SimJobError, parseSimJob, runSimJob, stringifyResult } from '../src/cloud/simJob';
+import { SimBudgetError, SimJobError, parseAnyJob, runAnyJob, stringifyResult } from '../src/cloud/simJob';
 
 export const config = { maxDuration: 60 };
 
 const MAX_BODY_BYTES = 1_000_000; // 1 MB
-const RATE_LIMIT = 10; // jobs
+// Every launch and every mission case is a job, so ordinary use is a request every few seconds,
+// more while someone is tuning a design. 30 a minute leaves room for that while still capping what
+// one address can cost. A client that hits the limit runs the physics on its own device instead.
+const RATE_LIMIT = 30; // jobs
 const RATE_WINDOW_MS = 60_000;
 const MAX_TRACKED_IPS = 5000;
 const AUTH_TIMEOUT_MS = 5000;
 const MAX_TOKEN_CHARS = 4096;
-const JOB_BUDGET_MS = 25_000;
+// Kept under the client's own timeouts (src/cloud/runPhysics.ts FLIGHT_TIMEOUT_MS 12 s,
+// src/cloud/remoteSim.ts SERVER_TIMEOUT_MS 20 s), so the server never burns CPU on a job the
+// client has already given up on.
+const JOB_BUDGET_MS = { flight: 10_000, stress: 18_000, mission: 18_000 } as const;
+// A Supabase access token is a JWT: three base64url parts. Anything else is refused without a
+// network call.
+const JWT_SHAPE = /^[\w-]+\.[\w-]+\.[\w-]+$/;
 
 // Per-IP rate limit. In memory, so it is per function instance and best-effort only: instances
 // scale out and restart, each with its own counters. It blunts casual abuse, nothing more.
@@ -40,7 +50,9 @@ function rateLimited(ip: string, now: number): boolean {
 
 function clientIp(req: Request): string {
   const h = req.headers;
-  const v = h.get('x-vercel-forwarded-for') ?? h.get('x-real-ip') ?? h.get('x-forwarded-for');
+  // x-vercel-forwarded-for is set by the platform; x-forwarded-for can be sent by the client, so
+  // it is not used (off Vercel, everyone shares one 'unknown' bucket: best-effort only).
+  const v = h.get('x-vercel-forwarded-for') ?? h.get('x-real-ip');
   return v ? v.split(',')[0].trim() || 'unknown' : 'unknown';
 }
 
@@ -70,29 +82,33 @@ function env(...names: string[]): string | undefined {
  * Wall-clock budget for one job. SIM_JOB_BUDGET_MS can change it (tests on a busy machine
  * raise it), but it stays under the function's 60 s maxDuration.
  */
-function jobBudgetMs(): number {
+function jobBudgetMs(kind: keyof typeof JOB_BUDGET_MS): number {
   const v = Number(env('SIM_JOB_BUDGET_MS'));
-  return Number.isFinite(v) && v > 0 ? Math.min(Math.max(v, 1000), 55_000) : JOB_BUDGET_MS;
+  return Number.isFinite(v) && v > 0 ? Math.min(Math.max(v, 1000), 55_000) : JOB_BUDGET_MS[kind];
 }
 
-/** null = signed in; otherwise the error response. */
+/**
+ * null = go ahead; otherwise the error response. Sign-in is optional and unlocks nothing yet, so
+ * only a token Supabase definitely rejects is refused. When the check cannot run (not configured
+ * on this deployment, Supabase slow or down) the request is treated like a guest's rather than
+ * failing a signed-in person who would otherwise be served.
+ */
 async function verifyBearer(token: string): Promise<Response | null> {
-  if (token.length === 0 || token.length > MAX_TOKEN_CHARS || /\s/.test(token)) {
+  if (token.length === 0 || token.length > MAX_TOKEN_CHARS || !JWT_SHAPE.test(token)) {
     return fail(401, 'Invalid sign-in token.');
   }
   const base = env('VITE_SUPABASE_URL', 'SUPABASE_URL')?.replace(/\/+$/, '');
   const anon = env('VITE_SUPABASE_ANON_KEY', 'SUPABASE_ANON_KEY');
-  if (!base || !anon) return fail(503, 'Sign-in check is not configured.');
+  if (!base || !anon) return null;
   try {
     const res = await fetch(`${base}/auth/v1/user`, {
       headers: { authorization: `Bearer ${token}`, apikey: anon },
       signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
     });
     if (res.status === 401 || res.status === 403) return fail(401, 'Invalid sign-in token.');
-    if (!res.ok) return fail(503, 'Sign-in check is unavailable.');
     return null;
   } catch {
-    return fail(503, 'Sign-in check is unavailable.');
+    return null;
   }
 }
 
@@ -155,7 +171,8 @@ async function handle(request: Request): Promise<Response> {
   }
 
   try {
-    const result = runSimJob(parseSimJob(raw), { budgetMs: jobBudgetMs() });
+    const job = parseAnyJob(raw);
+    const result = runAnyJob(job, { budgetMs: jobBudgetMs(job.kind) });
     return json(200, { ok: true, ...result });
   } catch (e) {
     if (e instanceof SimJobError) return fail(400, e.message);

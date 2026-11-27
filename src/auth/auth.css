@@ -347,7 +347,12 @@
 }
 
 .auth-status:empty {
-  display: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 .auth-link {
@@ -381,7 +386,7 @@
   top: calc(68px + env(safe-area-inset-top, 0px));
   bottom: auto;
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
   align-items: flex-start;
   gap: 8px;
 }
@@ -540,7 +545,7 @@
   height: 8px;
   translate: -50% -50%;
   border-radius: 50%;
-  background: rgba(237, 237, 238, 0.35);
+  background: rgba(237, 237, 238, 0.55);
   transition:
     background 150ms var(--auth-ease),
     scale 150ms var(--auth-ease);

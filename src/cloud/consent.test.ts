@@ -85,10 +85,16 @@ describe('consent dialog', () => {
     expect((await p).research).toBe(false);
   });
 
-  it('Escape declines', async () => {
-    const p = showConsentDialog({ current: { research: true, version: CONSENT_VERSION, decidedAt: 1 } });
+  it('Escape on a first-time dialog declines', async () => {
+    const p = showConsentDialog({ signedIn: true });
     document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect((await p).research).toBe(false);
+  });
+
+  it('Escape on a reopened dialog keeps the earlier opt-in', async () => {
+    const p = showConsentDialog({ signedIn: true, current: { research: true, version: CONSENT_VERSION, decidedAt: 1 } });
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect((await p).research).toBe(true);
   });
 
   it('backdrop click does not dismiss', () => {

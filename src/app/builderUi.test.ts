@@ -155,6 +155,103 @@ describe('createBuilderUI', () => {
     expect(cb.onRedo).toHaveBeenCalledTimes(1);
   });
 
+  const emptyState = (design = createEmptyDesign('Named')) => ({
+    design,
+    selectedId: null as string | null,
+    stats: { length: 0, mass: 0, stabilityCal: 0, twr: null, motorLabel: null, flaws: [] },
+    canUndo: false,
+    canRedo: false,
+    motors: ALL_MOTORS,
+    savedDesigns: [{ id: 'one', name: 'Saved one', savedAt: 0, design }],
+    completedChallenges: new Set<string>(),
+  });
+  const button = (text: string): HTMLButtonElement =>
+    Array.from(container.querySelectorAll('button')).find((b) => b.textContent === text) as HTMLButtonElement;
+  const press = (key: string, init: KeyboardEventInit = {}): void => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key, ...init }));
+  };
+
+  it('treats its modals as dialogs: focus, Escape, and no shortcuts behind them', () => {
+    const bui = createBuilderUI(container, cb);
+    bui.setVisible(true);
+    bui.render({ ...emptyState(), selectedId: 'some-part' });
+
+    for (const opener of [button('Save / Open'), button('Challenges')]) {
+      opener.focus();
+      opener.click();
+      const dialog = container.querySelector<HTMLElement>(
+        '.sfb-b-modal-backdrop:not(.sfb-hidden) [role="dialog"]',
+      ) as HTMLElement;
+      expect(dialog.getAttribute('aria-modal')).toBe('true');
+      expect(document.getElementById(dialog.getAttribute('aria-labelledby')!)).not.toBeNull();
+      expect(dialog.contains(document.activeElement)).toBe(true);
+
+      press('Backspace');
+      press('Delete');
+      press('z', { ctrlKey: true });
+      press('m');
+      expect(cb.onDeletePart).not.toHaveBeenCalled();
+      expect(cb.onUndo).not.toHaveBeenCalled();
+
+      press('Escape');
+      expect(container.querySelector('.sfb-b-modal-backdrop:not(.sfb-hidden)')).toBeNull();
+      expect(document.activeElement).toBe(opener);
+      expect(cb.onSelectPart).not.toHaveBeenCalled();
+    }
+
+    press('Backspace');
+    expect(cb.onDeletePart).toHaveBeenCalledWith('some-part');
+  });
+
+  it('asks before deleting a saved rocket', () => {
+    const bui = createBuilderUI(container, cb);
+    bui.setVisible(true);
+    bui.render(emptyState());
+    button('Save / Open').click();
+
+    button('Delete').click();
+    expect(cb.onDeleteSavedDesign).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(button('No'));
+    // A redraw keeps the question and its focus.
+    bui.render(emptyState());
+    expect(document.activeElement).toBe(button('No'));
+    button('No').click();
+    expect(button('Yes')).toBeUndefined();
+    expect(cb.onDeleteSavedDesign).not.toHaveBeenCalled();
+
+    button('Delete').click();
+    button('Yes').click();
+    expect(cb.onDeleteSavedDesign).toHaveBeenCalledWith('one');
+
+    // Closing the modal drops an unanswered question.
+    button('Delete').click();
+    press('Escape');
+    expect(button('Yes')).toBeUndefined();
+  });
+
+  it('reports the cutaway and mirror state and offers a phone rename box', () => {
+    const bui = createBuilderUI(container, cb);
+    bui.setVisible(true);
+    bui.render(emptyState());
+
+    expect(button('Mirror').getAttribute('aria-pressed')).toBe('false');
+    button('Mirror').click();
+    expect(button('Mirror').getAttribute('aria-pressed')).toBe('true');
+    bui.setMirror(false);
+    expect(button('Mirror').getAttribute('aria-pressed')).toBe('false');
+
+    button('Inside').click();
+    expect(button('See inside').getAttribute('aria-pressed')).toBe('true');
+    bui.setCutaway(false);
+    expect(button('Inside').getAttribute('aria-pressed')).toBe('false');
+
+    const name = container.querySelector<HTMLInputElement>('.sfb-b-mobile-name') as HTMLInputElement;
+    expect(name.value).toBe('Named');
+    name.value = '  Falcon  ';
+    name.dispatchEvent(new Event('change'));
+    expect(cb.onRename).toHaveBeenCalledWith('Falcon');
+  });
+
   it('renders one export button per EXPORT_FORMATS entry and calls onExport / onCopyShareLink', () => {
     const bui = createBuilderUI(container, cb);
     bui.setVisible(true);

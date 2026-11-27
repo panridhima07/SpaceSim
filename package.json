@@ -1,17 +1,20 @@
 {
   "name": "space-flight-builder",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.1",
   "type": "module",
+  "astra": {
+    "minNativeCode": 10100
+  },
   "scripts": {
     "dev": "vite",
     "build": "node scripts/build-parallel.mjs",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "deploy": "npm run build && node scripts/build-vercel-output.mjs && vercel deploy --prebuilt --prod --yes",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.api.json",
+    "deploy": "npm test && npm run build && node scripts/make-app-bundle.mjs && node scripts/build-vercel-output.mjs && vercel deploy --prebuilt --prod --yes",
     "icons": "node scripts/make-icons.mjs",
-    "android:sync": "vite build && cap sync android",
-    "android:apk": "npm run android:sync && cd android && gradlew.bat assembleDebug",
+    "android:sync": "node scripts/build-parallel.mjs && cap sync android",
+    "android:apk": "npm run android:sync && cd android && .\\gradlew.bat assembleDebug",
     "android:release": "node scripts/android-release.mjs apk",
     "android:bundle": "node scripts/android-release.mjs bundle"
   },
@@ -20,6 +23,7 @@
     "@capacitor/app": "^8.1.2",
     "@capacitor/browser": "^8.0.5",
     "@capacitor/core": "^8.6.2",
+    "@capgo/capacitor-updater": "^8.54.2",
     "@supabase/supabase-js": "^2.119.2",
     "jszip": "^3.10.1",
     "three": "^0.170.0"

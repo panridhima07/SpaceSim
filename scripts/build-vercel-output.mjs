@@ -5,7 +5,7 @@
 // imports and a JSON import that Node's own module loader refuses.
 
 import { build } from 'esbuild';
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,6 +21,24 @@ if (!existsSync(join(dist, 'index.html'))) {
 rmSync(out, { recursive: true, force: true });
 mkdirSync(join(out, 'static'), { recursive: true });
 cpSync(dist, join(out, 'static'), { recursive: true });
+
+// Stamp the service worker's cache name with this build's id so a deploy evicts old caches.
+// The id is the `build` field that vite writes to dist/build.json (same value as the app's
+// BUILD_ID). Falls back to a timestamp if that file is missing or malformed.
+const swPath = join(out, 'static', 'sw.js');
+if (existsSync(swPath)) {
+  let buildId = Date.now().toString(36);
+  try {
+    const info = JSON.parse(readFileSync(join(dist, 'build.json'), 'utf8'));
+    if (typeof info.build === 'string' && /^\d{14}$/.test(info.build)) buildId = info.build;
+  } catch {
+    // no build.json: keep the timestamp fallback
+  }
+  const swSource = readFileSync(swPath, 'utf8');
+  const stamped = swSource.replace("const CACHE = 'sfb-v3';", `const CACHE = 'sfb-${buildId}';`);
+  if (stamped === swSource) console.warn('sw.js cache name not stamped');
+  else writeFileSync(swPath, stamped);
+}
 
 // Node-style (req, res) entry around the function's Web-standard fetch handler.
 const entry = `
@@ -68,7 +86,13 @@ writeFileSync(
   JSON.stringify({
     version: 3,
     routes: [
+      // Security headers for every response; frame-ancestors only works as a header, not in the page's meta CSP.
+      { src: '/(.*)', headers: { 'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'strict-origin-when-cross-origin', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()' }, continue: true },
       { src: '/sw.js', headers: { 'Cache-Control': 'no-cache' }, continue: true },
+      // The Android app reads this on every launch to find a newer web bundle (src/app/liveUpdate.ts).
+      { src: '/app-update/manifest.json', headers: { 'Cache-Control': 'no-cache' }, continue: true },
+      // The dashboard is a plain file; sign-in must return to exactly /admin.html.
+      { src: '^/admin/?$', status: 308, headers: { Location: '/admin.html' } },
       { handle: 'filesystem' },
     ],
   }),

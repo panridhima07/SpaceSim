@@ -2,10 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="Fly Chandrayaan-3 from lunar orbit to a soft landing near the Moon's south pole, in your browser." />
     <meta name="theme-color" content="#0a0a0b" />
     <link rel="icon" type="image/png" href="/icon-192.png" />
-    <title>Chandrayaan-3 to the Moon · Space Flight Builder</title>
+    <title>Chandrayaan-3 to the Moon · ASTRA Spaceflight</title>
     <style>
       /* Restyled to match the ASTRA SPACEFLIGHT reference and .sfb-root token system:
          flat dark glass panels, no 3D tilt, a top bar, flat keys, amber accent. */
@@ -455,6 +456,77 @@
           min-width: 44px;
           min-height: 44px;
         }
+      }
+
+      /* Powered descent: the flight deck (flightDeck.css) covers the view. These offsets keep it
+         clear of the top bar, dock and HUD; it adds its own 8px and the safe-area insets.
+         --dock-h is measured in main.ts. */
+      body.deck-on {
+        --fdk-top: 54px;
+        --fdk-bottom: calc(var(--dock-h, 84px) + 12px);
+        --fdk-left: 56px; /* clear of the account button */
+        --fdk-right: 278px; /* the HUD column */
+      }
+      body.deck-on.hud-off { --fdk-right: 6px; }
+      body.deck-on #hud {
+        max-height: calc(100% - var(--dock-h, 84px) - 86px);
+        overflow-y: auto;
+      }
+      /* The log moves right of the throttle lever. */
+      body.deck-on #log {
+        left: 150px;
+        bottom: calc(var(--dock-h, 84px) + 24px);
+        width: min(310px, calc(100vw - 660px));
+      }
+      @media (max-width: 900px) {
+        body.deck-on #log { display: none; }
+      }
+      /* Phones: the deck's readouts stand in for the HUD. */
+      @media (max-width: 760px), (max-height: 500px) {
+        body.deck-on,
+        body.deck-on.hud-off {
+          --fdk-left: 0px;
+          --fdk-right: 0px;
+        }
+        body.deck-on #hud,
+        body.deck-on #log,
+        body.deck-on .auth-chip { display: none; }
+      }
+      @media (max-width: 760px) {
+        body.deck-on {
+          --fdk-top: 52px;
+          --fdk-bottom: calc(var(--dock-h, 62px) + 8px);
+        }
+      }
+      /* Phone in landscape: the dock becomes one swipeable row between the lever and the arrows,
+         and the deck's top bar sits between the brand and the builder link. */
+      @media (max-height: 500px) {
+        body.deck-on {
+          --fdk-top: 0px;
+          --fdk-bottom: 0px;
+        }
+        body.deck-on #brand {
+          height: auto;
+          padding: calc(8px + env(safe-area-inset-top, 0px)) 10px 0;
+        }
+        body.deck-on #brand .wide,
+        body.deck-on #brand .chip { display: none; }
+        body.deck-on .fdk .fdk-top { max-width: calc(100% - 220px); }
+        body.deck-on #dock {
+          left: calc(92px + env(safe-area-inset-left, 0px));
+          right: calc(156px + env(safe-area-inset-right, 0px));
+          bottom: max(4px, env(safe-area-inset-bottom, 0px));
+          width: auto;
+          max-width: none;
+          margin: 0;
+          flex-wrap: nowrap;
+          justify-content: flex-start;
+          overflow-x: auto;
+          scrollbar-width: none;
+          padding: 4px 8px;
+        }
+        body.deck-on #dock button { flex: none; min-height: 44px; }
+        body.deck-on #help { display: none; }
       }
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after {

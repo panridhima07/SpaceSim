@@ -3,6 +3,7 @@ import {
   MAX_INFLATED_BYTES,
   assertSafeXmlText,
   clampCount,
+  clampRange,
   readStreamCapped,
   readZipEntry,
   sanitizeDesignObject,
@@ -15,6 +16,15 @@ describe('limits', () => {
     expect(clampCount(-5)).toBe(1);
     expect(clampCount(NaN, 3)).toBe(3);
     expect(clampCount(undefined, 6)).toBe(6);
+  });
+
+  it('clampRange clamps finite input and gives min for NaN or Infinity', () => {
+    expect(clampRange(5, 0, 10)).toBe(5);
+    expect(clampRange(-5, 0, 10)).toBe(0);
+    expect(clampRange(50, 0, 10)).toBe(10);
+    expect(clampRange(NaN, -1, 1)).toBe(-1);
+    expect(clampRange(Infinity, -1, 1)).toBe(-1);
+    expect(clampRange(-Infinity, 0, 10)).toBe(0);
   });
 
   it('assertSafeXmlText rejects DOCTYPE, ENTITY and oversize text', () => {
@@ -77,5 +87,19 @@ describe('limits', () => {
     expect(d.stack[0].part.x).toBe(0);
     expect(d.nextId).toBeLessThanOrEqual(1e9);
     expect(d.name).toBe('Fallback');
+  });
+
+  it('sanitizeDesignObject keeps importWarnings as clamped strings and generates distinct fallback ids', () => {
+    const raw = {
+      stack: [{ id: 'a', part: { kind: 'bodytube', length: 0.2, outerRadius: 0.02 } }],
+      importWarnings: ['x'.repeat(500), 7, ...Array.from({ length: 80 }, (_, i) => `w${i}`)],
+    };
+    const d1 = sanitizeDesignObject(raw, 'F', []);
+    const d2 = sanitizeDesignObject({ stack: raw.stack }, 'F', []);
+    const d3 = sanitizeDesignObject({ stack: raw.stack }, 'F', []);
+    expect(d1.importWarnings).toHaveLength(50);
+    expect(d1.importWarnings![0]).toHaveLength(300);
+    expect(d2.importWarnings).toBeUndefined();
+    expect(d2.id).not.toBe(d3.id);
   });
 });

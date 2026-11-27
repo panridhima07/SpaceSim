@@ -77,7 +77,10 @@ describe('noseProfile', () => {
 describe('buildRocketMesh', () => {
   it('builds nose, tube and three fins without cutaway', () => {
     const g = buildRocketMesh(rocket);
-    expect(countMeshes(g)).toBe(5);
+    // One skin per part at least (nose, tube, three fins); kit-level detail on top, kept to
+    // a draw-call budget a phone can afford.
+    expect(countMeshes(g)).toBeGreaterThanOrEqual(5);
+    expect(countMeshes(g)).toBeLessThanOrEqual(20);
     const names = new Set<string>();
     g.traverse((o) => { if (o instanceof THREE.Mesh) names.add(o.name); });
     expect(names).toEqual(new Set(['nose', 'body', 'fins']));

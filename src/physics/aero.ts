@@ -230,14 +230,17 @@ function finCpX(f: FinSet): number {
 
 /**
  * Compressibility factor applied to fin CNα.
- * Subsonic: Prandtl-Glauert 1/sqrt(1-M²). Transonic 0.8..1.2: held at the M=0.8 value.
- * Supersonic: 1/sqrt(M²-1), never above the M=0.8 value.
+ * Subsonic: Prandtl-Glauert 1/sqrt(1-M²). Supersonic: 1/sqrt(M²-1).
+ * Transonic 0.8..1.2: a straight line between the two ends, so the factor (and with it the
+ * centre of pressure) has no step. Both formulas blow up at Mach 1, which is why neither is
+ * used there.
  */
-function compressibilityFactor(M: number): number {
-  const hold = 1 / Math.sqrt(1 - 0.8 * 0.8);
+export function compressibilityFactor(M: number): number {
   if (M < 0.8) return 1 / Math.sqrt(1 - M * M);
-  if (M <= 1.2) return hold;
-  return Math.min(1 / Math.sqrt(M * M - 1), hold);
+  if (M > 1.2) return 1 / Math.sqrt(M * M - 1);
+  const lo = 1 / Math.sqrt(1 - 0.8 * 0.8);
+  const hi = 1 / Math.sqrt(1.2 * 1.2 - 1);
+  return lo + ((hi - lo) * (M - 0.8)) / 0.4;
 }
 
 // ---------- Drag (OpenRocket / Niskanen 2009 build-up) ----------

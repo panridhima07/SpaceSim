@@ -70,7 +70,7 @@ function buildMotor(header: string[], points: MotorCurve): Motor | null {
   }
 
   const burnTime = curve[curve.length - 1][0];
-  return {
+  const motor: Motor = {
     manufacturer,
     designation: name,
     diameter: Number(diaMm) / 1000,
@@ -82,6 +82,24 @@ function buildMotor(header: string[], points: MotorCurve): Motor | null {
     totalImpulse: trapezoid(curve),
     approximate: false,
   };
+  return usableMotor(motor) ? motor : null;
+}
+
+/** A motor the simulator can fly: finite, positive sizes and impulse, sane masses, ordered curve. */
+export function usableMotor(m: Motor): boolean {
+  const positive = (x: number) => Number.isFinite(x) && x > 0;
+  if (![m.diameter, m.length, m.totalImpulse, m.burnTime].every(positive)) return false;
+  if (!Number.isFinite(m.propellantMass) || m.propellantMass < 0) return false;
+  if (!Number.isFinite(m.totalMass) || m.totalMass < m.propellantMass) return false;
+  if (!Array.isArray(m.curve) || m.curve.length === 0) return false;
+
+  let prevT = -Infinity;
+  for (const [t, f] of m.curve) {
+    if (!Number.isFinite(t) || !Number.isFinite(f) || f < 0) return false;
+    if (t < prevT) return false;
+    prevT = t;
+  }
+  return true;
 }
 
 // ---------- Integration helpers ----------

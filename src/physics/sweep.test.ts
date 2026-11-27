@@ -31,6 +31,7 @@ const THRUST = 6; // N
 
 interface StubOpts {
   cpX?: number;
+  mass?: number;
 }
 
 function makeDeps(opts: StubOpts = {}): PhysicsDeps {
@@ -43,7 +44,7 @@ function makeDeps(opts: StubOpts = {}): PhysicsDeps {
       temperature: 288.15,
       soundSpeed: 340,
     }),
-    massProps: () => ({ mass: MASS, cgX: CG, iRoll: IR, iPitch: IP }),
+    massProps: () => ({ mass: opts.mass ?? MASS, cgX: CG, iRoll: IR, iPitch: IP }),
     aeroProps: () => ({
       refArea: AREF,
       refLength: 2 * BODY_R,
@@ -76,7 +77,7 @@ function makeMotor(): Motor {
 }
 
 /** Chute deploys on the ejection event so the delay sweep changes the result. */
-function makeRocket(): RocketModel {
+function makeRocket(chuteOver: Partial<Parachute> = {}): RocketModel {
   const chute: Parachute = {
     kind: 'parachute',
     id: 'chute',
@@ -91,6 +92,7 @@ function makeRocket(): RocketModel {
     deployAltitude: 0,
     deployDelay: 0,
     mass: 0.005,
+    ...chuteOver,
   };
   return {
     name: 'Test rocket',
@@ -173,6 +175,45 @@ describe('stressTest', () => {
   it('a stable rocket has a safe wind limit', () => {
     expect(report.maxSafeWind).not.toBeNull();
   });
+});
+
+describe('a long descent', () => {
+  it('is flown to touchdown, not cut off at 300 s', () => {
+    // A 1.2 m canopy under a 60 g rocket comes down at about 1 m/s: several minutes from apogee.
+    const rocket = makeRocket({ diameter: 1.2, deployEvent: 'apogee' });
+    const r = runCase(rocket, makeMotor(), makeConfig({ windSpeed: 0 }), makeDeps(), 'slow');
+    expect(r.apogee / 1.5).toBeGreaterThan(300 / 2); // sanity: the descent alone outlasts the old limit
+    expect(r.outcome).toBe('landed');
+    expect(Number.isFinite(r.landingSpeed)).toBe(true);
+    expect(r.landingSpeed).toBeLessThan(2);
+  }, 120_000);
+});
+
+describe('stressTest when the ejection delay does not matter', () => {
+  it('says so instead of recommending the first delay tested', () => {
+    // The chute opens at apogee whatever the motor delay is, so every delay case is the same flight.
+    const rocket = makeRocket({ deployEvent: 'apogee' });
+    const report = stressTest(rocket, makeMotor(), makeConfig({ ejectionDelay: 6 }), makeDeps());
+    expect(report.summary.some((l) => l.startsWith('Ejection delay makes no difference'))).toBe(true);
+    expect(report.summary.some((l) => l.startsWith('Best ejection delay'))).toBe(false);
+    // The fitted delay is kept, not replaced by the first value in the sweep.
+    expect(report.bestDelay).toBe(6);
+  }, 120_000);
+
+  it('still names the best delay when the chute fires on the ejection charge', () => {
+    const report = stressTest(makeRocket(), makeMotor(), makeConfig(), makeDeps());
+    expect(report.summary.some((l) => l.startsWith('Best ejection delay'))).toBe(true);
+  }, 120_000);
+});
+
+describe('stressTest with a rocket too heavy to lift off', () => {
+  it('says it never left the rail instead of reporting a landing', () => {
+    // 6 N of thrust under 2 kg: thrust-to-weight 0.3, so it sits on the pad until burnout.
+    const report = stressTest(makeRocket(), makeMotor(), makeConfig(), makeDeps({ mass: 2 }));
+    expect(report.wind.every((r) => !Number.isFinite(r.railExitSpeed))).toBe(true);
+    expect(report.summary.some((l) => l.startsWith('Never left the launch rail'))).toBe(true);
+    expect(report.summary.some((l) => l.startsWith('Lands'))).toBe(false);
+  }, 120_000);
 });
 
 describe('stressTestSteps', () => {

@@ -2,6 +2,7 @@
 // motor at a given burn time.
 
 import type { Component, FinSet, Motor, MassProps, MassPropsFn, NoseCone, RocketModel, Transition, InnerTube } from '../types';
+import { firingMotors, tubeCopies } from './cluster';
 
 const PI = Math.PI;
 const MIN_INERTIA = 1e-9;
@@ -274,9 +275,19 @@ function componentParts(c: Component): Part[] {
     case 'finset':
       return finParts(c);
     case 'bodytube':
-    case 'innertube':
     case 'ring':
       return tubeParts(c);
+    case 'innertube': {
+      // A cluster or a ring of pods is that many tubes.
+      const n = tubeCopies(c);
+      return tubeParts(c).map((p) => ({
+        ...p,
+        m: p.m * n,
+        ownPitch: p.ownPitch * n,
+        roll: p.roll * n,
+        radialPitch: p.radialPitch * n,
+      }));
+    }
     case 'parachute': {
       const m = c.massOverride ?? c.mass;
       const cg = c.cgOverride ?? c.x + c.length / 2;
@@ -327,10 +338,17 @@ function remainingFraction(motor: Motor, tBurn: number): number {
 }
 
 function motorParts(rocket: RocketModel, motor: Motor, tBurn: number): Part[] {
-  // Find the motor mount: first innertube flagged isMotorMount, else the aft end of the rocket.
-  const mount = rocket.components.find(
-    (c): c is InnerTube => c.kind === 'innertube' && c.isMotorMount,
-  );
+  return firingMotors(rocket).flatMap(({ mount, count }) => mountedParts(rocket, mount, count, motor, tBurn));
+}
+
+/** `count` motors in one mount, or at the aft end of the rocket when it has none. */
+function mountedParts(
+  rocket: RocketModel,
+  mount: InnerTube | null,
+  count: number,
+  motor: Motor,
+  tBurn: number,
+): Part[] {
   const aft = mount ? mount.x + mount.length + mount.overhang : rocket.length;
   const fore = aft - motor.length;
   const mid = (fore + aft) / 2;
@@ -360,6 +378,11 @@ function motorParts(rocket: RocketModel, motor: Motor, tBurn: number): Part[] {
       roll: rollTube(mPropRemaining, propRadius, 0),
       radialPitch: 0,
     });
+  }
+  for (const p of parts) {
+    p.m *= count;
+    p.ownPitch *= count;
+    p.roll *= count;
   }
   return parts;
 }

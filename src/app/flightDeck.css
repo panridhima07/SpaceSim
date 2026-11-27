@@ -1,0 +1,553 @@
+/* Flight deck: hand-flying controls over the 3D view (flightDeck.ts).
+   The overlay lets pointers through; only the controls themselves take them.
+   Hosts move it in from the edges with --fdk-top, --fdk-bottom, --fdk-left and --fdk-right.
+   Selectors start with .fdk.fdk so page rules such as ".sfb-root.sfb-mobile button" lose. */
+
+.fdk {
+  --fdk-arrow: 96px;
+  --fdk-engine: 68px;
+  --fdk-lever: 220px;
+  --fdk-gap: 8px;
+
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--fdk-gap);
+  padding:
+    calc(env(safe-area-inset-top, 0px) + var(--fdk-top, 0px) + 8px)
+    calc(env(safe-area-inset-right, 0px) + var(--fdk-right, 0px) + 8px)
+    calc(env(safe-area-inset-bottom, 0px) + var(--fdk-bottom, 0px) + 8px)
+    calc(env(safe-area-inset-left, 0px) + var(--fdk-left, 0px) + 8px);
+  pointer-events: none;
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+  font-size: 12px;
+  line-height: 1.25;
+  color: var(--sfb-text, #ededee);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.fdk.fdk-hidden {
+  display: none !important;
+}
+
+.fdk *,
+.fdk *::before,
+.fdk *::after {
+  box-sizing: border-box;
+}
+
+.fdk [hidden] {
+  display: none !important;
+}
+
+/* ---------- Buttons ---------- */
+
+.fdk.fdk .fdk-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  min-width: 48px;
+  min-height: 48px;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sfb-text, #ededee);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0) 55%),
+    var(--sfb-panel, rgba(14, 14, 16, 0.8));
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 12px;
+  box-shadow: 0 3px 0 rgba(5, 5, 6, 0.75), 0 8px 18px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: none;
+  transition:
+    transform 100ms var(--sfb-ease-out, cubic-bezier(0.16, 1, 0.3, 1)),
+    box-shadow 100ms var(--sfb-ease-out, cubic-bezier(0.16, 1, 0.3, 1)),
+    border-color 150ms ease,
+    color 150ms ease,
+    filter 150ms ease;
+}
+
+@media (hover: hover) {
+  .fdk.fdk .fdk-btn:hover:not(:disabled) {
+    border-color: var(--sfb-accent, #f5a65b);
+    filter: brightness(1.15);
+  }
+}
+
+.fdk.fdk .fdk-btn:active:not(:disabled),
+.fdk.fdk .fdk-btn.is-held {
+  transform: translateY(2px) scale(0.96);
+  box-shadow: 0 1px 0 rgba(5, 5, 6, 0.75), inset 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+.fdk.fdk .fdk-btn.is-held {
+  color: var(--sfb-accent, #f5a65b);
+  border-color: var(--sfb-accent, #f5a65b);
+}
+
+.fdk.fdk .fdk-btn:focus-visible {
+  outline: 2px solid var(--sfb-accent, #f5a65b);
+  outline-offset: 2px;
+}
+
+.fdk.fdk .fdk-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.fdk .fdk-icon {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  pointer-events: none;
+}
+
+/* Captions of two words ("Roll left") wrap rather than widen the button. */
+.fdk .fdk-caption {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  line-height: 1.1;
+  pointer-events: none;
+}
+
+/* ---------- Top bar ---------- */
+
+.fdk-top {
+  align-self: center;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 10px;
+  max-width: 100%;
+  padding: 5px 6px;
+  background: var(--sfb-panel, rgba(14, 14, 16, 0.8));
+  border: 1px solid var(--sfb-line, rgba(255, 255, 255, 0.18));
+  border-radius: 14px;
+}
+
+.fdk .fdk-mode {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border: 1px solid var(--sfb-line, rgba(255, 255, 255, 0.18));
+  border-radius: 999px;
+}
+
+.fdk.fdk button.fdk-mode {
+  border-radius: 999px;
+}
+
+.fdk.fdk .fdk-mode.is-manual {
+  color: var(--sfb-accent, #f5a65b);
+  border-color: var(--sfb-accent, #f5a65b);
+}
+
+.fdk-readouts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 12px;
+  min-width: 0;
+}
+
+.fdk-readouts:empty {
+  display: none;
+}
+
+.fdk-readout {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.fdk-readout-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sfb-muted, #9a9aa0);
+}
+
+.fdk-readout-value {
+  font-family: var(--sfb-mono, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.fdk-readout.is-warn .fdk-readout-value {
+  color: var(--sfb-warning, #ffd166);
+}
+
+.fdk-readout.is-danger .fdk-readout-value {
+  color: var(--sfb-critical, #ff5d6c);
+}
+
+.fdk-time {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fdk.fdk .fdk-time .fdk-btn {
+  padding: 0;
+  font-size: 20px;
+  box-shadow: none;
+}
+
+.fdk-warp-text {
+  min-width: 36px;
+  text-align: center;
+  font-family: var(--sfb-mono, ui-monospace, Menlo, Consolas, monospace);
+  font-weight: 600;
+}
+
+/* ---------- Columns ---------- */
+
+.fdk-body {
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: var(--fdk-gap);
+  min-height: 0;
+}
+
+/* ----- Left: throttle and engine ----- */
+
+.fdk-left {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  width: 76px;
+  min-height: 0;
+}
+
+.fdk-throttle-text {
+  max-width: 100%;
+  text-align: center;
+  font-family: var(--sfb-mono, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 12px;
+  font-weight: 600;
+  text-shadow: 0 1px 3px #000, 0 0 8px #000;
+}
+
+.fdk.fdk .fdk-max,
+.fdk.fdk .fdk-min {
+  flex: none;
+  width: 64px;
+}
+
+.fdk-lever {
+  position: relative;
+  flex: 0 1 var(--fdk-lever);
+  width: 64px;
+  min-height: 56px;
+  background: var(--sfb-panel, rgba(14, 14, 16, 0.8));
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 14px;
+  cursor: ns-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+/* The track spans exactly the travel of the handle's centre. */
+.fdk-track {
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: calc(50% - 7px);
+  width: 14px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  pointer-events: none;
+}
+
+.fdk-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 0;
+  background: linear-gradient(0deg, var(--sfb-accent, #f5a65b), var(--sfb-warning, #ffd166));
+  border-radius: 7px;
+}
+
+.fdk-handle {
+  position: absolute;
+  bottom: 0;
+  left: -17px;
+  width: 48px;
+  height: 22px;
+  translate: 0 50%;
+  background:
+    linear-gradient(180deg, transparent 9px, #55555c 9px, #55555c 11px, transparent 11px),
+    linear-gradient(180deg, #f4f4f2, #b9b9bf);
+  border-radius: 7px;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.55);
+}
+
+.fdk-lever.is-held {
+  border-color: var(--sfb-accent, #f5a65b);
+}
+
+.fdk-lever[aria-disabled="true"] {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.fdk.fdk .fdk-engine {
+  flex: none;
+  flex-direction: column;
+  gap: 0;
+  width: var(--fdk-engine);
+  height: var(--fdk-engine);
+  padding: 2px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  border-width: 2px;
+  border-radius: 50%;
+}
+
+.fdk.fdk .fdk-engine.is-on {
+  color: var(--sfb-good, #7dffb2);
+  border-color: var(--sfb-good, #7dffb2);
+  box-shadow: 0 0 18px rgba(125, 255, 178, 0.45), inset 0 0 14px rgba(125, 255, 178, 0.25);
+}
+
+/* ----- Right: stage, toggles, tilt, rotate ----- */
+
+.fdk-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: var(--fdk-gap);
+  margin-left: auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.fdk-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--fdk-gap);
+}
+
+.fdk.fdk .fdk-stage {
+  min-width: 140px;
+  min-height: 56px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #0a0a0b;
+  background: linear-gradient(180deg, #ffd9ad, var(--sfb-accent, #f5a65b));
+  border-color: transparent;
+}
+
+.fdk.fdk .fdk-stage:focus-visible {
+  outline-color: #fff;
+}
+
+.fdk-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 240px;
+}
+
+.fdk-toggles:empty {
+  display: none;
+}
+
+.fdk.fdk .fdk-toggle[aria-pressed="true"] {
+  color: var(--sfb-accent, #f5a65b);
+  border-color: var(--sfb-accent, #f5a65b);
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.45), 0 0 14px rgba(245, 166, 91, 0.3);
+}
+
+.fdk-tilt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fdk.fdk .fdk-tilt .fdk-btn {
+  min-width: 112px;
+  border-radius: 24px;
+  font-size: 11px;
+}
+
+.fdk-rotate {
+  display: flex;
+  gap: 12px;
+}
+
+.fdk.fdk .fdk-rotate .fdk-btn {
+  flex: none;
+  flex-direction: column;
+  gap: 0;
+  width: var(--fdk-arrow);
+  height: var(--fdk-arrow);
+  padding: 4px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  border-width: 2px;
+  border-radius: 50%;
+}
+
+.fdk.fdk .fdk-rotate .fdk-icon {
+  width: calc(var(--fdk-arrow) * 0.5);
+  height: calc(var(--fdk-arrow) * 0.5);
+}
+
+/* ---------- Phone, portrait ---------- */
+
+@media (max-width: 600px) {
+  .fdk {
+    --fdk-arrow: 76px;
+    --fdk-engine: 60px;
+    --fdk-lever: 190px;
+  }
+
+  .fdk-rotate {
+    gap: 10px;
+  }
+
+  /* A smaller arrow keeps a two-line caption inside the circle. */
+  .fdk.fdk .fdk-rotate .fdk-icon {
+    width: calc(var(--fdk-arrow) * 0.42);
+    height: calc(var(--fdk-arrow) * 0.42);
+  }
+
+  /* Mode chip and time controls share the first row; the readouts sit under them. */
+  .fdk-top {
+    align-self: stretch;
+    justify-content: space-between;
+    row-gap: 4px;
+  }
+
+  .fdk-time {
+    order: 2;
+    margin-left: auto;
+  }
+
+  .fdk-readouts {
+    order: 3;
+    flex-basis: 100%;
+  }
+
+  .fdk-toggles {
+    max-width: 220px;
+  }
+}
+
+/* ---------- Short screens (phone, landscape) ---------- */
+
+@media (max-height: 500px) {
+  .fdk {
+    --fdk-arrow: 64px;
+    --fdk-engine: 52px;
+    --fdk-lever: 120px;
+    --fdk-gap: 6px;
+  }
+
+  .fdk-top {
+    flex-wrap: nowrap;
+    padding: 2px 6px;
+  }
+
+  .fdk-left {
+    gap: 4px;
+  }
+
+  /* Stage and toggles move beside the tilt pair so the column fits the height. */
+  .fdk-right {
+    display: grid;
+    grid-template-areas:
+      "actions tilt"
+      "rotate rotate";
+    grid-template-columns: auto auto;
+    align-content: end;
+    align-items: end;
+    justify-content: end;
+  }
+
+  .fdk-actions {
+    grid-area: actions;
+  }
+
+  .fdk-tilt {
+    grid-area: tilt;
+  }
+
+  .fdk-rotate {
+    grid-area: rotate;
+    justify-self: end;
+  }
+
+  .fdk.fdk .fdk-stage {
+    min-height: 48px;
+  }
+
+  .fdk.fdk .fdk-tilt .fdk-btn {
+    min-width: 100px;
+  }
+
+  .fdk.fdk .fdk-rotate .fdk-btn {
+    padding: 2px;
+    letter-spacing: 0;
+  }
+
+  /* A smaller arrow leaves room for a two-line caption inside the circle. */
+  .fdk.fdk .fdk-rotate .fdk-icon {
+    width: calc(var(--fdk-arrow) * 0.4);
+    height: calc(var(--fdk-arrow) * 0.4);
+  }
+
+  .fdk.fdk .fdk-engine .fdk-icon {
+    width: 18px;
+    height: 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fdk.fdk .fdk-btn {
+    transition: none;
+  }
+
+  .fdk.fdk .fdk-btn:active:not(:disabled),
+  .fdk.fdk .fdk-btn.is-held {
+    transform: none;
+  }
+}

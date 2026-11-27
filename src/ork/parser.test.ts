@@ -320,3 +320,34 @@ describe('parseOrkXml limits', () => {
     expect(() => parseOrkXml(`<a>${' '.repeat(20 * 1024 * 1024)}</a>`)).toThrow(/too large/);
   });
 });
+
+describe('import fixes K1/K3/K9/K2', () => {
+  const tube = (name: string, len: number, offset: string, extra = '') =>
+    `<innertube><name>${name}</name><axialoffset method="${offset}">0</axialoffset><length>${len}</length><outerradius>0.01</outerradius><thickness>0.001</thickness>${extra}</innertube>`;
+
+  it('uses the default motor configuration, not the first motor', () => {
+    const mount = '<motormount><motor configid="a"><designation>A8</designation><diameter>0.018</diameter><length>0.07</length></motor>'
+      + '<motor configid="b"><designation>C6</designation><diameter>0.018</diameter><length>0.07</length></motor></motormount>';
+    const xml = miniOrk('', tube('Mount', 0.1, 'top', mount))
+      .replace('</subcomponents></rocket>', '</subcomponents><motorconfiguration configid="a"/><motorconfiguration configid="b" default="true"/></rocket>');
+    const rocket = parseOrkXml(xml);
+    const it0 = rocket.components.find((c) => c.kind === 'innertube') as InnerTube;
+    expect(it0.motor?.designation).toBe('C6');
+    expect(rocket.warnings).toContain('2 motor configurations found; using the default one.');
+  });
+
+  it('places method="after" children directly after the previous sibling', () => {
+    const rocket = parseOrkXml(miniOrk('', tube('T1', 0.08, 'top') + tube('T2', 0.05, 'after')));
+    const [t1, t2] = rocket.components.filter((c) => c.kind === 'innertube');
+    expect(t2.x).toBeCloseTo(t1.x + t1.length, 9);
+  });
+
+  it('warns about stage CG override and component mass override covering parts', () => {
+    const body = '<overridemass>0.05</overridemass><overridesubcomponents>true</overridesubcomponents>';
+    const xml = miniOrk('', '').replace('<stage><subcomponents>', '<stage><overridecg>0.2</overridecg><subcomponents>')
+      .replace('<name>Body</name>', `<name>Body</name>${body}`);
+    const w = parseOrkXml(xml).warnings;
+    expect(w).toContain('Stage CG override ignored.');
+    expect(w).toContain('Mass override on Body also covers its parts; the parts are counted separately here, so mass may be too high.');
+  });
+});

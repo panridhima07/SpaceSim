@@ -23,6 +23,8 @@ import { createMoonEphemeris } from '../lunar/moonEphemeris';
 import { llToMF, type HazardMap, type Terrain } from '../lunar/terrain';
 import { RE, moonPosition, moonVelocity } from '../mission/engine';
 import { attachTilt } from '../app/tilt';
+import { disposeGroup } from '../render/rocketMesh';
+import { createFlightDeck, type DeckInput, type DeckState } from '../app/flightDeck';
 
 const DEG = Math.PI / 180;
 const DAY = 86400;
@@ -372,6 +374,7 @@ function startCruise(): void {
   setFocus('earth', true);
   placeCruise(0);
   refreshDock();
+  syncDeck();
 }
 
 // ================================================================================================
@@ -536,7 +539,10 @@ function buildWorld(L: LanderSim): void {
   if (terrainGroup) {
     world.remove(terrainGroup);
     terrainGroup.traverse((o) => {
-      if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); }
+      if (o instanceof THREE.Mesh) {
+        const mat = o.material as THREE.MeshStandardMaterial;
+        o.geometry.dispose(); mat.map?.dispose(); mat.dispose();
+      }
     });
   }
   const g = new THREE.Group();
@@ -585,16 +591,19 @@ let resultShown = false;
 let roverClock = 0;
 
 function startDescent(): void {
+  // Nothing held over the old flight carries into the new one.
+  deck.release();
   const h = rec.handoff, rm = eph.moonAt(h.t), vm = eph.moonVelAt(h.t);
   sim = new LanderSim(eph, { t: h.t, r: h.r.map((x, i) => x + rm[i]), v: h.v.map((x, i) => x + vm[i]), a: h.v.map((x) => -x) }, h.spec);
   if (!sim.beginDescentTo(CH3.site.latDeg * DEG, CH3.site.lonDeg * DEG, CH3.site.name)) throw new Error('The orbit does not pass the landing site');
   buildWorld(sim);
-  if (lander) scene.remove(lander.group);
+  if (lander) { scene.remove(lander.group); disposeGroup(lander.group); }
   lander = buildVikram(sim.G.cgh, sim.G.foot);
   scene.add(lander.group);
   mode = 'descent';
   chip.textContent = 'Powered descent';
   warp = 5; autoWarp = true; shownEvents = 0; resultShown = false; roverClock = 0;
+  deckWanted = true; // a new descent brings back controls that were closed
   logEl.textContent = '';
   resultEl.style.display = 'none';
   cControls.enabled = false; dControls.enabled = true;
@@ -602,6 +611,7 @@ function startDescent(): void {
   camera.position.set(13, 5, 13);
   lastPhase = '';
   refreshDock();
+  syncDeck();
 }
 
 // ---------------------------------------------------------------- per-frame placement
@@ -702,16 +712,26 @@ function updateHud(): void {
     resultShown = true;
     const g = sim.landing;
     const ok = sim.phase === 'LANDED';
-    const detail = ok && g
-      ? `Touchdown ${cruiseDate(sim.t)} at ${fmt(g.vv, 2)} m/s down and ${fmt(g.vh, 2)} m/s sideways, tilted ${fmt(g.tilt ?? 0, 1)}°, ` +
-        `${fmt(g.miss ?? 0, 1)} m from the aim point at ${CH3.site.name}. ${fmt(g.propLeft ?? 0)} kg of propellant left after ${fmt(g.dvUsed ?? 0)} m/s of descent. ` +
-        'The real Vikram touched down on 23 August 2023 at 12:33 UTC, inside its 2 m/s limit.'
-      : (sim.reason ?? 'The lander was lost.');
-    resultEl.innerHTML = `<h2>${ok ? (g?.hard ? 'Hard landing' : 'Vikram has landed') : 'Lander lost'}</h2><p>${detail}</p>`;
+    let detail: string;
+    if (!ok) {
+      // The sim opens its reason with a headline in capitals; put that in sentence case.
+      detail = sim.reason?.replace(/^[A-Z][A-Z ]+(?= — )/, (s) => s[0] + s.slice(1).toLowerCase()) ?? 'The lander was lost.';
+    } else if (g) {
+      detail = `Touchdown ${cruiseDate(sim.t)} at ${fmt(g.vv, 2)} m/s down and ${fmt(g.vh, 2)} m/s sideways, tilted ${fmt(g.tilt ?? 0, 1)}°, ` +
+        `${fmt(g.miss ?? 0, 1)} m from the aim point at ${CH3.site.name}. ${fmt(g.propLeft ?? 0)} kg of propellant left after ${fmt(g.dvUsed ?? 0)} m/s of descent.`;
+      if (!g.hard) detail += ' The real Vikram touched down on 23 August 2023 at 12:33 UTC, inside its 2 m/s limit.';
+    } else {
+      detail = `Vikram is on the surface at ${CH3.site.name}.`;
+    }
+    const h = document.createElement('h2');
+    h.textContent = ok ? (g?.hard ? 'Hard landing' : 'Vikram has landed') : 'Lander lost';
+    const p = document.createElement('p');
+    p.textContent = detail;
+    resultEl.replaceChildren(h, p);
     const again = document.createElement('button');
     again.className = 'sfb-btn sfb-btn-primary';
     again.textContent = 'Fly the descent again';
-    again.onclick = () => startDescent();
+    again.onclick = () => withBusy('Generating the landing site…', startDescent);
     const look = document.createElement('button');
     look.className = 'sfb-btn';
     look.textContent = 'Look around';
@@ -779,8 +799,6 @@ function takeManual(): void {
 /** The journey's time scrubber; recreated with the dock, null when the dock has none. */
 let scrubEl: HTMLInputElement | null = null;
 function refreshDock(): void {
-  // Rebuilding the dock drops any steering button that is being held down.
-  touchHeld.clear();
   dock.textContent = '';
   scrubEl = null;
   if (mode === 'descent' && !sim) return; // hand-off to the descent is still building the sim
@@ -816,85 +834,157 @@ function refreshDock(): void {
     return;
   }
 
-  if (sim) applyKeys();
   const over = sim.phase === 'LANDED' || sim.phase === 'CRASHED';
   button('Skip to ignition', autoWarp && sim.phase === 'COAST', () => { autoWarp = !autoWarp; }, 'Fast-forward the coast to powered descent', sim.phase !== 'COAST' || sim.mode !== 'AUTO');
   button('Autopilot', sim.mode === 'AUTO', () => sim.setMode('AUTO'), 'T', over);
-  button('Manual', sim.mode === 'MANUAL', () => sim.setMode('MANUAL'), 'T', over);
-  // The flight controls are always on the dock during the descent: using one takes over
-  // from the autopilot, so there is no separate step to find first.
-  if (!over) {
-    button('Thrust −', false, () => { takeManual(); sim.setThrottle(sim.level - 0.1); }, 'Q');
-    button('Thrust +', false, () => { takeManual(); sim.setThrottle(Math.max(sim.level, 0.2) + 0.1); }, 'E');
-    button('Hold up', sim.hold === 'UP', () => { takeManual(); sim.setHold(sim.hold === 'UP' ? null : 'UP'); }, 'F');
-    button('Hold retro', sim.hold === 'RETRO', () => { takeManual(); sim.setHold(sim.hold === 'RETRO' ? null : 'RETRO'); }, 'R');
-    // Steering for touch screens: press and hold, the same as holding W/S/A/D.
-    const steer = (label: string, key: string, title: string) => {
-      const b = document.createElement('button');
-      b.className = 'sfb-btn';
-      b.textContent = label;
-      b.title = title;
-      b.style.touchAction = 'none';
-      const set = (on: boolean) => {
-        if (on) takeManual();
-        if (on) touchHeld.add(key);
-        else touchHeld.delete(key);
-        b.classList.toggle('on', on);
-        b.classList.toggle('is-active', on);
-        applyKeys();
-      };
-      b.onpointerdown = (e) => { e.preventDefault(); b.setPointerCapture(e.pointerId); set(true); };
-      b.onpointerup = () => { set(false); if (touchHeld.size === 0) refreshDock(); };
-      b.onpointercancel = () => set(false);
-      b.oncontextmenu = (e) => e.preventDefault();
-      dock.appendChild(b);
-    };
-    steer('Pitch ▲', 'w', 'W');
-    steer('Pitch ▼', 's', 'S');
-    steer('Roll ◀', 'a', 'A');
-    steer('Roll ▶', 'd', 'D');
-  }
+  button('Controls', deckWanted && !over, () => setDeckWanted(!deckWanted), 'Show or close the flight controls (closing hands back to the autopilot)', over);
   for (const w of WARPS) button(`×${w}`, warp === w && !(autoWarp && sim.phase === 'COAST'), () => { warp = w; autoWarp = false; }, 'Time warp (limited near the ground)', over);
-  button('Restart descent', false, () => startDescent());
+  button('Restart descent', false, () => withBusy('Generating the landing site…', startDescent));
   button('Replay journey', false, () => startCruise(), 'Back to the flight from Earth');
   button(document.body.classList.contains('hud-off') ? 'Show panels' : 'Hide panels', false, () => togglePanels(), 'H');
   help.textContent = coarse
-    ? 'Drag to look, pinch to zoom. Hold Pitch or Roll to steer; touching a control takes over from the autopilot.'
-    : 'Fly it yourself: W/S pitch · A/D roll · E/Q throttle · Z full · X cut · F hold up · R hold retrograde · T autopilot on/off · H hide panels';
+    ? 'Drag to look, pinch to zoom. Hold Pitch forward/back or Roll left/right (as seen along the approach track) to steer and drag the throttle lever; touching a control takes over from the autopilot.'
+    : 'Fly it yourself: W/S pitch forward/back · A/D roll left/right (as seen along the approach track) · E/Q throttle · Z full · X cut · Shift fine control · F hold up · R hold retrograde · T autopilot on/off · H hide panels';
   dock.appendChild(help);
 }
 
-const held = new Set<string>();
-const MANUAL_KEYS = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'e', 'q', 'z', 'x', 'f', 'r']);
-const touchHeld = new Set<string>(); // on-screen steering buttons being pressed
-function applyKeys(): void {
-  const k = (a: string, b: string) => (held.has(a) || held.has(b) || touchHeld.has(a) ? 1 : 0);
-  sim.setInput({
-    pitch: k('w', 'arrowup') - k('s', 'arrowdown'),
-    roll: k('d', 'arrowright') - k('a', 'arrowleft'),
-    thr: k('e', 'shift') - k('q', 'control'),
-  });
-}
+/** True when the key press belongs to a field the user is typing in. */
+const isTyping = (e: KeyboardEvent): boolean => e.target instanceof HTMLInputElement && e.target.type !== 'range';
+/** Ctrl, Cmd and Alt combinations belong to the browser. */
+const isModified = (e: KeyboardEvent): boolean => e.ctrlKey || e.metaKey || e.altKey;
+
 window.addEventListener('keydown', (e) => {
-  const key = e.key.toLowerCase();
-  const typing = e.target instanceof HTMLInputElement && e.target.type !== 'range';
-  if (key === 'h' && !e.repeat && !typing) { togglePanels(); refreshDock(); return; }
-  if (e.repeat || !sim || mode !== 'descent') return;
-  held.add(key);
-  if (MANUAL_KEYS.has(key)) takeManual();
-  if (key === 't') sim.setMode(sim.mode === 'AUTO' ? 'MANUAL' : 'AUTO');
-  else if (key === 'x') sim.cutEngine();
-  else if (key === 'z') sim.setThrottle(1);
-  else if (key === 'f') sim.setHold('UP');
-  else if (key === 'r') sim.setHold('RETRO');
-  applyKeys();
+  if (isModified(e)) return;
+  if (e.key.toLowerCase() === 'h' && !e.repeat && !isTyping(e)) { togglePanels(); refreshDock(); }
+});
+
+// ---------------------------------------------------------------- flight deck
+// The hand controls for the powered descent; keys and touch both come through here.
+const MIN_LIT = 0.2; // throttle the engine switch lights the engine at
+const NO_INPUT: DeckInput = { rotate: 0, tilt: 0, throttle: 0 };
+let deckInput = NO_INPUT;
+let deckShown = false;
+/** False once the pilot has closed the deck. */
+let deckWanted = true;
+const FLIGHT_KEYS = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'e', 'q', 'z', 'x', 'f', 'r', 't']);
+
+/** Closing the deck hands the lander back to the autopilot. */
+function setDeckWanted(on: boolean): void {
+  deckWanted = on;
+  if (!on && flying()) sim.setMode('AUTO');
+  syncDeck();
+}
+
+/** True while there is a descent to fly. */
+function flying(): boolean {
+  return mode === 'descent' && !!sim && sim.phase !== 'LANDED' && sim.phase !== 'CRASHED';
+}
+/** The engine as commanded, by whoever is flying; the thrust itself lags behind. */
+function engineCommanded(): boolean {
+  return sim.prop > 0 && (sim.mode === 'MANUAL' ? sim.level > 0.02 : sim.cmdThr > 0);
+}
+/** A control newly pushed in a direction. Letting go, or Shift changing the rate, is not one. */
+const pushed = (now: number, before: number): boolean => now !== 0 && Math.sign(now) !== Math.sign(before);
+function applyInput(): void {
+  sim.setInput({ pitch: deckInput.tilt, roll: deckInput.rotate, thr: deckInput.throttle });
+}
+
+// A flight key brings a closed deck back. Registered before the deck's own key listener, so the
+// same press then acts on it.
+window.addEventListener('keydown', (e) => {
+  if (deckWanted || e.repeat || isModified(e) || isTyping(e) || !flying() || !FLIGHT_KEYS.has(e.key.toLowerCase())) return;
+  setDeckWanted(true);
   refreshDock();
+}, true);
+
+const deck = createFlightDeck({
+  root: document.body,
+  // Forward and right are relative to the approach track (LanderSim.heading), not to the camera.
+  tiltLabels: ['Pitch forward', 'Pitch back'],
+  rotateLabels: ['Roll left', 'Roll right'],
+  toggles: [
+    { id: 'UP', label: 'Hold up', key: 'f', title: 'F: hold the lander upright' },
+    { id: 'RETRO', label: 'Retro', key: 'r', title: 'R: hold the thrust against the direction of travel' },
+  ],
+  onInput(input) {
+    const takeOver = pushed(input.rotate, deckInput.rotate) || pushed(input.tilt, deckInput.tilt) || pushed(input.throttle, deckInput.throttle);
+    deckInput = { ...input };
+    if (!flying()) return;
+    if (takeOver) takeManual();
+    applyInput();
+  },
+  onThrottle(level) {
+    if (!flying()) return;
+    takeManual();
+    sim.setThrottle(level);
+  },
+  onToggle(id) {
+    if (!flying()) return;
+    const hold = id === 'RETRO' ? 'RETRO' : 'UP';
+    takeManual();
+    sim.setHold(sim.hold === hold ? null : hold);
+    applyInput(); // setHold zeroes the steering; an arrow still held keeps steering
+  },
+  onEngine() {
+    if (!flying()) return;
+    const lit = engineCommanded();
+    takeManual();
+    if (lit) sim.cutEngine();
+    else sim.setThrottle(MIN_LIT);
+  },
+  onMode() {
+    if (flying()) sim.setMode(sim.mode === 'AUTO' ? 'MANUAL' : 'AUTO');
+  },
+  onExit() {
+    setDeckWanted(false);
+    refreshDock();
+  },
+  isActive: flying,
 });
-window.addEventListener('keyup', (e) => {
-  held.delete(e.key.toLowerCase());
-  if (sim && mode === 'descent') applyKeys();
-});
-window.addEventListener('blur', () => { held.clear(); if (sim && mode === 'descent') applyKeys(); });
+
+function deckState(): DeckState {
+  const t = sim.telemetry();
+  const manual = sim.mode === 'MANUAL';
+  // The lander refuses manual control until the deorbit burn is over.
+  const locked = sim.phase === 'SEP' || sim.phase === 'DOI';
+  const now = Math.round(sim.thr * 100), want = Math.round(sim.level * 100);
+  return {
+    throttle: manual ? sim.level : sim.thr,
+    throttleText: sim.prop <= 0 ? 'no propellant' : manual && Math.abs(want - now) >= 2 ? `${now}% → ${want}%` : `${now}%`,
+    throttleDisabled: locked,
+    engineOn: engineCommanded(),
+    engineDisabled: locked || sim.prop <= 0,
+    steerDisabled: locked,
+    activeToggles: manual && sim.hold ? [sim.hold] : [],
+    modeText: locked ? 'Auto · deorbit burn' : manual ? 'Manual' : 'Autopilot',
+    manual,
+    readouts: [
+      t.toPDI !== null
+        ? { label: 'Ignition in', value: `${fmt(t.toPDI / 60, 1)} min` }
+        : { label: 'Range', value: t.range === null ? '—' : dist(t.range) },
+      { label: 'Altitude', value: dist(t.agl ?? t.alt) },
+      { label: 'Descent', value: `${fmt(-t.vv, 1)} m/s` },
+      { label: 'Sideways', value: `${fmt(t.vh, 1)} m/s` },
+      { label: 'Tilt', value: `${fmt(Math.hypot(t.tiltF, t.tiltR), 0)}°` },
+      { label: 'Ground', value: t.hazard === null ? '—' : HAZARD[t.hazard], tone: t.hazard === 2 ? 'danger' : t.hazard === 1 ? 'warn' : undefined },
+      { label: 'Fuel', value: `${fmt(t.propPct * 100)}%`, tone: t.propPct < 0.1 ? 'danger' : undefined },
+    ],
+  };
+}
+
+/** Shows the deck during the descent only, unless it has been closed, and refreshes it. */
+function syncDeck(): void {
+  const on = flying() && deckWanted;
+  if (on !== deckShown) {
+    deckShown = on;
+    deck.setVisible(on);
+    document.body.classList.toggle('deck-on', on);
+  }
+  if (on) deck.update(deckState());
+}
+
+// The deck sits above the dock, whose height depends on how its buttons wrap.
+new ResizeObserver(() => document.body.style.setProperty('--dock-h', `${dock.offsetHeight}px`)).observe(dock);
 
 // ---------------------------------------------------------------- loop
 function resize(): void {
@@ -905,26 +995,40 @@ function resize(): void {
 window.addEventListener('resize', resize);
 resize();
 
-/** Show the "computing" note, let it paint, then do the work. */
+let working = false;
+/** Taps made while the work blocks the page arrive after it, so the guard outlasts it by this, ms. */
+const BUSY_SETTLE = 300;
+
+/** Show the "computing" note, let it paint, then do the work. Ignored while work is under way. */
 function withBusy(text: string, work: () => void): void {
+  if (working) return;
+  working = true;
   busy.textContent = text;
   busy.style.display = 'block';
   setTimeout(() => {
-    try { work(); busy.style.display = 'none'; } catch (err) { busy.textContent = `Could not continue: ${err instanceof Error ? err.message : String(err)}`; }
+    try { work(); busy.style.display = 'none'; } catch (err) {
+      // Back to the journey: a half-built descent has nothing to show and no way out.
+      if (mode === 'descent') startCruise();
+      busy.textContent = `Could not continue: ${err instanceof Error ? err.message : String(err)}`;
+      busy.style.display = 'block';
+      setTimeout(() => { busy.style.display = 'none'; }, 6000);
+    }
+    setTimeout(() => { working = false; }, BUSY_SETTLE);
   }, 30);
 }
 function enterDescent(): void {
-  if (mode === 'descent') return;
+  if (mode === 'descent' || working) return; // never leave the journey for work that would be ignored
   mode = 'descent'; // stops the journey clock while the terrain is generated
   sim = undefined as unknown as LanderSim;
-  touchHeld.clear();
   dock.textContent = ''; // no stale cruise buttons while the terrain is generated
   scrubEl = null;
+  syncDeck();
   withBusy('Generating the landing site…', startDescent);
 }
 
 let last = performance.now();
 let lastPhase = '';
+let lastMode = '';
 let lastHud = 0;
 function frame(now: number): void {
   requestAnimationFrame(frame);
@@ -945,11 +1049,13 @@ function frame(now: number): void {
   }
   if (!sim) return;
   sim.advance(dt * effectiveWarp());
-  if (sim.phase !== lastPhase) {
+  if (sim.phase !== lastPhase || sim.mode !== lastMode) {
+    if (sim.phase !== lastPhase && sim.phase !== 'COAST') autoWarp = false;
     lastPhase = sim.phase;
-    if (sim.phase !== 'COAST') autoWarp = false;
+    lastMode = sim.mode;
     refreshDock();
   }
+  syncDeck();
   place(dt);
   dControls.update();
   // Keep the near plane tight when close so the lander does not clip, loose when far for depth precision.
@@ -975,8 +1081,9 @@ runCruise((text) => { busy.textContent = text; })
   .catch((err) => { busy.textContent = `Could not continue: ${err instanceof Error ? err.message : String(err)}`; });
 requestAnimationFrame(frame);
 
-// Handle for the browser console and automated checks: astraLanding.sim().advance(60).
-(window as unknown as { astraLanding: unknown }).astraLanding = {
+// Development builds only: a handle for the browser console and automated checks,
+// astraLanding.sim().advance(60).
+if (import.meta.env.DEV) (window as unknown as { astraLanding: unknown }).astraLanding = {
   sim: () => sim,
   cruise: () => rec,
   mode: () => mode,

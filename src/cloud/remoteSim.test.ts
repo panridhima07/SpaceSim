@@ -1,9 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fromRocketModel } from '../builder/design';
 import { parseOrkXml } from '../ork/parser';
 import { SAMPLE_ORK_XML } from '../ork/sample';
 import { SimJobError, stringifyResult, type SimJobRequest, type SimJobResult } from './simJob';
-import { runSimJobRemote } from './remoteSim';
+import { postSimJob, resetServerBusyForTests, runSimJobRemote } from './remoteSim';
 
 const design = JSON.parse(JSON.stringify(fromRocketModel(parseOrkXml(SAMPLE_ORK_XML)))) as unknown;
 const req: SimJobRequest = {
@@ -36,6 +36,8 @@ function hangingFetch(): typeof fetch {
 }
 
 describe('runSimJobRemote', () => {
+  beforeEach(() => resetServerBusyForTests());
+
   it('uses the server result when it succeeds, and sends the bearer token', async () => {
     const fetchImpl = vi.fn(async () => okResponse());
     const onFallback = vi.fn();
@@ -98,5 +100,26 @@ describe('runSimJobRemote', () => {
     await expect(
       runSimJobRemote({ ...req, design: null }, { fetchImpl: fetchImpl as unknown as typeof fetch }),
     ).rejects.toBeInstanceOf(SimJobError);
+  });
+});
+
+describe('postSimJob server errors', () => {
+  beforeEach(() => resetServerBusyForTests());
+  const isAny = (_b: unknown): _b is unknown => true;
+
+  it('includes the server error text in the reason', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: false, error: 'Bad motor' }), { status: 400 }));
+    const out = await postSimJob(req, isAny, { fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(out).toEqual({ ok: false, reason: 'server returned 400: Bad motor' });
+  });
+
+  it('after a 429 the next call short-circuits without fetching', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 429, headers: { 'retry-after': '30' } }));
+    const opts = { fetchImpl: fetchImpl as unknown as typeof fetch };
+    const first = await postSimJob(req, isAny, opts);
+    expect(first.ok).toBe(false);
+    const second = await postSimJob(req, isAny, opts);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(second).toMatchObject({ ok: false, reason: expect.stringMatching(/^server busy, retry in \d+s$/) });
   });
 });

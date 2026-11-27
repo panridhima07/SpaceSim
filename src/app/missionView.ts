@@ -369,6 +369,43 @@ export function stylePayload(mesh: LauncherMesh, pay: MissionPayload | undefined
 }
 
 
+// ---------- Pad camera framing ----------
+
+/** The pad camera holds still on the pad this long after liftoff, then eases into tracking. */
+export const PAD_HOLD_S = 7;
+export const PAD_TRACK_S = 14;
+/** The held frame's bottom and top edges at the pad, in vehicle lengths above the vehicle base. */
+const PAD_FRAME_LOW = -0.45;
+const PAD_FRAME_HIGH = 3.8;
+
+/**
+ * What the pad camera looks at and how wide, at mission time `t`. Positions are in the pad's
+ * frame (+Y up, origin at the vehicle base): `cam` the camera, `rocket` the vehicle's middle.
+ *
+ * Around liftoff the frame is fixed to the ground, so the vehicle is seen to pull away from
+ * the pad; it only tilts up if a fast vehicle would otherwise leave the top of it. From
+ * PAD_HOLD_S to PAD_TRACK_S it blends into tracking the vehicle at a constant size on screen.
+ * It depends on nothing but its arguments, so a given time always gives the same picture.
+ */
+export function padFraming(t: number, length: number, cam: Vec3, rocket: Vec3): { aim: Vec3; tanHalfFov: number } {
+  const mid = 0.5 * (PAD_FRAME_LOW + PAD_FRAME_HIGH) * length;
+  const half = 0.5 * (PAD_FRAME_HIGH - PAD_FRAME_LOW) * length;
+  const heldTan = half / Math.max(1, Math.hypot(cam[0], cam[1] - mid, cam[2]));
+  // Tilt up by however far the vehicle's middle is above 0.72 of the half frame, corner rounded.
+  const knee = 0.2 * half;
+  const over = rocket[1] - mid - 0.72 * half;
+  const lift = over <= -knee ? 0 : over >= knee ? over : (over + knee) ** 2 / (4 * knee);
+
+  const distance = Math.hypot(cam[0] - rocket[0], cam[1] - rocket[1], cam[2] - rocket[2]);
+  const trackTan = (0.85 * length) / Math.max(1, distance);
+  const w = smoothstep(PAD_HOLD_S, PAD_TRACK_S, t);
+  const heldY = mid + lift;
+  return {
+    aim: [rocket[0] * w, heldY + (rocket[1] - heldY) * w, rocket[2] * w],
+    tanHalfFov: heldTan + (trackTan - heldTan) * w,
+  };
+}
+
 // ---------- Asset & shader helpers ----------
 
 function assetsEnabled(): boolean {
@@ -586,6 +623,8 @@ interface Transition {
   start: number;
   duration: number;
   fromKind: TargetKind;
+  /** Leaving the pad camera, which looks at its own framing rather than at the rocket. */
+  fromPad: boolean;
   fromOffset: THREE.Vector3;
   fromUp: THREE.Vector3;
   fromFov: number;
@@ -989,6 +1028,29 @@ export function createMissionView(domElement: HTMLElement): MissionView {
     return out.copy(padCamLocal).applyMatrix4(padGroup.matrixWorld);
   }
 
+  const padRocket = new THREE.Vector3();
+  const padScratch = new THREE.Vector3();
+  /** The pad camera's framing now: writes the look-at point (scene space) into `out`. */
+  function padView(out: THREE.Vector3): number {
+    padGroup.updateWorldMatrix(true, false);
+    padGroup.worldToLocal(rocketCentre(padRocket));
+    const view = padFraming(
+      currentT,
+      launcherMesh?.totalLength ?? 45,
+      [padCamLocal.x, padCamLocal.y, padCamLocal.z],
+      [padRocket.x, padRocket.y, padRocket.z],
+    );
+    out.set(view.aim[0], view.aim[1], view.aim[2]).applyMatrix4(padGroup.matrixWorld);
+    return view.tanHalfFov;
+  }
+
+  /** What a preset looks at. */
+  function lookTarget(mode: MissionCameraMode, out: THREE.Vector3): THREE.Vector3 {
+    if (mode !== 'pad') return targetOf(kindOf(mode), out);
+    padView(out);
+    return out;
+  }
+
   // Scratch owned by presetOffset, so callers may pass any of v1..v3 as `out`.
   const pv1 = new THREE.Vector3();
   const pv2 = new THREE.Vector3();
@@ -1000,7 +1062,7 @@ export function createMissionView(domElement: HTMLElement): MissionView {
     horizonBasis(east, south);
     switch (mode) {
       case 'pad':
-        return padCameraWorld(out).sub(rocketCentre(pv3)); // relative to the rocket target
+        return padCameraWorld(out).sub(lookTarget('pad', pv3)); // relative to the pad framing
       case 'chase':
         return out.copy(east).multiplyScalar(0.9).addScaledVector(south, 0.35).addScaledVector(localUpVec, 0.22)
           .normalize().multiplyScalar(2.4 * L);
@@ -1018,10 +1080,7 @@ export function createMissionView(domElement: HTMLElement): MissionView {
 
   function fovFor(mode: MissionCameraMode): number {
     if (mode !== 'pad') return DEFAULT_FOV;
-    const dist = padCameraWorld(pv1).distanceTo(rocketCentre(pv2));
-    // Keep the whole vehicle (and a bit of plume) in frame as it climbs away from the camera.
-    const L = launcherMesh?.totalLength ?? 45;
-    const fov = THREE.MathUtils.radToDeg(2 * Math.atan((0.85 * L) / Math.max(1, dist)));
+    const fov = THREE.MathUtils.radToDeg(2 * Math.atan(padView(padScratch)));
     return Math.max(1.5, Math.min(60, fov * padZoom));
   }
 
@@ -1034,7 +1093,7 @@ export function createMissionView(domElement: HTMLElement): MissionView {
 
   function placeDirect(mode: MissionCameraMode): void {
     anchorKind = kindOf(mode);
-    targetOf(anchorKind, controls.target);
+    lookTarget(mode, controls.target);
     presetOffset(mode, v3);
     camera.position.copy(controls.target).add(v3);
     setUp(upFor(mode, v1));
@@ -1046,11 +1105,13 @@ export function createMissionView(domElement: HTMLElement): MissionView {
 
   function startTransition(mode: MissionCameraMode): void {
     const fromKind = anchorKind;
-    const from = targetOf(fromKind, v1);
+    const fromPad = cameraMode === 'pad' && transition === null;
+    const from = fromPad ? lookTarget('pad', v1) : targetOf(fromKind, v1);
     transition = {
       start: performance.now() / 1000,
       duration: TRANSITION_S,
       fromKind,
+      fromPad,
       fromOffset: camera.position.clone().sub(from),
       fromUp: camera.up.clone(),
       fromFov: camera.fov,
@@ -1071,8 +1132,8 @@ export function createMissionView(domElement: HTMLElement): MissionView {
     const raw = Math.min(1, (performance.now() / 1000 - tr.start) / tr.duration);
     const e = ease(raw);
     const toKind = kindOf(tr.toMode);
-    const T0 = targetOf(tr.fromKind, new THREE.Vector3());
-    const T1 = targetOf(toKind, new THREE.Vector3());
+    const T0 = tr.fromPad ? lookTarget('pad', new THREE.Vector3()) : targetOf(tr.fromKind, new THREE.Vector3());
+    const T1 = lookTarget(tr.toMode, new THREE.Vector3());
     const toOffset = presetOffset(tr.toMode, new THREE.Vector3());
     const d0 = Math.max(1e-3, tr.fromOffset.length());
     const d1 = Math.max(1e-3, toOffset.length());
@@ -1133,7 +1194,7 @@ export function createMissionView(domElement: HTMLElement): MissionView {
     if (cameraMode === 'pad') {
       padCameraWorld(camera.position);
       setUp(localUpVec);
-      rocketCentre(controls.target);
+      lookTarget('pad', controls.target);
       camera.lookAt(controls.target);
       const fov = fovFor('pad');
       if (Math.abs(camera.fov - fov) > 0.02) {
@@ -1347,7 +1408,7 @@ export function createMissionView(domElement: HTMLElement): MissionView {
 
     // Predicted coast line (see coastValidUntil): trim while coasting, otherwise recompute at most 2 Hz.
     if (coastLine && coastPositions) {
-      if (snap.periapsis !== undefined && snap.periapsis > 100_000) {
+      if (t < 0 || (snap.periapsis !== undefined && snap.periapsis > 100_000)) {
         coastLine.visible = false;
       } else if (coastCount >= 2 && t >= lastCoastT && t <= coastValidT) {
         let lo = 0;

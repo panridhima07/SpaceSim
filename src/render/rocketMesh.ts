@@ -12,7 +12,7 @@ import { buildInnerTube, buildMass, buildPackedChute, buildRing } from './parts/
 import { buildBallast, buildCamera, buildFlightComputer, buildStreamer, cargoKind, isStreamer } from './parts/cargo';
 import { gradeRocket, isPod, sideBodyModel, type PartGrade } from './parts/grade';
 import { airframeOutline, surfaceRadiusAt } from './parts/profile';
-import { PART_COLORS, partMaterial, type PartContext, type PartTier } from './parts/types';
+import { PART_COLORS, SKIN_FINISH, partMaterial, type PartContext, type PartTier } from './parts/types';
 
 export { noseProfile } from './parts/profile';
 export type { PartTier } from './parts/types';
@@ -46,7 +46,7 @@ function tag(obj: THREE.Object3D, c: Component): THREE.Object3D {
  * radial from the fin's mounting radius] in metres. Used for the parts of a fin that
  * lie below its root line.
  */
-function finPlaneSlab(c: FinSet, outline: [number, number][], ctx: PartContext): THREE.Mesh | null {
+function finPlaneSlab(c: FinSet, outline: [number, number][], ctx: PartContext, tier: PartTier): THREE.Mesh | null {
   const t = Math.max(c.thickness, 1e-4);
   if (outline.length < 3 || outline.some(([a, r]) => !Number.isFinite(a) || !Number.isFinite(r))) return null;
   const shape = new THREE.Shape(outline.map(([a, r]) => new THREE.Vector2(a, r)));
@@ -59,7 +59,7 @@ function finPlaneSlab(c: FinSet, outline: [number, number][], ctx: PartContext):
   );
   basis.setPosition(c.bodyRadius, -c.x, 0);
   geom.applyMatrix4(basis);
-  return new THREE.Mesh(geom, partMaterial(c.color ?? PART_COLORS.fin, ctx));
+  return new THREE.Mesh(geom, partMaterial(c.color ?? PART_COLORS.fin, ctx, { finish: SKIN_FINISH[tier] }));
 }
 
 /**
@@ -136,14 +136,14 @@ export function buildRocketMesh(rocket: RocketModel, opts: RocketMeshOptions = {
             drops.push([a, drop]);
           }
           if (worst < -1e-5) {
-            const skirt = finPlaneSlab(c, [[0, 0], [c.rootChord, 0], ...drops.reverse().map(([a, d]) => [a, d - 2e-4] as [number, number])], ctx);
+            const skirt = finPlaneSlab(c, [[0, 0], [c.rootChord, 0], ...drops.reverse().map(([a, d]) => [a, d - 2e-4] as [number, number])], ctx, tier);
             if (skirt) one.add(tag(skirt, c));
           }
         }
         // Through-the-wall tab, seen in cutaway.
         if (cutaway && c.tabHeight && c.tabLength && c.tabHeight > 0 && c.tabLength > 0) {
           const a0 = c.tabOffset ?? 0;
-          const tab = finPlaneSlab(c, [[a0, 0], [a0 + c.tabLength, 0], [a0 + c.tabLength, -c.tabHeight], [a0, -c.tabHeight]], ctx);
+          const tab = finPlaneSlab(c, [[a0, 0], [a0 + c.tabLength, 0], [a0 + c.tabLength, -c.tabHeight], [a0, -c.tabHeight]], ctx, tier);
           if (tab) one.add(tag(tab, c));
         }
 

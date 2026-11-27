@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { isAbortError, runMission } from './client';
 
 describe('runMission', () => {
@@ -12,6 +12,40 @@ describe('runMission', () => {
     const err = await runMission('lvm3-m4', {}, controller.signal).catch((e) => e);
     expect(isAbortError(err)).toBe(true);
     expect((err as Error).name).toBe('AbortError');
+  });
+
+  it('flies in this thread when the Worker constructor throws', async () => {
+    vi.stubGlobal('Worker', class {
+      constructor() {
+        throw new Error('module workers unsupported');
+      }
+    });
+    try {
+      // The in-thread path is the one that reports an unknown id; the constructor error is swallowed.
+      await expect(runMission('nope')).rejects.toThrow(/Unknown mission/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('flies in this thread when the worker script fails to load', async () => {
+    let terminated = false;
+    vi.stubGlobal('Worker', class {
+      onmessage: ((event: unknown) => void) | null = null;
+      onerror: ((event: { message: string }) => void) | null = null;
+      postMessage(): void {
+        queueMicrotask(() => this.onerror?.({ message: 'failed to load worker script' }));
+      }
+      terminate(): void {
+        terminated = true;
+      }
+    });
+    try {
+      await expect(runMission('nope')).rejects.toThrow(/Unknown mission/);
+      expect(terminated).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('flies lvm3-m4 in the in-thread fallback', async () => {

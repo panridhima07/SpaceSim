@@ -5,7 +5,7 @@
 export type V3 = number[];
 
 export const G0 = 9.80665;
-export const MU_M = 4.9048695e12; // Moon GM, m^3/s^2
+export const MU_M = 4.9028e12; // Moon GM, m^3/s^2: GRAIL GL0660B, 4902.800 km^3/s^2 (same value as world/ephemeris.ts)
 export const R_MOON = 1737400; // m
 
 /** Throttleable, restartable descent engine carried by the lander. N, fraction, s, N m. */

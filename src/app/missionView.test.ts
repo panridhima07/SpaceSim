@@ -6,8 +6,11 @@ import { coastPath, coastPathCapacity, coastPathInto } from '../mission/predict'
 import {
   buildFlownPathPoints,
   coastValidUntil,
+  PAD_HOLD_S,
+  PAD_TRACK_S,
   elementsFromAppState,
   latLonToApp,
+  padFraming,
   separationAges,
   vehicleToLauncherSpec,
 } from './missionView';
@@ -86,6 +89,53 @@ describe('missionView helpers', () => {
     const el = elementsFromAppState(last.pos, last.vel);
     expect(Math.abs(el.perigeeAltitude - record.orbit!.periapsis)).toBeLessThan(5000);
     expect(Math.abs(el.apogeeAltitude - record.orbit!.apoapsis)).toBeLessThan(50_000);
+  });
+});
+
+describe('pad camera framing', () => {
+  // LVM3-sized vehicle seen from the pad camera.
+  const L = 43.5;
+  const cam: [number, number, number] = [-300, 3, 240];
+  const middle = (rise: number): [number, number, number] => [0, 0.45 * L + rise, 0];
+
+  it('holds a ground-fixed frame while the vehicle pulls away', () => {
+    const onPad = padFraming(-3, L, cam, middle(0));
+    // LVM3 climbs about 56 m in 5 s: the frame has not moved at all.
+    expect(padFraming(5, L, cam, middle(56))).toEqual(onPad);
+  });
+
+  it('gives the same picture for the same time and state', () => {
+    expect(padFraming(10, L, cam, middle(240))).toEqual(padFraming(10, L, cam, middle(240)));
+  });
+
+  it('ends up tracking the vehicle at a constant size on screen', () => {
+    const rocket = middle(495);
+    const view = padFraming(PAD_TRACK_S, L, cam, rocket);
+    expect(view.aim).toEqual(rocket);
+    const distance = Math.hypot(cam[0] - rocket[0], cam[1] - rocket[1], cam[2] - rocket[2]);
+    expect(view.tanHalfFov).toBeCloseTo((0.85 * L) / distance, 9);
+  });
+
+  it('keeps the whole vehicle in frame and moves without jumps, even for a fast climber', () => {
+    for (const accel of [3, 12]) {
+      let last: ReturnType<typeof padFraming> | null = null;
+      for (let t = 0; t <= PAD_TRACK_S + 2; t += 0.05) {
+        const rocket = middle(0.5 * accel * t * t);
+        const view = padFraming(t, L, cam, rocket);
+        // Angles above the camera of the nose, the tail, and the frame's centre.
+        const angle = (y: number) => Math.atan2(y - cam[1], Math.hypot(cam[0], cam[2]));
+        const half = Math.atan(view.tanHalfFov);
+        expect(angle(rocket[1] + 0.5 * L)).toBeLessThan(angle(view.aim[1]) + half);
+        if (t >= PAD_HOLD_S || accel === 3) {
+          expect(angle(rocket[1] - 0.45 * L)).toBeGreaterThan(angle(view.aim[1]) - half * 1.01);
+        }
+        if (last) {
+          expect(Math.abs(angle(view.aim[1]) - angle(last.aim[1]))).toBeLessThan(0.03);
+          expect(Math.abs(view.tanHalfFov - last.tanHalfFov)).toBeLessThan(0.01);
+        }
+        last = view;
+      }
+    }
   });
 });
 

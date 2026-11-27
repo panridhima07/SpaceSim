@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseEng,
+  usableMotor,
   BUILTIN_MOTORS,
   CERTIFIED_MOTORS,
   ALL_MOTORS,
@@ -56,6 +57,53 @@ describe('parseEng', () => {
 
   it('returns an empty list for text without motors', () => {
     expect(parseEng('; nothing here\n')).toEqual([]);
+  });
+
+  it('rejects a header with non-numeric mass fields', () => {
+    const text = `X 18 70 - - - Foo
+0.0 0
+0.1 10
+0.5 0
+`;
+    expect(parseEng(text)).toEqual([]);
+  });
+
+  it('rejects a motor whose thrust curve is all zero', () => {
+    const text = `Z 18 70 0 12.5 24 Estes
+0.0 0
+0.5 0
+1.0 0
+`;
+    expect(parseEng(text)).toEqual([]);
+  });
+});
+
+describe('usableMotor', () => {
+  const good = parseEng(SAMPLE)[0];
+
+  it('accepts a parsed certified-style motor', () => {
+    expect(usableMotor(good)).toBe(true);
+    for (const m of BUILTIN_MOTORS) expect(usableMotor(m)).toBe(true);
+  });
+
+  it('rejects non-finite or non-positive sizes, impulse and burn time', () => {
+    expect(usableMotor({ ...good, diameter: 0 })).toBe(false);
+    expect(usableMotor({ ...good, length: NaN })).toBe(false);
+    expect(usableMotor({ ...good, totalImpulse: 0 })).toBe(false);
+    expect(usableMotor({ ...good, burnTime: Infinity })).toBe(false);
+  });
+
+  it('rejects inconsistent masses', () => {
+    expect(usableMotor({ ...good, propellantMass: -0.001 })).toBe(false);
+    expect(usableMotor({ ...good, totalMass: good.propellantMass - 0.001 })).toBe(false);
+    expect(usableMotor({ ...good, totalMass: NaN })).toBe(false);
+  });
+
+  it('rejects curves that are unordered or have bad values', () => {
+    expect(usableMotor({ ...good, curve: [] })).toBe(false);
+    expect(usableMotor({ ...good, curve: [[0, 0], [0.5, 10], [0.4, 0]] })).toBe(false);
+    expect(usableMotor({ ...good, curve: [[0, 0], [0.5, -1], [1, 0]] })).toBe(false);
+    expect(usableMotor({ ...good, curve: [[0, NaN], [1, 0]] })).toBe(false);
   });
 });
 

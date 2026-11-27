@@ -70,6 +70,8 @@ interface Ctx {
   dot: THREE.Texture;
   isDisposed(): boolean;
   loadTex(name: string, srgb: boolean, onLoad: (t: THREE.Texture) => void): void;
+  /** Runs fn now if the deferred loads were released, otherwise once they are. */
+  defer(fn: () => void): void;
 }
 
 const projScratch = new THREE.Vector3();
@@ -149,21 +151,23 @@ function buildSky(ctx: Ctx) {
     depthTest: false, depthWrite: false, alphaMap: ctx.dot,
   })));
 
-  fetch(`${ASSETS}stars.6.json`)
-    .then((r) => r.json())
-    .then((json) => {
-      if (ctx.isDisposed()) return;
-      const { faint, bright } = buildStarBuffers(json, 1000);
-      [faint, bright].forEach((b, i) => {
-        const geo = ctx.bin.add(new THREE.BufferGeometry());
-        geo.setAttribute('position', new THREE.BufferAttribute(b.positions, 3));
-        geo.setAttribute('color', new THREE.BufferAttribute(b.colors, 3));
-        const pts = new THREE.Points(geo, mats[i]);
-        pts.frustumCulled = false;
-        scene.add(pts);
-      });
-    })
-    .catch(() => { /* the sky layer just stays empty */ });
+  ctx.defer(() => {
+    fetch(`${ASSETS}stars.6.json`)
+      .then((r) => r.json())
+      .then((json) => {
+        if (ctx.isDisposed()) return;
+        const { faint, bright } = buildStarBuffers(json, 1000);
+        [faint, bright].forEach((b, i) => {
+          const geo = ctx.bin.add(new THREE.BufferGeometry());
+          geo.setAttribute('position', new THREE.BufferAttribute(b.positions, 3));
+          geo.setAttribute('color', new THREE.BufferAttribute(b.colors, 3));
+          const pts = new THREE.Points(geo, mats[i]);
+          pts.frustumCulled = false;
+          scene.add(pts);
+        });
+      })
+      .catch(() => { /* the sky layer just stays empty */ });
+  });
 
   return {
     scene, camera,
@@ -816,6 +820,7 @@ function buildSolar(ctx: Ctx, sites: JourneySite[]) {
   const tmp = new THREE.Vector3();
   const normal = new THREE.Vector3();
   const toCam = new THREE.Vector3();
+  const world = new THREE.Vector3();
 
   /** True when the Earth sphere (world radius s at EARTH_POS) hides `p` from the camera. */
   function earthBlocks(p: THREE.Vector3, s: number): boolean {
@@ -869,7 +874,6 @@ function buildSolar(ctx: Ctx, sites: JourneySite[]) {
       const right = tmp.setFromMatrixColumn(camera.matrixWorld, 0);
       earthTag.place(right.multiplyScalar(s * 1.05).add(EARTH_POS), camera, smooth(0.55, 0.75, q) * (1 - smooth(0.86, 0.9, p)), view);
 
-      const world = new THREE.Vector3();
       earth.satLocal.forEach((local, i) => {
         world.copy(local).multiplyScalar(s).add(EARTH_POS);
         satTags[i].place(world, camera, earthBlocks(world, s) ? 0 : swarm, view);
@@ -891,6 +895,7 @@ function buildSolar(ctx: Ctx, sites: JourneySite[]) {
 // ---------------------------------------------------------------- entry point
 
 export function createJourney(sites: JourneySite[]): Journey {
+  const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
   const el = document.createElement('div');
   el.className = 'auth-sky';
   const canvas = document.createElement('canvas');
@@ -914,18 +919,35 @@ export function createJourney(sites: JourneySite[]): Journey {
   const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   const view: View = { w: 1, h: 1, aspect: 1, fx: 0.5, fy: 0.5, dFinal: 4 };
   const uPx = { value: 1 };
+  // Big textures and the star catalogue wait until the visitor scrolls toward the scenes that
+  // use them (or the browser is idle), so the first screen costs almost nothing to load.
+  const deferred: (() => void)[] = [];
+  let released = false;
+  const defer = (fn: () => void): void => {
+    if (released) fn();
+    else deferred.push(fn);
+  };
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    for (const fn of deferred.splice(0)) fn();
+  };
+
   const ctx: Ctx = {
     bin, uPx, view, labels,
     dot: bin.add(dotTexture()),
     isDisposed: () => disposed,
+    defer,
     loadTex(name, srgb, onLoad) {
-      loader.load(`${ASSETS}${name}`, (t) => {
-        if (disposed) { t.dispose(); return; }
-        if (srgb) t.colorSpace = THREE.SRGBColorSpace;
-        t.anisotropy = maxAniso;
-        bin.add(t);
-        onLoad(t);
-      }, undefined, () => { /* keep the flat fallback colour */ });
+      defer(() => {
+        loader.load(`${ASSETS}${name}`, (t) => {
+          if (disposed) { t.dispose(); return; }
+          if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+          t.anisotropy = maxAniso;
+          bin.add(t);
+          onLoad(t);
+        }, undefined, () => { /* keep the flat fallback colour */ });
+      });
     },
   };
 
@@ -973,16 +995,19 @@ export function createJourney(sites: JourneySite[]): Journey {
   let target = 0, cur = 0, t = 0;
   let last = performance.now();
   let raf = 0;
+  let lastRenderMs = 0;
 
   function frame(now: number): void {
     raf = requestAnimationFrame(frame);
     if (document.hidden) { last = now; return; }
     const dt = Math.min(0.1, (now - last) / 1000);
     last = now;
-    t += dt;
-    cur += (target - cur) * (1 - Math.exp(-dt * 5));
+    t += reducedMotion ? 0 : dt;
+    if (reducedMotion) cur = target;
+    else cur += (target - cur) * (1 - Math.exp(-dt * 5));
     if (Math.abs(target - cur) < 1e-5) cur = target;
     const p = cur;
+    if (!released && p > 0.03) release();
 
     const want = thetaFor(targetLon);
     if (theta === null) theta = want;
@@ -1003,21 +1028,35 @@ export function createJourney(sites: JourneySite[]): Journey {
     galaxy.update(p, t, galOp);
     flight.update(p, flyOp);
 
-    renderer.clear();
-    if (skyOp > 0.003) {
-      sky.camera.quaternion.copy(solar.camera.quaternion);
-      sky.setOpacity(skyOp);
-      renderer.render(sky.scene, sky.camera);
-    }
-    if (galOp > 0.003) renderer.render(galaxy.scene, galaxy.camera);
-    if (flyOp > 0.003) renderer.render(flight.scene, flight.camera);
-    if (p > 0.4) {
-      renderer.clearDepth();
-      renderer.render(solar.scene, solar.camera);
+    // Sign-in form up (p > 0.95): the scene is static, so draw at about 30 fps. onFrame still runs every frame.
+    const draw = p <= 0.95 || now - lastRenderMs >= 33;
+    if (draw) {
+      lastRenderMs = now;
+      renderer.clear();
+      if (skyOp > 0.003) {
+        sky.camera.quaternion.copy(solar.camera.quaternion);
+        sky.setOpacity(skyOp);
+        renderer.render(sky.scene, sky.camera);
+      }
+      if (galOp > 0.003) renderer.render(galaxy.scene, galaxy.camera);
+      if (flyOp > 0.003) renderer.render(flight.scene, flight.camera);
+      if (p > 0.4) {
+        renderer.clearDepth();
+        renderer.render(solar.scene, solar.camera);
+      }
     }
     api.onFrame?.(p);
   }
   raf = requestAnimationFrame(frame);
+
+  // Fallback so the deferred loads start even if the visitor never scrolls: wait a few seconds
+  // (the sign-in card and app code load first), then use the next idle moment.
+  const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
+  let idleId = 0;
+  const idleTimer = window.setTimeout(() => {
+    if (idle) idleId = idle.call(window, release, { timeout: 3000 });
+    else release();
+  }, 4000);
 
   const api: Journey = {
     el,
@@ -1034,9 +1073,12 @@ export function createJourney(sites: JourneySite[]): Journey {
       if (disposed) return;
       disposed = true;
       cancelAnimationFrame(raf);
+      window.clearTimeout(idleTimer);
+      if (idle && idleId) (window as Window & { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback?.(idleId);
       window.removeEventListener('resize', layout);
       bin.clear();
       renderer.dispose();
+      renderer.forceContextLoss();
       el.remove();
     },
   };

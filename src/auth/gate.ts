@@ -110,7 +110,7 @@ const CAPTIONS: CaptionDef[] = [
   { a: 0.07, b: 0.24, kicker: '01 · The Milky Way', heading: '100,000 light-years across', line: 'Somewhere in one of its spiral arms is a small yellow star.' },
   { a: 0.28, b: 0.44, kicker: '02 · The neighbourhood', heading: 'The nearest stars', line: 'Alpha Centauri is 4.4 light-years away. Sirius, the brightest star in our sky, is 8.6.' },
   { a: 0.5, b: 0.66, kicker: '03 · The solar system', heading: 'One star, eight planets', line: 'The third one out has oceans, and people who build rockets.' },
-  { a: 0.7, b: 0.82, kicker: '04 · Earth', heading: 'Home', line: 'More than 10,000 working satellites circle it. Four flights are waiting below.' },
+  { a: 0.7, b: 0.82, kicker: '04 · Earth', heading: 'Home', line: 'More than 10,000 working satellites circle it. Four flights wait below, three of them ready to fly.' },
 ];
 
 const RAIL: Array<{ label: string; p: number }> = [
@@ -216,7 +216,10 @@ function mountShell(
 
   const skip = el('button', 'auth-skip', 'Skip to sign in');
   skip.type = 'button';
-  skip.addEventListener('click', () => progressToTop(1));
+  skip.addEventListener('click', () => {
+    progressToTop(1);
+    window.setTimeout(() => card.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true }), reduced ? 0 : 700);
+  });
 
   const rail = el('nav', 'auth-rail');
   rail.setAttribute('aria-label', 'Page sections');
@@ -386,6 +389,7 @@ function mountGate(
   const setStatus = (text: string, kind: 'error' | 'info' = 'error') => {
     status.textContent = text;
     status.dataset.kind = kind;
+    status.setAttribute('role', kind === 'error' ? 'alert' : 'status');
   };
 
   const run = async (button: HTMLButtonElement, work: () => Promise<void>) => {
@@ -528,27 +532,79 @@ function mountGate(
     const guest = el('button', 'auth-link', 'Continue as guest');
     guest.type = 'button';
     guest.addEventListener('click', () => onBypass?.());
-    card.append(status, swap, guest);
+    card.append(
+      status,
+      swap,
+      guest,
+      // src/cloud/usage.ts
+      el('p', 'auth-hint auth-usage-note', 'We count app opens and flights anonymously. No personal data is stored with them.'),
+    );
   };
 
   render();
   if (initialError) setStatus(initialError);
   // Jump straight to the form when there is an error to read.
   const shell = mountShell(card, Boolean(initialError) || (view as View) === 'verify' || prefersReducedMotion(), onBypass);
-  return { root: shell.root, showError: (m) => setStatus(m), dispose: shell.dispose };
+  return { root: shell.root, showError: (m) => setStatus(messageOf(m)), dispose: shell.dispose };
 }
 
 function prefersReducedMotion(): boolean {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
-function mountNotConfigured(): void {
+/** Sign-in is not configured in this build: explain, and let people in as a guest. */
+function mountNotConfigured(onBypass: (presetId?: string) => void): { remove: () => void } {
   const card = el('div', 'auth-card');
+  const guest = el('button', 'auth-btn auth-primary', 'Continue as guest');
+  guest.type = 'button';
+  guest.addEventListener('click', () => onBypass());
   card.append(
-    el('h2', '', 'Sign-in is not set up'),
-    el('p', 'auth-hint', 'Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to .env (see .env.example), then restart.'),
+    el('h2', '', 'Accounts are unavailable here'),
+    el(
+      'p',
+      'auth-hint',
+      import.meta.env.DEV
+        ? 'Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to .env (see .env.example), then restart.'
+        : 'You can still build and fly rockets as a guest. Designs stay in this browser.',
+    ),
+    guest,
   );
-  mountShell(card, prefersReducedMotion());
+  const shell = mountShell(card, prefersReducedMotion(), onBypass);
+  return {
+    remove: () => {
+      shell.dispose();
+      shell.root.remove();
+    },
+  };
+}
+
+// "Continue as guest" is remembered for this tab so moving between pages (builder and Moon
+// landing) or reloading does not show the sign-in wall again. Sign out clears it.
+const GUEST_KEY = 'astra-guest';
+const guestSession = (): Session => ({ user: { email: 'Guest' } }) as unknown as Session;
+
+function rememberGuest(): void {
+  try {
+    window.sessionStorage.setItem(GUEST_KEY, '1');
+  } catch {
+    // Private windows can refuse storage; the guest choice then lasts for this page only.
+  }
+}
+
+function isRememberedGuest(): boolean {
+  try {
+    return window.sessionStorage.getItem(GUEST_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function forgetGuest(): void {
+  try {
+    window.sessionStorage.removeItem(GUEST_KEY);
+  } catch {
+    // Nothing stored.
+  }
 }
 
 /** A small account button, bottom-left, with the signed-in email and a sign-out action. */
@@ -567,6 +623,7 @@ function mountAccountChip(session: Session): void {
   out.type = 'button';
   out.addEventListener('click', async () => {
     out.disabled = true;
+    forgetGuest();
     await signOut().catch(() => {});
     window.location.reload();
   });
@@ -589,6 +646,13 @@ function mountAccountChip(session: Session): void {
       toggle.setAttribute('aria-expanded', 'false');
     }
   });
+  chip.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menu.hidden) {
+      menu.hidden = true;
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.focus();
+    }
+  });
   chip.append(menu, toggle);
   document.body.append(chip);
 }
@@ -600,21 +664,43 @@ function mountAccountChip(session: Session): void {
  */
 export async function requireAuth(freshKey?: string): Promise<Session> {
   if (!supabase) {
-    mountNotConfigured();
-    return new Promise<Session>(() => {});
+    let session = isRememberedGuest() ? guestSession() : null;
+    if (!session) {
+      session = await new Promise<Session>((resolve) => {
+        const shell = mountNotConfigured(() => {
+          rememberGuest();
+          shell.remove();
+          resolve(guestSession());
+        });
+        window.dispatchEvent(new Event('astra-first-screen'));
+      });
+    }
+    mountAccountChip(session);
+    return session;
   }
   // An error or PKCE code handed back by Google or an email link.
   const { code, error: returnError } = parseAuthCallback(window.location.href);
   if (returnError) window.history.replaceState(null, '', window.location.pathname);
 
   let session = await currentSession().catch(() => null);
+  // A real sign-in replaces an earlier guest choice.
+  if (session) forgetGuest();
+  if (!session && !code && !returnError && isRememberedGuest()) session = guestSession();
+  let exchangeFailed = false;
   if (!session && code) {
     const exchanged = await supabase.auth.exchangeCodeForSession(code).catch(() => null);
     if (exchanged?.data?.session) {
       session = exchanged.data.session;
+      forgetGuest();
+    } else {
+      exchangeFailed = true;
     }
   }
   if (code) window.history.replaceState(null, '', window.location.pathname);
+  // A link that was already used, has expired, or was opened in another browser: say so
+  // instead of silently showing the sign-in form again.
+  const gateError =
+    returnError || (exchangeFailed ? 'That sign-in link has expired or was already used. Sign in again.' : returnError);
 
   if (!session) {
     // Kept in sessionStorage so it survives the round trip to Google and back.
@@ -626,10 +712,14 @@ export async function requireAuth(freshKey?: string): Promise<Session> {
       }
     }
     let resolveGate: ((s: Session) => void) | null = null;
-    const gate = mountGate(returnError, () => {
-      resolveGate?.({ user: { email: 'Guest' } } as unknown as Session);
+    const gate = mountGate(gateError, () => {
+      rememberGuest();
+      resolveGate?.(guestSession());
     });
     void listenForNativeCallback(gate.showError);
+    // The first screen is up. The Android app takes this as proof that a web update works
+    // (src/app/liveUpdate.ts).
+    window.dispatchEvent(new Event('astra-first-screen'));
     session = await new Promise<Session>((resolve) => {
       const stop = onSignedIn((s) => {
         stop();

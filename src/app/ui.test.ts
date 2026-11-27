@@ -195,9 +195,44 @@ describe('createUI', () => {
     expect(container.textContent).toContain('Burnout');
   });
 
+  it('shows mass, weight and TWR, and warns when a burning motor cannot lift the rocket', () => {
+    const ui = createUI(container, cb);
+    const read = (label: string): HTMLElement =>
+      Array.from(container.querySelectorAll('.sfb-cell'))
+        .find((c) => c.querySelector('dt')?.textContent === label)
+        ?.querySelector('dd') as HTMLElement;
+    ui.setTelemetry(state({ mass: 0.25, thrust: 2 }), 1, false);
+    expect(read('Thrust').textContent).toBe('2.0 N');
+    expect(read('Mass').textContent).toBe('250 g');
+    expect(read('Weight').textContent).toBe('2.5 N');
+    expect(read('TWR').textContent).toBe('0.82');
+    expect(read('TWR').classList.contains('sfb-twr-low')).toBe(true);
+    ui.setTelemetry(state({ mass: 1.5, thrust: 0 }), 1, false);
+    expect(read('Mass').textContent).toBe('1.50 kg');
+    expect(read('TWR').classList.contains('sfb-twr-low')).toBe(false);
+  });
+
+  it('formats whole and slow-motion warp factors', () => {
+    const ui = createUI(container, cb);
+    const label = container.querySelector('.sfb-warp-label') as HTMLElement;
+    ui.setTelemetry(state(), 0.1 + 0.1, false);
+    expect(label.textContent).toBe('×0.2');
+    ui.setTelemetry(state(), 0.30000000000000004, false);
+    expect(label.textContent).toBe('×0.3');
+    ui.setTelemetry(state(), 100000, false);
+    expect(label.textContent).toBe('×100000');
+  });
+
+  it('marks the Pad camera as selected at start', () => {
+    createUI(container, cb);
+    const pad = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Pad');
+    expect(pad?.classList.contains('is-active')).toBe(true);
+    expect(cb.onCamera).not.toHaveBeenCalled();
+  });
+
   it('shows the flaw empty states depending on whether a flight happened', () => {
     const ui = createUI(container, cb);
-    expect(container.textContent).toContain('Fly the rocket to analyse it');
+    expect(container.textContent).toContain('Press Launch; the flaw report appears when the flight ends.');
     ui.setEvents([{ t: 0, type: 'ignition', altitude: 0, speed: 0, message: 'Ignition' }]);
     ui.setFlaws([]);
     expect(container.textContent).toContain('Analysing when the flight ends');
@@ -260,6 +295,65 @@ describe('createUI', () => {
     expect(container.querySelector('.sfb-toast')).toBeNull();
   });
 
+  it('keeps toasts visible while the HUD is hidden, and stacks at most three', () => {
+    const ui = createUI(container, cb);
+    ui.setVisible(false);
+    for (const msg of ['one', 'two', 'three', 'four']) ui.toast(msg);
+    const shown = Array.from(container.querySelectorAll('.sfb-toast'));
+    expect(shown.map((t) => t.textContent)).toEqual(['two', 'three', 'four']);
+    expect(shown[0].closest('.sfb-hidden')).toBeNull();
+  });
+
+  it('starts the CG/CP and Trail toggles on, as the app does', () => {
+    createUI(container, cb);
+    const toggle = (label: string): HTMLButtonElement =>
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent === label) as HTMLButtonElement;
+    for (const label of ['CG\u00b7CP', 'Trail']) {
+      expect(toggle(label).getAttribute('aria-pressed')).toBe('true');
+      expect(toggle(label).classList.contains('is-active')).toBe(true);
+    }
+    expect(toggle('Forces').getAttribute('aria-pressed')).toBe('false');
+    toggle('Trail').click();
+    expect(cb.onToggle).toHaveBeenCalledWith('trail', false);
+  });
+
+  it('clamps the launch settings and writes the clamped value back on change', () => {
+    const ui = createUI(container, cb);
+    const inputs = Array.from(container.querySelectorAll<HTMLInputElement>('.sfb-launch-grid input')).slice(0, 7);
+    const enter = (values: string[]): void => {
+      inputs.forEach((input, i) => {
+        input.value = values[i];
+        input.dispatchEvent(new Event('change'));
+      });
+    };
+
+    enter(['100', '90', '400', '99', '-10', '500', '60']);
+    expect(inputs.map((i) => i.value)).toEqual(['30', '45', '360', '40', '0', '100', '30']);
+
+    enter(['0', '-5', '-1', '-2', '999', '-3', '-4']);
+    expect(inputs.map((i) => i.value)).toEqual(['0.1', '0', '0', '0', '360', '0', '0']);
+
+    // Clamped even before the field is committed.
+    inputs[0].value = '1000';
+    inputs[6].value = '99';
+    expect(ui.getConfig().railLength).toBe(30);
+    expect(ui.getConfig().ejectionDelay).toBe(30);
+
+    enter(['1', '0', '0', '2', '270', '20', '']);
+    expect(inputs[6].value).toBe('');
+    expect(ui.getConfig().ejectionDelay).toBeUndefined();
+  });
+
+  it('ignores auto-repeat for the reset and pause keys', () => {
+    createUI(container, cb);
+    for (const key of ['r', 'p']) {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key, repeat: true }));
+    }
+    expect(cb.onReset).toHaveBeenCalledTimes(1);
+    expect(cb.onPause).toHaveBeenCalledTimes(1);
+  });
+
   describe('phone HUD (forceMobile)', () => {
     const mobile = { forceMobile: true };
     const sheetOf = (): HTMLElement => container.querySelector('.sfb-sheet') as HTMLElement;
@@ -308,7 +402,8 @@ describe('createUI', () => {
       const ui = createUI(container, cb, mobile);
       ui.setTelemetry(state(), 10, false);
       const values = Array.from(container.querySelectorAll('.sfb-hud-chip .sfb-hud-v')).map((e) => e.textContent);
-      expect(values).toEqual(['1.23 km', '99.5 m/s', '4.2 g']);
+      // 812.4 N on 1 kg.
+      expect(values).toEqual(['1.23 km', '99.5 m/s', '82.8']);
       expect(container.querySelector('.sfb-hud-top')?.textContent).toContain('T+1.5');
     });
 

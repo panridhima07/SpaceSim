@@ -1,6 +1,6 @@
 {
-  "name": "Space Flight Builder",
-  "short_name": "Flight Builder",
+  "name": "ASTRA Spaceflight",
+  "short_name": "ASTRA",
   "description": "Fly your OpenRocket design and find its flaws before you build it.",
   "start_url": ".",
   "scope": ".",

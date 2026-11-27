@@ -165,7 +165,9 @@ export function showConsentDialog(
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        finish(false);
+        // Escape closes without changing anything: a reopened dialog keeps the earlier answer
+        // (it must not quietly withdraw an opt-in); a first-time dialog counts as "No thanks".
+        finish(Boolean(opts.current?.research));
         return;
       }
       if (e.key !== 'Tab') return;

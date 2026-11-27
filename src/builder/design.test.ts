@@ -7,6 +7,7 @@ import {
   findPart,
   fromRocketModel,
   mapFlawsToParts,
+  newDesignId,
   moveExternalPart,
   removePart,
   toRocketModel,
@@ -327,5 +328,45 @@ describe('builder/design: side bodies of an imported rocket', () => {
     // With its tube removed a side body stays put rather than vanishing or jumping.
     const orphan = toRocketModel(removePart(design, parent.id));
     expect(orphan.sideBodies!.length).toBe(before.sideBodies!.length);
+  });
+  it('createEmptyDesign gives distinct ids', () => {
+    expect(createEmptyDesign().id).not.toBe(createEmptyDesign().id);
+    expect(newDesignId().startsWith('d_')).toBe(true);
+  });
+
+  it('moves cgOverride with its part when parts are inserted above', () => {
+    let d = createEmptyDesign();
+    const tube = addExternalPart(d, { ...(findPreset('tube-bt50-240')!.create() as BodyTube), x: 0.1, cgOverride: 0.2 });
+    d = tube.design;
+    const mount = { ...(findPreset('mount-18mm-c6')!.create() as InnerTube), x: 0.15, cgOverride: 0.16 };
+    d = addInternalPart(d, tube.id, mount, 'top', 0.05)!.design;
+    d.stack[0].children[0].part = { ...d.stack[0].children[0].part, x: 0.15, cgOverride: 0.16 };
+    d.stack[0].part = { ...d.stack[0].part, x: 0.1, cgOverride: 0.2 };
+    d = addExternalPart(d, findPreset('nose-ogive-bt50')!.create() as NoseCone, 0).design;
+    const m = toRocketModel(d);
+    const t = m.components.find((c) => c.id === tube.id)!;
+    expect(t.cgOverride).toBeCloseTo(0.2 + (t.x - 0.1), 9);
+    const ch = m.components.find((c) => c.kind === 'innertube')!;
+    expect(ch.cgOverride).toBeCloseTo(0.16 + (ch.x - 0.15), 9);
+  });
+
+  it('clamps non-fin children inside the parent', () => {
+    let d = createEmptyDesign();
+    const tube = addExternalPart(d, { ...(findPreset('tube-bt50-140')!.create() as BodyTube), length: 0.05 });
+    d = tube.design;
+    d = addInternalPart(d, tube.id, findPreset('mount-24mm-d12')!.create() as InnerTube, 'bottom', 0)!.design;
+    const m = toRocketModel(d);
+    const t = m.components.find((c) => c.kind === 'bodytube')!;
+    const c = m.components.find((x) => x.kind === 'innertube')!;
+    expect(c.length).toBeGreaterThan(t.length);
+    expect(c.x).toBeGreaterThanOrEqual(t.x);
+  });
+
+  it('keeps import warnings through fromRocketModel -> toRocketModel', () => {
+    const model = parseOrkXml(SAMPLE_ORK_XML);
+    model.warnings = ['careful', 'again'];
+    const d = fromRocketModel(model);
+    expect(d.importWarnings).toEqual(['careful', 'again']);
+    expect(toRocketModel(d).warnings).toEqual(['careful', 'again']);
   });
 });

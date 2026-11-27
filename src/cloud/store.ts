@@ -18,15 +18,19 @@ const MAX_FILENAME = 200;
 export interface CloudStore {
   /** False for guests or when Supabase is not configured: every call then resolves to a harmless empty result. */
   readonly enabled: boolean;
-  getConsent(): Promise<ConsentState | null>;
-  setConsent(c: ConsentState): Promise<void>;
+  /** null: the account has no answer yet; undefined: the read failed (offline, no table). */
+  getConsent(): Promise<ConsentState | null | undefined>;
+  /** Resolves true when the write reached the account; false when it failed or the store is disabled. */
+  setConsent(c: ConsentState): Promise<boolean>;
   listDesigns(): Promise<CloudDesign[]>;
   saveDesign(d: { id?: string; name: string; design: Design; thumbnail?: string; sourceFileSha256?: string }): Promise<string | null>;
-  deleteDesign(id: string): Promise<void>;
+  /** True when the delete query succeeded; false on failure or when disabled. */
+  deleteDesign(id: string): Promise<boolean>;
   /** Uploads the bytes once per unique file (skip if the row exists). Only call when research consent is true. */
   uploadRocketFile(f: { sha256: string; filename: string; format: string; bytes: Uint8Array }): Promise<void>;
   getCorrection(fileSha256: string): Promise<ImportCorrection | null>;
-  saveCorrection(c: ImportCorrection, shareForTraining: boolean): Promise<void>;
+  /** True when the correction was saved to the account; false on failure or when disabled. */
+  saveCorrection(c: ImportCorrection, shareForTraining: boolean): Promise<boolean>;
   deleteCorrection(fileSha256: string): Promise<void>;
   logSimRun(r: {
     designId?: string;
@@ -114,7 +118,7 @@ export function createCloudStore(client: SupabaseClient | null, userId: string |
     enabled: active !== null,
 
     getConsent: () =>
-      guard<ConsentState | null>('read consent', null, async (c, uid) => {
+      guard<ConsentState | null | undefined>('read consent', undefined, async (c, uid) => {
         const { data, error } = await c
           .from('profiles')
           .select('research_consent, consent_version, consented_at')
@@ -130,7 +134,7 @@ export function createCloudStore(client: SupabaseClient | null, userId: string |
       }),
 
     setConsent: (s) =>
-      guard<void>('save consent', undefined, async (c, uid) => {
+      guard<boolean>('save consent', false, async (c, uid) => {
         const { error } = await c.from('profiles').upsert(
           {
             user_id: uid,
@@ -141,6 +145,7 @@ export function createCloudStore(client: SupabaseClient | null, userId: string |
           { onConflict: 'user_id' },
         );
         check(error);
+        return true;
       }),
 
     listDesigns: () =>
@@ -188,9 +193,10 @@ export function createCloudStore(client: SupabaseClient | null, userId: string |
       }),
 
     deleteDesign: (id) =>
-      guard<void>('delete design', undefined, async (c, uid) => {
+      guard<boolean>('delete design', false, async (c, uid) => {
         const { error } = await c.from('designs').delete().eq('id', id).eq('user_id', uid);
         check(error);
+        return true;
       }),
 
     uploadRocketFile: (f) =>
@@ -232,7 +238,7 @@ export function createCloudStore(client: SupabaseClient | null, userId: string |
       }),
 
     saveCorrection: (corr, share) =>
-      guard<void>('save correction', undefined, async (c, uid) => {
+      guard<boolean>('save correction', false, async (c, uid) => {
         const { error } = await c.from('import_corrections').upsert(
           {
             user_id: uid,
@@ -248,6 +254,7 @@ export function createCloudStore(client: SupabaseClient | null, userId: string |
           { onConflict: 'user_id,file_sha256' },
         );
         check(error);
+        return true;
       }),
 
     deleteCorrection: (sha) =>

@@ -12,6 +12,7 @@ import {
   type SimState,
 } from '../types';
 import { analyzeEnvironment } from './envFlaws';
+import { atmosphere } from './atmosphere';
 
 const SEVERITY_ORDER: Record<FlawSeverity, number> = { critical: 0, warning: 1, info: 2 };
 const RAD2DEG = 180 / Math.PI;
@@ -45,13 +46,18 @@ function shearModulus(density: number): number {
   return 2.6e10; // fibreglass / carbon-like
 }
 
-/** Flutter speed (m/s) from the classic fin flutter estimate. Infinity if thickness is zero. */
+/**
+ * Flutter speed (m/s) from the classic fin flutter estimate. `air.pressure` is in Pa, so the
+ * term x = 1.337 AR^3 P (lambda + 1) / (2 (AR + 2) (t/c)^3) is in Pa and G / x is dimensionless;
+ * the flutter speed is then `air.soundSpeed` (m/s) times sqrt(G / x). Infinity if thickness is zero.
+ */
 function flutterSpeed(
   span: number,
   rootChord: number,
   tipChord: number,
   thickness: number,
   density: number,
+  air: { pressure: number; soundSpeed: number },
 ): number {
   const area = (span * (rootChord + tipChord)) / 2;
   if (area <= 0 || rootChord <= 0 || thickness <= 0) return Infinity;
@@ -60,8 +66,8 @@ function flutterSpeed(
   const tc = thickness / rootChord;
   const G = shearModulus(density);
   const x =
-    (1.337 * ar ** 3 * SEA_LEVEL_PRESSURE * (lambda + 1)) / (2 * (ar + 2) * tc ** 3);
-  return SOUND_SPEED * Math.sqrt(G / x);
+    (1.337 * ar ** 3 * air.pressure * (lambda + 1)) / (2 * (ar + 2) * tc ** 3);
+  return air.soundSpeed * Math.sqrt(G / x);
 }
 
 export function analyzeFlight(
@@ -107,19 +113,16 @@ export function analyzeFlight(
       unit: 'ratio',
     });
   } else {
-    let twr = 0;
-    for (const s of log) {
-      if (s.t >= liftoff.t && s.t <= liftoff.t + 0.3) {
-        twr = Math.max(twr, s.thrust / (s.mass * G0));
-      }
-    }
+    // The mean over the first half second, not the ignition spike, is what moves the rocket.
+    const early = log.filter((s) => s.t >= liftoff.t && s.t <= liftoff.t + 0.5);
+    const twr = early.reduce((sum, s) => sum + s.thrust / (s.mass * G0), 0) / Math.max(1, early.length);
     if (twr < 5) {
       flaws.push({
         id: 'low-twr',
         severity: 'warning',
         title: 'Low thrust-to-weight at liftoff',
-        detail: `Thrust-to-weight peaks at ${twr.toFixed(2)} in the first 0.3 s after liftoff, so the rocket is slow off the rail.`,
-        fix: 'Use a higher-thrust motor or reduce mass so the peak thrust-to-weight is at least 5.',
+        detail: `Thrust-to-weight averages ${twr.toFixed(2)} in the first 0.5 s after liftoff, so the rocket is slow off the rail.`,
+        fix: 'Use a higher-thrust motor or reduce mass so the early thrust-to-weight is at least 5.',
         t: liftoff.t,
         value: twr,
         limit: 5,
@@ -219,10 +222,18 @@ export function analyzeFlight(
     }
   }
 
-  // Fin flutter, one check per fin set.
+  // Fin flutter, one check per fin set. Sound speed and pressure are taken at the altitude of
+  // the fastest sample (through-air speed, falling back to ground speed); sea level with no log.
+  let fastest: SimState | undefined;
+  for (const s of log) {
+    if (!fastest || (s.airspeed ?? s.speed) > (fastest.airspeed ?? fastest.speed)) fastest = s;
+  }
+  const air = fastest
+    ? atmosphere(config.launchAltitude + fastest.altitude)
+    : { pressure: SEA_LEVEL_PRESSURE, soundSpeed: SOUND_SPEED };
   for (const c of rocket.components) {
     if (c.kind !== 'finset') continue;
-    const vf = flutterSpeed(c.span, c.rootChord, c.tipChord, c.thickness, c.density);
+    const vf = flutterSpeed(c.span, c.rootChord, c.tipChord, c.thickness, c.density, air);
     if (!Number.isFinite(vf)) continue;
     const vMax = log.reduce((m, s) => Math.max(m, s.speed), 0);
     if (vMax > 0.8 * vf) {
@@ -342,7 +353,11 @@ export function analyzeFlight(
   }
   const alphaOutsideDeg = maxAlphaOutside * RAD2DEG;
   const reasons: string[] = [];
-  if (maxMach > 1.5) reasons.push(`peak Mach ${maxMach.toFixed(2)} is above 1.5`);
+  if (maxMach > 0.8) {
+    reasons.push(
+      `peak Mach ${maxMach.toFixed(2)} is above 0.8, where transonic and supersonic drag is an uncalibrated estimate`,
+    );
+  }
   if (alphaOutsideDeg > 15) reasons.push(`angle of attack reaches ${alphaOutsideDeg.toFixed(1)} degrees outside descent`);
   if (reasons.length) {
     flaws.push({
@@ -351,9 +366,9 @@ export function analyzeFlight(
       title: 'Simulation less reliable in this regime',
       detail: `The Barrowman-style aerodynamics assume subsonic, small-angle flight, and ${reasons.join(' and ')}.`,
       fix: 'Treat the predicted loads and apogee with caution, or confirm them with a flight test or a CFD study.',
-      value: maxMach > 1.5 ? maxMach : alphaOutsideDeg,
-      limit: maxMach > 1.5 ? 1.5 : 15,
-      unit: maxMach > 1.5 ? 'Mach' : 'deg',
+      value: maxMach > 0.8 ? maxMach : alphaOutsideDeg,
+      limit: maxMach > 0.8 ? 0.8 : 15,
+      unit: maxMach > 0.8 ? 'Mach' : 'deg',
     });
   }
 

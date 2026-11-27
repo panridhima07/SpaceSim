@@ -5,18 +5,22 @@
 // Frame: axis +Y, nose toward +Y, origin at the nose tip, station x is y = -x.
 
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { FinSet, NoseCone, Transition } from '../../types';
 import { noseConeProfile, transitionProfile } from './profile';
 import {
   PART_COLORS,
+  SKIN_FINISH,
   TIER_ACCENT,
   mixColor,
   partMaterial,
   radialSegments,
   scopedPart,
   seeded,
+  sharedGeometry,
   type PartBuilder,
   type PartContext,
+  type PartFinish,
   type PartIconSet,
   type PartTier,
 } from './types';
@@ -47,9 +51,39 @@ function addMesh(group: THREE.Group, geo: THREE.BufferGeometry, mat: THREE.Mater
 }
 
 /** Detail material: a hair of polygon offset so thin decoration never z-fights the skin. */
-function detailMat(color: number, ctx: PartContext): THREE.MeshStandardMaterial {
-  return partMaterial(color, ctx, { offset: true });
+function detailMat(color: number, ctx: PartContext, finish?: PartFinish): THREE.MeshStandardMaterial {
+  return partMaterial(color, ctx, { offset: true, finish });
 }
+
+/** Detail lying on an outer skin (nose, transition): see-through with that skin in cutaway view. */
+function skinDetailMat(color: number, ctx: PartContext, finish?: PartFinish): THREE.MeshStandardMaterial {
+  return partMaterial(color, ctx, { offset: true, shell: true, finish });
+}
+
+/** Several same-kind geometries as ONE mesh (falls back to separate meshes if they will not merge). */
+function addMerged(group: THREE.Group, geos: THREE.BufferGeometry[], mat: THREE.Material, name: string): void {
+  const good = geos.filter(allFinite);
+  for (const g of geos) if (!good.includes(g)) g.dispose();
+  if (good.length === 0) return;
+  if (good.length === 1) {
+    addMesh(group, good[0], mat, name);
+    return;
+  }
+  const merged = mergeGeometries(good, false);
+  if (merged) {
+    for (const g of good) g.dispose();
+    addMesh(group, merged, mat, name);
+  } else {
+    for (const g of good) addMesh(group, g, mat, name);
+  }
+}
+
+
+// Local colours (PART_COLORS is not ours to edit).
+const PUTTY = 0xc4b9a2; // pale grey-tan filler
+const SCRATCH = 0xd8d0c0; // sanded paint
+const VENT_DARK = 0x14161a;
+const SCREW_METAL = 0xb4bcc6;
 
 // ---------- revolved parts (nose cone, transition) ----------
 
@@ -97,13 +131,13 @@ function facetScale(phi: number, seg: number): number {
   return Math.cos(Math.PI / seg) / Math.cos(local);
 }
 
-function ribbon(prof: Pt[], x: number, s0: number, s1: number, phi: number, hw: number, seg: number) {
+function ribbon(prof: Pt[], x: number, s0: number, s1: number, phi: number, hw: number, seg: number, proud = PROUD) {
   const sub = subProfile(prof, s0, s1);
   const pos: number[] = [];
   for (const [s, r] of sub) {
     for (const sign of [-1, 1]) {
       const a = phi + sign * hw;
-      const rr = r * PROUD * facetScale(a, seg);
+      const rr = r * proud * facetScale(a, seg);
       pos.push(rr * Math.sin(a), -(x + s), rr * Math.cos(a));
     }
   }
@@ -140,7 +174,38 @@ function buildRevolved(
   const color = c.color ?? baseColor;
   const L = c.length;
   const seg = radialSegments(RADIAL[tier], 'outer');
-  addMesh(group, lathe(prof, c.x, seg), partMaterial(color, ctx, { shell: true }), 'shell');
+  addMesh(group, lathe(prof, c.x, seg), partMaterial(color, ctx, { shell: true, finish: SKIN_FINISH[tier] }), 'shell');
+
+  const bandGeo = (s0: number, s1: number, scale = PROUD) =>
+    s1 - s0 > 1e-9 ? lathe(subProfile(prof, s0, s1), c.x, seg, scale) : null;
+  const band = (s0: number, s1: number, col: number, name: string, finish: PartFinish) => {
+    const g = bandGeo(s0, s1);
+    if (g) addMesh(group, g, skinDetailMat(col, ctx, finish), name);
+  };
+  /** A ring of small flat discs (vents, screw heads) lying on the skin at station s, as ONE mesh. */
+  const discRing = (s: number, n: number, rad: number, lift: number, col: number, name: string, finish: PartFinish) => {
+    const r = interpR(prof, s);
+    if (!(r > 1e-6)) return;
+    const eps = Math.max(1e-5, 0.002 * L);
+    const k = (interpR(prof, Math.min(L, s + eps)) - interpR(prof, Math.max(0, s - eps))) / (Math.min(L, s + eps) - Math.max(0, s - eps));
+    const nl = Math.hypot(1, k);
+    const nr = 1 / nl;
+    const ny = k / nl;
+    const rc = r * Math.cos(Math.PI / seg) * lift; // facet-centre radius, so each disc is parallel to its facet
+    const base = sharedGeometry(ctx, `disc|${rad}`, () => new THREE.CircleGeometry(rad, radialSegments(8, 'small')));
+    const geos: THREE.BufferGeometry[] = [];
+    const m = new THREE.Matrix4();
+    for (let i = 0; i < n; i++) {
+      const f = Math.floor((i * seg) / n);
+      const a = (f + 0.5) * ((2 * Math.PI) / seg);
+      const X = new THREE.Vector3(Math.cos(a), 0, -Math.sin(a));
+      const Z = new THREE.Vector3(nr * Math.sin(a), ny, nr * Math.cos(a));
+      const Y = new THREE.Vector3().crossVectors(Z, X);
+      m.makeBasis(X, Y, Z).setPosition(rc * Math.sin(a), -(c.x + s), rc * Math.cos(a));
+      geos.push(base.clone().applyMatrix4(m));
+    }
+    addMerged(group, geos, skinDetailMat(col, ctx, finish), name);
+  };
 
   if (tier === 'best') {
     // Precision finish: recoloured skin riding 0.3% proud, never a profile change.
@@ -148,25 +213,70 @@ function buildRevolved(
     const trim = mixColor(color, PART_COLORS.metal, 0.7);
     const dark = mixColor(color, 0x000000, 0.4);
     const light = mixColor(color, 0xffffff, 0.6);
-    const band = (s0: number, s1: number, col: number, name: string) => {
-      if (s1 - s0 > 1e-9) addMesh(group, lathe(subProfile(prof, s0, s1), c.x, seg, PROUD), detailMat(col, ctx), name);
-    };
+    const pin = mixColor(color, 0xffffff, 0.9);
     if (tipCap) {
       // Blunted-tip look of a real ogive: a contrasting metal cap on the pointed end.
-      if (prof[0][1] <= prof[prof.length - 1][1]) band(0, 0.06 * L, PART_COLORS.metal, 'tipcap');
-      else band(L - 0.06 * L, L, PART_COLORS.metal, 'tipcap');
+      if (prof[0][1] <= prof[prof.length - 1][1]) band(0, 0.06 * L, PART_COLORS.metal, 'tipcap', 'metal');
+      else band(L - 0.06 * L, L, PART_COLORS.metal, 'tipcap', 'metal');
     }
     for (const end of jointEnds) {
       // Trim ring plus a fine shoulder line just inboard of it.
       if (end === 'aft') {
-        band(L - w, L, trim, 'trim');
-        band(L - 3.2 * w, L - 2.6 * w, dark, 'joint');
+        band(L - w, L, trim, 'trim', 'metal');
+        band(L - 3.2 * w, L - 2.6 * w, dark, 'joint', 'satin');
+        band(L - 1.08 * w, L - w, dark, 'jointline', 'satin'); // crisp hairline at the joint
       } else {
-        band(0, w, trim, 'trim');
-        band(2.6 * w, 3.2 * w, dark, 'joint');
+        band(0, w, trim, 'trim', 'metal');
+        band(2.6 * w, 3.2 * w, dark, 'joint', 'satin');
+        band(w, 1.08 * w, dark, 'jointline', 'satin');
       }
     }
-    if (accentBand) band(0.55 * L, 0.6 * L, light, 'band');
+    if (accentBand) {
+      // Gloss vinyl stripe with a hairline pinstripe beside it.
+      band(0.55 * L, 0.6 * L, light, 'band', 'gloss');
+      band(0.615 * L, 0.62 * L, pin, 'pinstripe', 'gloss');
+    }
+    if (tipCap) {
+      // Static-vent ports just above the base joint (a nose's base is its wide end).
+      const wideAft = prof[0][1] <= prof[prof.length - 1][1];
+      const sv = wideAft ? L - 5 * w : 5 * w;
+      discRing(sv, 4, Math.min(0.06 * interpR(prof, sv), 0.4 * w), 1.0045, VENT_DARK, 'vent', 'satin');
+    }
+    if (!tipCap) {
+      // Transition: a pinstripe, and a ring of screw heads on each trim ring.
+      band(0.46 * L, 0.475 * L, mixColor(color, 0xffffff, 0.85), 'pinstripe', 'gloss');
+      for (const end of jointEnds) {
+        const s = end === 'aft' ? L - 0.5 * w : 0.5 * w;
+        discRing(s, 8, Math.min(0.035 * interpR(prof, s), 0.3 * w), 1.0045, SCREW_METAL, 'screws', 'metal');
+      }
+    }
+  } else if (tier === 'ok') {
+    // Well-built kit: moulded parts. Parting seams, a shadow line at each joint and the
+    // lighter edge of the paint mask just inboard of it.
+    const dark = mixColor(color, 0x000000, 0.55);
+    const light = mixColor(color, 0xffffff, 0.12);
+    const jw = (tipCap ? 0.01 : 0.012) * L;
+    const bw = (tipCap ? 0.035 : 0.05) * L;
+    const darks: (THREE.BufferGeometry | null)[] = [];
+    const lights: (THREE.BufferGeometry | null)[] = [];
+    for (const end of jointEnds) {
+      if (end === 'aft') {
+        darks.push(bandGeo(L - jw, L));
+        lights.push(bandGeo(L - bw, L - jw));
+      } else {
+        darks.push(bandGeo(0, jw));
+        lights.push(bandGeo(jw, bw));
+      }
+    }
+    addMerged(group, darks.filter((g): g is THREE.BufferGeometry => !!g), skinDetailMat(dark, ctx, 'satin'), 'joint');
+    addMerged(group, lights.filter((g): g is THREE.BufferGeometry => !!g), skinDetailMat(light, ctx, 'satin'), 'shoulder');
+    if (tipCap) {
+      const d = (2 * Math.PI) / seg;
+      const k0 = Math.floor(seeded(c.id, 30) * seg);
+      const seamColor = mixColor(color, 0x000000, 0.12);
+      const seams = [k0, k0 + seg / 2].map((k) => ribbon(prof, c.x, 0, L, k * d, 0.06 * d, seg));
+      addMerged(group, seams, skinDetailMat(seamColor, ctx, 'satin'), 'seam');
+    }
   } else if (tier === 'bad') {
     const d = (2 * Math.PI) / seg;
     // Bare, unpainted patches, snapped to whole facets so they sit on the shell.
@@ -180,17 +290,36 @@ function buildRevolved(
       addMesh(
         group,
         lathe(subProfile(prof, s0, s1), c.x, m, PROUD, k * d, m * d),
-        detailMat(bare, ctx),
+        skinDetailMat(bare, ctx, 'matte'),
         'patch',
       );
+    }
+    // Blotches of grey-tan filler putty, a hair prouder than the bare patches.
+    for (let i = 0; i < 2; i++) {
+      const s0 = L * (0.08 + 0.7 * seeded(c.id, 50 + i * 3));
+      const s1 = Math.min(L, s0 + L * (0.05 + 0.05 * seeded(c.id, 51 + i * 3)));
+      if (!(s1 - s0 > 1e-9)) continue;
+      const k = Math.floor(seeded(c.id, 52 + i * 3) * seg);
+      addMesh(group, lathe(subProfile(prof, s0, s1), c.x, 1, 1.004, k * d, d), skinDetailMat(PUTTY, ctx, 'matte'), 'putty');
+    }
+    // Sanding scratches: a few fine lines along the body, merged into one mesh.
+    {
+      const scratches: THREE.BufferGeometry[] = [];
+      for (let i = 0; i < 4; i++) {
+        const s0 = L * (0.05 + 0.6 * seeded(c.id, 60 + i * 2));
+        const s1 = Math.min(L, s0 + L * (0.15 + 0.2 * seeded(c.id, 61 + i * 2)));
+        const phi = seeded(c.id, 70 + i) * Math.PI * 2;
+        if (s1 - s0 > 1e-9) scratches.push(ribbon(prof, c.x, s0, s1, phi, 0.018 * d, seg));
+      }
+      addMerged(group, scratches, skinDetailMat(mixColor(color, SCRATCH, 0.5), ctx, 'matte'), 'scratch');
     }
     // A mis-registered seam: the two halves are off by a third of a facet.
     const kc = Math.floor(seeded(c.id, 20) * seg);
     const seamColor = mixColor(color, 0x000000, 0.5);
     const hw = 0.07 * d;
     const cut = L * (0.45 + 0.2 * seeded(c.id, 21));
-    addMesh(group, ribbon(prof, c.x, 0, cut, (kc + 0.65) * d, hw, seg), detailMat(seamColor, ctx), 'seam');
-    addMesh(group, ribbon(prof, c.x, cut, L, (kc + 0.3) * d, hw, seg), detailMat(seamColor, ctx), 'seam');
+    addMesh(group, ribbon(prof, c.x, 0, cut, (kc + 0.65) * d, hw, seg), skinDetailMat(seamColor, ctx, 'matte'), 'seam');
+    addMesh(group, ribbon(prof, c.x, cut, L, (kc + 0.3) * d, hw, seg), skinDetailMat(seamColor, ctx, 'matte'), 'seam');
   }
   return group;
 }
@@ -439,6 +568,69 @@ function filletGeometry(R: number, x: number, t: number, f: number, a0: number, 
   return g;
 }
 
+/**
+ * Strips lying on both faces along the leading edge, trailing edge and (where the tip is a
+ * real edge) the tip, following the loft exactly and lifted a hair off it. null if none fit.
+ */
+function edgeStrips(
+  poly: Pt[],
+  rs: number[],
+  sec: { u: number[]; h: number[] },
+  R: number,
+  x: number,
+  lift: number,
+  wLE: number,
+  wTE: number,
+  wTip: number,
+): THREE.BufferGeometry | null {
+  const hAt = (u: number): number => {
+    const { u: us, h } = sec;
+    for (let i = 1; i < us.length; i++) {
+      if (u <= us[i]) {
+        const d = us[i] - us[i - 1];
+        return d > 1e-12 ? h[i - 1] + ((h[i] - h[i - 1]) * (u - us[i - 1])) / d : h[i];
+      }
+    }
+    return h[h.length - 1];
+  };
+  const range = (lo: number, hi: number): number[] => [lo, ...sec.u.filter((v) => v > lo + 1e-9 && v < hi - 1e-9), hi];
+  const pos: number[] = [];
+  const idx: number[] = [];
+  const grid = (rows: number[], us: number[], sign: number) => {
+    const base = pos.length / 3;
+    for (const r of rows) {
+      const iv = chordAt(poly, r);
+      if (!iv) return;
+      for (const u of us) pos.push(R + r, -(x + iv[0] + u * (iv[1] - iv[0])), sign * (hAt(u) + lift));
+    }
+    const C = us.length;
+    for (let j = 0; j < rows.length - 1; j++) {
+      for (let k = 0; k < C - 1; k++) {
+        const a = base + j * C + k;
+        idx.push(a, a + 1, a + C, a + 1, a + C + 1, a + C);
+      }
+    }
+  };
+  const rmin = rs[0];
+  const rmax = rs[rs.length - 1];
+  const root = chordAt(poly, rmin);
+  const tipIv = chordAt(poly, rmax);
+  const tipReal = !!root && !!tipIv && tipIv[1] - tipIv[0] >= 0.2 * (root[1] - root[0]);
+  let tipRows = rs.filter((r) => r >= rmax - wTip * (rmax - rmin) - 1e-12);
+  if (tipRows.length < 2) tipRows = rs.slice(-2);
+  for (const sign of [1, -1]) {
+    if (wLE > 0) grid(rs, range(0, wLE), sign);
+    if (wTE > 0) grid(rs, range(1 - wTE, 1), sign);
+    if (wTip > 0 && tipReal) grid(tipRows,range(wLE, 1 - wTE), sign);
+  }
+  if (idx.length === 0) return null;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
 function pointInPoly(poly: Pt[], a: number, r: number): boolean {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -504,10 +696,17 @@ export const buildFin: PartBuilder<FinSet> = scopedPart((c, tier, ctx) => {
   const nSt = tier === 'best' ? 24 : tier === 'ok' ? 12 : 4;
 
   let geo: THREE.BufferGeometry | null = null;
+  let stations: number[] = [];
+  let lofted = false;
   if (rmax - rmin > 1e-12 && loftable(poly, rmin, rmax)) {
-    geo = loftFin(poly, stationList(poly, rmin, rmax, nSt, elliptical), sec, R, x);
+    stations = stationList(poly, rmin, rmax, nSt, elliptical);
+    geo = loftFin(poly, stations, sec, R, x);
+    lofted = !!geo;
   }
-  if (!geo || !allFinite(geo)) geo = slabFin(poly, R, x, t);
+  if (!geo || !allFinite(geo)) {
+    geo = slabFin(poly, R, x, t);
+    lofted = false;
+  }
   if (!geo) return group;
 
   // Root interval, where fillets and glue sit.
@@ -524,7 +723,38 @@ export const buildFin: PartBuilder<FinSet> = scopedPart((c, tier, ctx) => {
       extras.push({
         name: 'fillet',
         geo: filletGeometry(R, x, t, f, root[0], root[1], sign),
-        mat: detailMat(fc, ctx),
+        mat: detailMat(fc, ctx, 'satin'),
+      });
+    }
+  } else if (tier === 'ok' && rootOk && root) {
+    // A kit build: one neat bead of wood glue along each side of the root, as one mesh.
+    const f = 0.008 * R;
+    const beads = [1, -1].map((sign) => filletGeometry(R, x, t, f, root[0], root[1], sign));
+    const merged = mergeGeometries(beads, false);
+    if (merged) {
+      for (const g of beads) g.dispose();
+      extras.push({ name: 'bead', geo: merged, mat: detailMat(mixColor(color, PART_COLORS.glue, 0.45), ctx, 'satin') });
+    }
+  }
+
+  // Edge treatment as strips lying on the faces (only where the loft is well-defined).
+  if (lofted) {
+    const lift = 0.004 * R;
+    // best: bevelled leading and trailing edges and a crisp tip edge, bright and glossy;
+    // ok: edges sanded round, where the paint sits a shade lighter;
+    // bad: square raw edges, bare wood showing through the paint.
+    const strip =
+      tier === 'best' ? edgeStrips(poly, stations, sec, R, x, lift, 0.07, 0.05, 0.05)
+      : tier === 'ok' ? edgeStrips(poly, stations, sec, R, x, lift, 0.05, 0.035, 0.04)
+      : edgeStrips(poly, stations, sec, R, x, lift, 0.04, 0.04, 0.04);
+    if (strip) {
+      extras.push({
+        name: 'edge',
+        geo: strip,
+        mat:
+          tier === 'best' ? detailMat(mixColor(color, 0xffffff, 0.38), ctx, 'gloss')
+          : tier === 'ok' ? detailMat(mixColor(color, 0xffffff, 0.2), ctx, 'satin')
+          : detailMat(mixColor(color, PART_COLORS.bare, 0.9), ctx, 'matte'),
       });
     }
   }
@@ -544,7 +774,7 @@ export const buildFin: PartBuilder<FinSet> = scopedPart((c, tier, ctx) => {
         g.applyMatrix4(
           new THREE.Matrix4().makeScale(b, reach, b).setPosition(R + b * 0.3, -(x + a), side * (t / 2)),
         );
-        extras.push({ name: 'glue', geo: g, mat: detailMat(PART_COLORS.glue, ctx) });
+        extras.push({ name: 'glue', geo: g, mat: detailMat(PART_COLORS.glue, ctx, 'satin') });
       }
     }
     // Balsa-style wood grain: pale streaks running along the span on both faces.
@@ -552,7 +782,8 @@ export const buildFin: PartBuilder<FinSet> = scopedPart((c, tier, ctx) => {
       const aLo = Math.min(...poly.map((p) => p[0]));
       const aHi = Math.max(...poly.map((p) => p[0]));
       const gh = 0.006 * R;
-      const grain = mixColor(color, PART_COLORS.bare, 0.45);
+      const grain = mixColor(color, PART_COLORS.bare, 0.6);
+      const grains: THREE.BufferGeometry[] = [];
       for (let i = 0; i < 5; i++) {
         const a = aLo + (aHi - aLo) * (0.12 + 0.76 * seeded(c.id, 100 + i));
         let r0 = Infinity;
@@ -568,7 +799,16 @@ export const buildFin: PartBuilder<FinSet> = scopedPart((c, tier, ctx) => {
         for (const side of [1, -1]) {
           const g = new THREE.BoxGeometry(r1 - r0, 0.0012, gh);
           g.translate(R + (r0 + r1) / 2, -(x + a), side * (t / 2 + gh / 2));
-          extras.push({ name: 'grain', geo: g, mat: detailMat(grain, ctx) });
+          grains.push(g);
+        }
+      }
+      if (grains.length > 0) {
+        const merged = mergeGeometries(grains, false);
+        if (merged) {
+          for (const g of grains) g.dispose();
+          extras.push({ name: 'grain', geo: merged, mat: detailMat(grain, ctx, 'matte') });
+        } else {
+          for (const g of grains) extras.push({ name: 'grain', geo: g, mat: detailMat(grain, ctx, 'matte') });
         }
       }
     }
@@ -587,7 +827,7 @@ export const buildFin: PartBuilder<FinSet> = scopedPart((c, tier, ctx) => {
         const side = i % 2 === 0 ? 1 : -1;
         const g = new THREE.BoxGeometry(dr, da, h);
         g.translate(R + r, -(x + a), side * (t / 2 + h / 2));
-        extras.push({ name: 'patch', geo: g, mat: detailMat(bareMix, ctx) });
+        extras.push({ name: 'patch', geo: g, mat: detailMat(bareMix, ctx, 'matte') });
         break;
       }
     }
@@ -602,7 +842,7 @@ export const buildFin: PartBuilder<FinSet> = scopedPart((c, tier, ctx) => {
     .multiply(new THREE.Matrix4().makeRotationX(canted ? c.cant : 0))
     .multiply(new THREE.Matrix4().makeTranslation(-R, -pivotY, 0));
 
-  const finMat = partMaterial(color, ctx);
+  const finMat = partMaterial(color, ctx, { finish: SKIN_FINISH[tier] });
   if (canted) geo.applyMatrix4(cantM);
   addMesh(group, geo, finMat, 'fin');
   for (const e of extras) {

@@ -4,7 +4,7 @@
 // Output is SI (see src/types.ts).
 
 import type { Motor } from '../types';
-import { parseEng, type MotorCurve } from './motors';
+import { parseEng, usableMotor, type MotorCurve } from './motors';
 import { DOMParser as XmldomParser } from '@xmldom/xmldom';
 import { assertSafeXmlText } from '../io/limits';
 
@@ -94,7 +94,7 @@ function engineToMotor(engine: XEl): Motor | null {
   const propellantMass = attrNum(engine, 'propWt') / 1000;
   if (![diameter, length, totalMass, propellantMass].every(Number.isFinite)) return null;
 
-  return {
+  const motor: Motor = {
     manufacturer: engine.getAttribute('mfg')?.trim() ?? '',
     designation: engine.getAttribute('code')?.trim() ?? '',
     diameter,
@@ -106,6 +106,7 @@ function engineToMotor(engine: XEl): Motor | null {
     totalImpulse: trapezoid(curve),
     approximate: false,
   };
+  return usableMotor(motor) ? motor : null;
 }
 
 /**

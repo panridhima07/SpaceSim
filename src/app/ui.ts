@@ -1,14 +1,15 @@
 import './motion.css';
 import './style.css';
 import './astraTheme.css';
-import type {
-  Flaw,
-  FlawSeverity,
-  FlightEvent,
-  SimConfig,
-  SimState,
-  StressReport,
-  SweepResult,
+import {
+  G0,
+  type Flaw,
+  type FlawSeverity,
+  type FlightEvent,
+  type SimConfig,
+  type SimState,
+  type StressReport,
+  type SweepResult,
 } from '../types';
 import { STRESS_FLIGHT_COUNT } from '../physics/sweep';
 import type { CameraMode, RocketInfo, ToggleName, UI, UICallbacks } from './uiTypes';
@@ -34,7 +35,7 @@ const BRAND_MARK =
   '<svg viewBox="0 0 32 32" width="20" height="20" aria-hidden="true">' +
   '<path d="M16 3l6 17-6-3.6L10 20z" fill="currentColor"/>' +
   '<path d="M9 24h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>' +
-  '<b>Astra</b><i>Space Flight Builder</i>';
+  '<b>Astra</b><i>Spaceflight</i>';
 
 /** Short one-shot emphasis. No-op where the Web Animations API is missing (jsdom) or motion is reduced. */
 function pulse(el: HTMLElement, keyframes: Keyframe[], duration: number): void {
@@ -51,6 +52,8 @@ function rubberBand(drag: number, size: number): number {
 const DEG_PER_RAD = 180 / Math.PI;
 const RAD_PER_DEG = Math.PI / 180;
 const TOAST_MS = 3000;
+/** Older toasts are dropped beyond this many. */
+const TOAST_MAX = 3;
 
 /** Phone / small-screen HUD: portrait phones and landscape phones. */
 const MOBILE_QUERY = '(max-width: 760px), (max-height: 500px)';
@@ -63,11 +66,12 @@ const CAMERAS: { mode: CameraMode; label: string }[] = [
   { mode: 'map', label: 'Map' },
 ];
 
-const CAMERA_INITIAL: Record<CameraMode, string> = {
-  pad: 'P',
-  chase: 'C',
-  onboard: 'O',
-  map: 'M',
+/** Camera name as it fits on the round phone rail button. */
+const CAMERA_SHORT: Record<CameraMode, string> = {
+  pad: 'PAD',
+  chase: 'CHASE',
+  onboard: 'ONBD',
+  map: 'MAP',
 };
 
 const TOGGLES: { name: ToggleName; label: string }[] = [
@@ -187,6 +191,20 @@ function fmtAltitude(m: number): string {
   return Math.abs(m) >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`;
 }
 
+/** Newtons, with a decimal while the number is small enough for it to matter. */
+function fmtForce(n: number): string {
+  return `${n !== 0 && Math.abs(n) < 100 ? n.toFixed(1) : Math.round(n)} N`;
+}
+
+function fmtMass(kg: number): string {
+  return Math.abs(kg) < 1 ? `${Math.round(kg * 1000)} g` : `${kg.toFixed(kg < 100 ? 2 : 0)} kg`;
+}
+
+/** Time factor, whole or fractional (slow motion), without float noise. */
+function fmtWarp(warp: number): string {
+  return String(Number(warp.toFixed(2)));
+}
+
 function stabilityClass(cal: number): string {
   if (!Number.isFinite(cal)) return '';
   if (cal < 1) return 'sfb-stab-critical';
@@ -228,6 +246,21 @@ function labelled(label: string, control: HTMLElement): HTMLLabelElement {
 function parseNum(input: HTMLInputElement, fallback: number): number {
   const v = parseFloat(input.value);
   return Number.isFinite(v) ? v : fallback;
+}
+
+/** `value` held inside the input's own min and max. */
+function clampToField(input: HTMLInputElement, value: number): number {
+  const min = input.min === '' ? -Infinity : Number(input.min);
+  const max = input.max === '' ? Infinity : Number(input.max);
+  return Math.min(max, Math.max(min, value));
+}
+
+/** Rewrites an out-of-range entry with the nearest allowed value. Blank stays blank. */
+function clampField(input: HTMLInputElement): void {
+  const v = parseFloat(input.value);
+  if (!Number.isFinite(v)) return;
+  const clamped = clampToField(input, v);
+  if (clamped !== v) input.value = String(clamped);
 }
 
 /** Fixed-point number, or an em dash when the value is unknown (NaN). */
@@ -295,7 +328,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   const brand = h('section', 'sfb-panel sfb-brand');
   const title = h('h1', 'sfb-title');
   title.innerHTML = BRAND_MARK;
-  title.setAttribute('aria-label', 'Astra Space Flight Builder');
+  title.setAttribute('aria-label', 'ASTRA Spaceflight');
   const fileInput = h('input', 'sfb-hidden');
   fileInput.type = 'file';
   fileInput.accept = IMPORT_ACCEPT;
@@ -329,11 +362,13 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   const vDiameter = h('dd');
   const vMass = h('dd');
   const vStability = h('dd');
+  const stabilityTerm = h('dt', undefined, 'Stability margin');
+  stabilityTerm.title = 'Distance from the centre of gravity to the centre of pressure, in body diameters (calibers). Between 1 and 2 usually flies straight; below 1 may tumble.';
   kv.append(
     h('dt', undefined, 'Length'), vLength,
     h('dt', undefined, 'Diameter'), vDiameter,
     h('dt', undefined, 'Mass'), vMass,
-    h('dt', undefined, 'Stability margin'), vStability,
+    stabilityTerm, vStability,
   );
 
   const motorSelect = h('select', 'sfb-select');
@@ -352,13 +387,30 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
 
   const launchPanel = h('section', 'sfb-panel');
   launchPanel.append(h('h2', 'sfb-section-title', 'Launch'));
-  const railF = numberField('Rail length', 'm', '1', '0.1', '0');
+  const railF = numberField('Rail length', 'm', '1', '0.1', '0.1');
   const angleF = numberField('Rail angle', 'deg', '0', '1', '0');
-  const azimuthF = numberField('Rail azimuth', 'deg', '0', '1');
+  const azimuthF = numberField('Rail azimuth', 'deg', '0', '1', '0');
+  azimuthF.el.title = 'Compass direction the launch rail points, in degrees (0 = north, 90 = east).';
   const windSpeedF = numberField('Wind speed', 'm/s', '2', '0.5', '0');
-  const windFromF = numberField('Wind from', 'deg', '270', '5');
+  const windFromF = numberField('Wind from', 'deg', '270', '5', '0');
   const gustF = numberField('Gust', '%', '20', '5', '0');
   const delayF = numberField('Ejection delay', 's', '', '0.1', '0', "motor's");
+  delayF.el.title = "Seconds after the motor burns out before the parachute charge fires. Blank uses the motor's own delay.";
+  // Allowed ranges, in the units the fields show. getConfig() clamps to them as well.
+  const limits: [HTMLInputElement, string][] = [
+    [railF.input, '30'],
+    [angleF.input, '45'],
+    [azimuthF.input, '360'],
+    [windSpeedF.input, '40'],
+    [windFromF.input, '360'],
+    [gustF.input, '100'],
+    [delayF.input, '30'],
+  ];
+  for (const [input, max] of limits) {
+    input.max = max;
+    // On commit rather than per keystroke, so "0.5" can be typed through "0".
+    input.addEventListener('change', () => clampField(input));
+  }
   // Blank means the standard atmosphere (15 °C, 1013 hPa at sea level).
   const tempF = numberField('Air temp', '°C', '', '1', undefined, 'standard');
   const pressureF = numberField('Pressure', 'hPa', '', '1', '0', 'standard');
@@ -417,20 +469,22 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   let windLayers: WindLayer[] | undefined;
 
   function getConfig(): SimConfig {
+    const read = (input: HTMLInputElement, fallback: number): number =>
+      clampToField(input, parseNum(input, fallback));
     const cfg: SimConfig = {
-      railLength: parseNum(railF.input, 1),
-      railAngle: parseNum(angleF.input, 0) * RAD_PER_DEG,
-      railAzimuth: parseNum(azimuthF.input, 0) * RAD_PER_DEG,
-      windSpeed: parseNum(windSpeedF.input, 2),
-      windDirection: parseNum(windFromF.input, 270) * RAD_PER_DEG,
-      gust: parseNum(gustF.input, 20) / 100,
+      railLength: read(railF.input, 1),
+      railAngle: read(angleF.input, 0) * RAD_PER_DEG,
+      railAzimuth: read(azimuthF.input, 0) * RAD_PER_DEG,
+      windSpeed: read(windSpeedF.input, 2),
+      windDirection: read(windFromF.input, 270) * RAD_PER_DEG,
+      gust: read(gustF.input, 20) / 100,
       launchAltitude: 0,
       ejectionDelay: undefined,
     };
     const delayText = delayF.input.value.trim();
     if (delayText !== '') {
       const v = parseFloat(delayText);
-      if (Number.isFinite(v)) cfg.ejectionDelay = v;
+      if (Number.isFinite(v)) cfg.ejectionDelay = clampToField(delayF.input, v);
     }
     const tempC = parseFloat(tempF.input.value);
     if (Number.isFinite(tempC) && tempC > -100) cfg.groundTemperature = tempC + 273.15;
@@ -508,6 +562,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
     windSpeedF.input.value = c.windSpeed.toFixed(1);
     windFromF.input.value = String(Math.round(w.windFromDeg));
     gustF.input.value = String(Math.round(c.gust * 100));
+    for (const f of [windSpeedF, windFromF, gustF]) clampField(f.input);
     tempF.input.value = w.temperatureC.toFixed(1);
     pressureF.input.value = w.pressureHpa !== null ? w.pressureHpa.toFixed(0) : '';
     windLayers = c.windLayers;
@@ -578,6 +633,10 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   const tQ = teleRow('Dynamic pressure');
   const tStab = teleRow('Stability');
   const tThrust = teleRow('Thrust');
+  const tTwr = teleRow('TWR');
+  const tMass = teleRow('Mass');
+  const tWeight = teleRow('Weight');
+  tTwr.el.title = 'Thrust-to-weight ratio. Below 1 the motor cannot lift the rocket.';
   telePanel.append(clockRow, teleList);
 
   const clockCell = textCell(clockEl);
@@ -594,17 +653,18 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   };
   const cAlt = readout('ALT');
   const cSpeed = readout('SPD');
-  const cAccel = readout('ACC');
+  const cTwr = readout('TWR');
+  let lastTwrLow = false;
 
   const logPanel = h('section', 'sfb-panel');
   logPanel.append(h('h2', 'sfb-section-title', 'Flight log'));
-  const logEmpty = h('p', 'sfb-hint', 'No flight yet');
+  const logEmpty = h('p', 'sfb-hint', 'No flight yet. Press Launch to fly the rocket.');
   const logList = h('ul', 'sfb-events sfb-hidden');
   logPanel.append(logEmpty, logList);
 
   const flawPanel = h('section', 'sfb-panel');
   flawPanel.append(h('h2', 'sfb-section-title', 'Design flaws'));
-  const flawEmpty = h('p', 'sfb-hint', 'Fly the rocket to analyse it');
+  const flawEmpty = h('p', 'sfb-hint', 'Press Launch; the flaw report appears when the flight ends.');
   const flawList = h('ul', 'sfb-flaws sfb-hidden');
   flawPanel.append(flawEmpty, flawList);
 
@@ -632,6 +692,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
     ], 420);
   }, 'Launch (Space)');
   const resetBtn = button('Reset', '', () => cb.onReset(), 'Reset (R)');
+  const manualBtn = button('Fly manually', 'sfb-btn-manual', () => cb.onManual?.(), 'Fly this rocket by hand');
   const pauseBtn = button('Pause', '', () => cb.onPause(), 'Pause / play (P)');
   let lastPaused: boolean | null = null;
 
@@ -657,7 +718,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
     for (const [m, b] of cameraButtons) {
       b.classList.toggle('is-active', m === mode);
     }
-    cycleBtn.textContent = CAMERA_INITIAL[mode];
+    cycleBtn.textContent = CAMERA_SHORT[mode];
     cycleBtn.title = `Camera: ${CAMERAS.find((c) => c.mode === mode)?.label ?? mode}`;
   }
 
@@ -674,8 +735,8 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   const toggleState: Record<ToggleName, boolean> = {
     cutaway: false,
     forces: false,
-    markers: false,
-    trail: false,
+    markers: true,
+    trail: true,
   };
   const toggleGroup = h('div', 'sfb-dock-group');
   const toggleButtons = new Map<ToggleName, HTMLButtonElement>();
@@ -686,7 +747,9 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
       b.setAttribute('aria-pressed', String(toggleState[t.name]));
       cb.onToggle(t.name, toggleState[t.name]);
     }, `Toggle ${t.label}`);
-    b.setAttribute('aria-pressed', 'false');
+    // Starts as the app does: see `toggles` in main.ts.
+    b.classList.toggle('is-active', toggleState[t.name]);
+    b.setAttribute('aria-pressed', String(toggleState[t.name]));
     toggleButtons.set(t.name, b);
     toggleGroup.append(b);
   }
@@ -724,12 +787,18 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
 
   // ===== Toasts and drop highlight =====
   const toasts = h('div', 'sfb-toasts');
+  toasts.setAttribute('role', 'status');
+  // A root of its own: build and mission modes hide the HUD, and their messages must still show.
+  const toastRoot = h('div', 'sfb-root sfb-toast-root');
+  toastRoot.append(toasts);
   const dropHint = h('div', 'sfb-drop', 'Drop .ork / .rkt / .json / .eng to open');
 
   // ===== Phone HUD: top strip, right rail, bottom sheet =====
   const topBar = h('div', 'sfb-hud-bar');
   topBar.setAttribute('role', 'button');
   topBar.setAttribute('aria-expanded', 'false');
+  topBar.tabIndex = 0;
+  topBar.setAttribute('aria-label', 'Flight status: show more');
   const topExpand = h('div', 'sfb-hud-expand');
   const topStrip = h('section', 'sfb-hud sfb-hud-top');
   topStrip.append(topBar, topExpand);
@@ -737,9 +806,16 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
     const open = topStrip.classList.toggle('is-expanded');
     topBar.setAttribute('aria-expanded', String(open));
   });
+  topBar.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      topStrip.click();
+    }
+  });
 
-  const cycleBtn = button(CAMERA_INITIAL.pad, 'sfb-hud-btn sfb-hud-cam', () => selectCamera(nextCamera(cameraMode)), 'Camera');
+  const cycleBtn = button(CAMERA_SHORT.pad, 'sfb-hud-btn sfb-hud-cam', () => selectCamera(nextCamera(cameraMode)), 'Camera');
   cycleBtn.setAttribute('aria-label', 'Next camera');
+  markCamera(cameraMode); // the camera rig starts in the same mode
   const badge = h('span', 'sfb-badge sfb-hidden');
   const menuBtn = button('≡', 'sfb-hud-btn sfb-hud-menu', () => {
     if (sheetIsOpen()) closeSheet();
@@ -747,12 +823,14 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   }, 'Menu');
   menuBtn.setAttribute('aria-expanded', 'false');
   menuBtn.append(badge);
-  const buildRailBtn = button('B', 'sfb-hud-btn sfb-hud-build', () => cb.onBuild?.(), 'Build Rocket');
-  buildRailBtn.setAttribute('aria-label', 'Build rocket');
-  const missionRailBtn = button('LVM3', 'sfb-hud-btn', () => cb.onMission?.(), 'Fly LVM3 mission');
-  missionRailBtn.setAttribute('aria-label', 'Fly LVM3 mission');
+  const buildRailBtn = button('BUILD', 'sfb-hud-btn sfb-hud-build', () => cb.onBuild?.(), 'Build a rocket');
+  buildRailBtn.setAttribute('aria-label', 'Build a rocket');
+  const missionRailBtn = button('LVM3', 'sfb-hud-btn', () => cb.onMission?.(), 'Fly a mission (LVM3, PSLV, Falcon 9)');
+  missionRailBtn.setAttribute('aria-label', 'Fly a mission (LVM3, PSLV, Falcon 9)');
   const rail = h('div', 'sfb-hud sfb-hud-rail');
-  rail.append(buildRailBtn, missionRailBtn, cycleBtn, menuBtn);
+  const manualRailBtn = button('FLY', 'sfb-hud-btn sfb-hud-fly', () => cb.onManual?.(), 'Fly manually');
+  manualRailBtn.setAttribute('aria-label', 'Fly manually');
+  rail.append(manualRailBtn, buildRailBtn, missionRailBtn, cycleBtn, menuBtn);
 
   const tabPages = new Map<TabName, HTMLElement>();
   const tabButtons = new Map<TabName, HTMLButtonElement>();
@@ -810,7 +888,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
   sheet.setAttribute('aria-label', 'Menu');
   sheet.append(sheetHead, sheetBody);
 
-  root.append(left, right, brand, dock, replay, toasts, dropHint, topStrip, rail, sheet);
+  root.append(left, right, brand, dock, replay, dropHint, topStrip, rail, sheet);
 
   // The dock wraps to a second row on narrower windows. Publish its height so the side
   // columns always end above it instead of sliding underneath.
@@ -819,7 +897,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
       root.style.setProperty('--sfb-dock-h', `${dock.offsetHeight}px`);
     }).observe(dock);
   }
-  container.append(root);
+  container.append(root, toastRoot);
   attachTilt([left, right, dock, replay]);
 
   // ===== Sheet state =====
@@ -862,7 +940,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
     fill(telePanel, [clockRow, teleList]);
     fill(right, [telePanel, logPanel, flawPanel, partsPanel, stressPanel]);
     fill(dock, [
-      launchBtn, resetBtn, pauseBtn, sep(),
+      launchBtn, manualBtn, resetBtn, pauseBtn, sep(),
       warpGroup, sep(),
       cameraGroup, sep(),
       toggleGroup, sep(),
@@ -887,6 +965,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
 
   function applyMode(mobile: boolean, landscape: boolean): void {
     root.classList.toggle('sfb-mobile', mobile);
+    toastRoot.classList.toggle('sfb-mobile', mobile);
     root.classList.toggle('sfb-landscape', mobile && landscape);
     if (mobile === isMobile) return;
     isMobile = mobile;
@@ -922,11 +1001,11 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
         break;
       case 'r':
       case 'R':
-        cb.onReset();
+        if (!e.repeat) cb.onReset();
         break;
       case 'p':
       case 'P':
-        cb.onPause();
+        if (!e.repeat) cb.onPause();
         break;
       case ',':
         cb.onWarp(-1);
@@ -1019,7 +1098,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
     if (flaws.length === 0) {
       flawList.classList.add('sfb-hidden');
       flawEmpty.classList.remove('sfb-hidden');
-      flawEmpty.textContent = flightOver ? 'No flaws found' : hasFlown ? 'Analysing when the flight ends' : 'Fly the rocket to analyse it';
+      flawEmpty.textContent = flightOver ? 'No flaws found' : hasFlown ? 'Analysing when the flight ends' : 'Press Launch; the flaw report appears when the flight ends.';
       return;
     }
     flawEmpty.classList.add('sfb-hidden');
@@ -1143,16 +1222,28 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
       setText(tAoa, `${(s.alpha * DEG_PER_RAD).toFixed(1)}°`);
       setText(tQ, `${(s.dynamicPressure / 1000).toFixed(2)} kPa`);
       setText(tStab, `${s.stabilityCal.toFixed(2)} cal`);
-      setText(tThrust, `${Math.round(s.thrust)} N`);
+      setText(tThrust, fmtForce(s.thrust));
+      const weight = s.mass * G0;
+      const twr = weight > 0 ? s.thrust / weight : NaN;
+      const twrText = fmtNum(twr, twr < 10 ? 2 : 1);
+      setText(tTwr, twrText);
+      setText(tMass, fmtMass(s.mass));
+      setText(tWeight, fmtForce(weight));
+      // Warn while the motor burns but cannot lift the rocket.
+      const twrLow = s.thrust > 0 && twr < 1;
+      if (twrLow !== lastTwrLow) {
+        lastTwrLow = twrLow;
+        for (const c of [tTwr, cTwr]) c.el.classList.toggle('sfb-twr-low', twrLow);
+      }
 
       // Phone top strip: the same values, compact.
       setText(cAlt, fmtAltitude(s.altitude));
       setText(cSpeed, `${s.speed.toFixed(1)} m/s`);
-      setText(cAccel, `${s.accelG.toFixed(1)} g`);
+      setText(cTwr, twrText);
 
       if (warp !== lastWarp) {
         lastWarp = warp;
-        warpLabel.textContent = `×${warp}`;
+        warpLabel.textContent = `×${fmtWarp(warp)}`;
       }
       if (paused !== lastPaused) {
         lastPaused = paused;
@@ -1239,6 +1330,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
     toast(msg: string): void {
       const t = h('div', 'sfb-toast', msg);
       toasts.append(t);
+      while (toasts.children.length > TOAST_MAX) toasts.firstElementChild?.remove();
       window.setTimeout(() => t.classList.add('is-leaving'), TOAST_MS - TOAST_EXIT_MS);
       window.setTimeout(() => t.remove(), TOAST_MS);
     },
@@ -1256,6 +1348,11 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
 
     setBuildLabel(label: string): void {
       buildBtn.textContent = label;
+    },
+
+    setManual(on: boolean): void {
+      root.classList.toggle('sfb-manual', on);
+      if (on && isMobile) closeSheet();
     },
   };
 

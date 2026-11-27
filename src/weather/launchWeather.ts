@@ -11,6 +11,9 @@
 
 import type { SimConfig, WindLayer } from '../types';
 
+/** Give up on a weather request that has not answered after this long. */
+const FETCH_TIMEOUT_MS = 10_000;
+
 const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 const ARCHIVE_URL = 'https://archive-api.open-meteo.com/v1/archive';
 
@@ -180,10 +183,26 @@ interface ApiResponse {
 
 async function getJson(url: string, opts: FetchWeatherOptions): Promise<ApiResponse> {
   const f = opts.fetchFn ?? fetch;
-  const res = await f(url, { signal: opts.signal });
-  const json = (await res.json()) as ApiResponse;
-  if (!res.ok || json.error) throw new Error(json.reason ?? `Weather service returned ${res.status}`);
-  return json;
+  const ac = new AbortController();
+  const timer = setTimeout(
+    () => ac.abort(new Error('The weather service did not answer in time.')),
+    FETCH_TIMEOUT_MS,
+  );
+  const outer = opts.signal;
+  const onOuterAbort = (): void => ac.abort(outer?.reason);
+  if (outer) {
+    if (outer.aborted) ac.abort(outer.reason);
+    else outer.addEventListener('abort', onOuterAbort, { once: true });
+  }
+  try {
+    const res = await f(url, { signal: ac.signal });
+    const json = (await res.json()) as ApiResponse;
+    if (!res.ok || json.error) throw new Error(json.reason ?? `Weather service returned ${res.status}`);
+    return json;
+  } finally {
+    clearTimeout(timer);
+    outer?.removeEventListener('abort', onOuterAbort);
+  }
 }
 
 /** Day responses are cached so changing only the launch hour does not refetch. */

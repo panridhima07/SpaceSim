@@ -17,9 +17,11 @@ if defined DEVICES goto :build
 
 echo No phone or emulator found. Starting the Android16 emulator (headless; windowed mode hangs on this PC)...
 start "Android16 emulator" /min emulator -avd Android16 -no-window -no-boot-anim -no-snapshot -gpu swiftshader_indirect
-adb wait-for-device
 echo Waiting for Android to finish booting...
+set /a TRIES=0
 :boot
+set /a TRIES+=1
+if %TRIES% gtr 100 goto :bootfail
 set "BOOTED="
 for /f %%b in ('adb shell getprop sys.boot_completed 2^>nul') do set "BOOTED=%%b"
 if "%BOOTED%"=="1" goto :build
@@ -41,7 +43,12 @@ popd
 
 adb shell am start -n com.astra.spaceflightbuilder/.MainActivity
 echo Done. The app is open on the device.
+echo When finished, run stop-android.cmd to stop the emulator, adb and Gradle.
 exit /b 0
+
+:bootfail
+echo Emulator did not boot in time. Run stop-android.cmd to clean up.
+exit /b 1
 
 :fail
 echo.

@@ -7,6 +7,7 @@
 
 import * as THREE from 'three';
 import type { Quat, Vec3 } from '../types';
+import { FINISH_LOOK, type PartFinish } from './parts/types';
 
 // ---------- Helpers ----------
 
@@ -42,8 +43,22 @@ function unitFlameGeometry(): THREE.ConeGeometry {
   return g;
 }
 
+/** Thrust per unit of body cross-section (Pa) at which the effects have their reference size. */
+const REF_THRUST_LOADING = 20_000;
+
+function clamp(x: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, x));
+}
+
+/** How hard the motor is for the size of rocket: 1 is about 10 N on a 25 mm tube. */
+function thrustLoading(thrustN: number, bodyRadius: number): number {
+  return Math.max(0, thrustN) / (Math.PI * bodyRadius * bodyRadius * REF_THRUST_LOADING);
+}
+
 /**
  * Stylised two-cone flame. Base at the group origin (the nozzle), tip toward -Y.
+ * Length and width follow the thrust in newtons relative to the body radius (the motor's
+ * peak is not used, so a weak motor never looks like a strong one).
  * Hidden when thrust is zero or negative.
  */
 export function buildExhaust(): {
@@ -75,16 +90,17 @@ export function buildExhaust(): {
 
   return {
     group,
-    update(thrustN, maxThrustN, bodyRadius, time) {
+    update(thrustN, _maxThrustN, bodyRadius, time) {
       if (!(thrustN > 0) || !(bodyRadius > 0)) {
         group.visible = false;
         return;
       }
       group.visible = true;
-      const ratio = maxThrustN > 0 ? thrustN / maxThrustN : 1;
+      const load = thrustLoading(thrustN, bodyRadius);
       const flicker = 1 + 0.06 * Math.sin(time * 41) + 0.04 * Math.sin(time * 23.7 + 1.3);
-      const length = bodyRadius * (4 + 10 * ratio) * flicker;
-      const radius = bodyRadius * 0.9 * (1 + 0.04 * Math.sin(time * 31));
+      const length = bodyRadius * clamp(9 * load ** 0.4, 2.5, 30) * flicker;
+      const radius =
+        bodyRadius * clamp(0.9 * load ** 0.2, 0.5, 1.6) * (1 + 0.04 * Math.sin(time * 31));
       outer.scale.set(radius, length, radius);
       inner.scale.set(radius * 0.5, length * 0.6, radius * 0.5);
     },
@@ -94,26 +110,52 @@ export function buildExhaust(): {
 // ---------- Smoke trail ----------
 
 const PUFF_LIFE = 6; // seconds
+const CLOUD_LIFE = 3.5; // s, ignition ground-cloud puffs
+const CLOUD_DRAG = 2.5; // 1/s, how quickly the ground cloud stops spreading
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const PUFF_COLOR = 0xd8dce2;
 
 interface Puff {
   x: number;
   y: number;
   z: number;
+  /** Initial drift velocity, m/s; it dies away at CLOUD_DRAG. Zero for trail puffs. */
+  vx: number;
+  vy: number;
+  vz: number;
   age: number;
+  life: number;
   size: number;
   alive: boolean;
 }
 
 /**
+ * Exhaust smoke for a motor giving `thrustN` on a body of radius `bodyRadius`:
+ * `rate` is trail puffs per simulated second, `size` the trail puff radius in metres.
+ */
+export function smokeForThrust(thrustN: number, bodyRadius: number): { rate: number; size: number } {
+  if (!(thrustN > 0) || !(bodyRadius > 0)) return { rate: 0, size: 0 };
+  const load = thrustLoading(thrustN, bodyRadius);
+  return {
+    rate: clamp(40 * load ** 0.3, 15, 60),
+    size: bodyRadius * clamp(3 * load ** 0.35, 1.5, 8),
+  };
+}
+
+/**
  * Ring buffer of smoke puffs drawn as an InstancedMesh. Each puff grows x3 over
- * its 6 s life and shrinks to zero scale at the end (instance opacity is not
- * available, so the fade is done through scale). Slots are recycled once
+ * its life (6 s in the trail) and shrinks to zero scale at the end (instance opacity
+ * is not available, so the fade is done through scale). Slots are recycled once
  * `maxPuffs` have been emitted.
  */
 export function buildSmokeTrail(maxPuffs = 400): {
   object: THREE.Object3D;
   emit(worldPos: Vec3, size: number): void;
+  /**
+   * Ignition ground cloud: a one-off ring of dust and smoke rolling out from the pad base
+   * (`padPos`, Earth-centred), sized by the thrust. update() and clear() cover it too.
+   */
+  burst(padPos: Vec3, thrustN: number, bodyRadius: number): void;
   update(dt: number, origin: Vec3): void;
   clear(): void;
 } {
@@ -130,10 +172,27 @@ export function buildSmokeTrail(maxPuffs = 400): {
 
   const puffs: Puff[] = [];
   for (let i = 0; i < capacity; i++) {
-    puffs.push({ x: 0, y: 0, z: 0, age: 0, size: 0, alive: false });
+    puffs.push({ x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, age: 0, life: PUFF_LIFE, size: 0, alive: false });
   }
   let head = 0; // next slot to write
   let filled = 0; // number of slots ever used (<= capacity)
+
+  /** Claim the next slot as a new, still puff. */
+  function spawn(x: number, y: number, z: number, size: number): Puff {
+    const pf = puffs[head];
+    pf.x = x;
+    pf.y = y;
+    pf.z = z;
+    pf.vx = pf.vy = pf.vz = 0;
+    pf.age = 0;
+    pf.life = PUFF_LIFE;
+    pf.size = size;
+    pf.alive = true;
+    head = (head + 1) % capacity;
+    filled = Math.min(filled + 1, capacity);
+    mesh.count = filled;
+    return pf;
+  }
 
   const m = new THREE.Matrix4();
   const q = new THREE.Quaternion();
@@ -145,16 +204,42 @@ export function buildSmokeTrail(maxPuffs = 400): {
     object: mesh,
 
     emit(worldPos, size) {
-      const pf = puffs[head];
-      pf.x = worldPos[0];
-      pf.y = worldPos[1];
-      pf.z = worldPos[2];
-      pf.age = 0;
-      pf.size = size;
-      pf.alive = true;
-      head = (head + 1) % capacity;
-      filled = Math.min(filled + 1, capacity);
-      mesh.count = filled;
+      spawn(worldPos[0], worldPos[1], worldPos[2], size);
+    },
+
+    burst(padPos, thrustN, bodyRadius) {
+      if (!(thrustN > 0) || !(bodyRadius > 0)) return;
+      const load = thrustLoading(thrustN, bodyRadius);
+      const size = bodyRadius * clamp(4 * load ** 0.4, 2, 16);
+      const n = Math.min(capacity, Math.round(clamp(28 * load ** 0.25, 16, 64)));
+      // Local vertical and two ground directions. padPos is Earth-centred; +Y if it is zero.
+      const up = new THREE.Vector3(...padPos);
+      if (up.lengthSq() === 0) up.set(0, 1, 0);
+      up.normalize();
+      const east = new THREE.Vector3(1, 0, 0).addScaledVector(up, -up.x);
+      if (east.lengthSq() < 1e-6) east.set(0, 0, 1).addScaledVector(up, -up.z);
+      east.normalize();
+      const north = new THREE.Vector3().crossVectors(east, up);
+      const dir = new THREE.Vector3();
+      for (let i = 0; i < n; i++) {
+        // Golden-angle spiral: even coverage without random numbers.
+        const a = i * GOLDEN_ANGLE;
+        const f = 0.4 + 0.6 * ((i * 0.618034) % 1);
+        dir.copy(east).multiplyScalar(Math.cos(a)).addScaledVector(north, Math.sin(a));
+        const pf = spawn(
+          padPos[0] + up.x * size * 0.5,
+          padPos[1] + up.y * size * 0.5,
+          padPos[2] + up.z * size * 0.5,
+          size * (0.6 + 0.4 * f),
+        );
+        pf.life = CLOUD_LIFE * (0.7 + 0.3 * f);
+        // Spread out to 4 puff sizes, lifting a little.
+        dir.multiplyScalar(4 * size * f).addScaledVector(up, size * (1 - f) * 2);
+        dir.multiplyScalar(CLOUD_DRAG);
+        pf.vx = dir.x;
+        pf.vy = dir.y;
+        pf.vz = dir.z;
+      }
     },
 
     update(dt, origin) {
@@ -162,14 +247,19 @@ export function buildSmokeTrail(maxPuffs = 400): {
         const pf = puffs[i];
         if (pf.alive) {
           pf.age += dt;
-          if (pf.age >= PUFF_LIFE) pf.alive = false;
+          if (pf.age >= pf.life) pf.alive = false;
         }
         if (pf.alive) {
-          const u = pf.age / PUFF_LIFE;
+          const u = pf.age / pf.life;
           const grow = 1 + 2 * u;
           const fade = u < 0.7 ? 1 : Math.max(0, (1 - u) / 0.3);
           const sc = pf.size * grow * fade;
-          p.set(pf.x - origin[0], pf.y - origin[1], pf.z - origin[2]);
+          const drift = (1 - Math.exp(-CLOUD_DRAG * pf.age)) / CLOUD_DRAG;
+          p.set(
+            pf.x - origin[0] + pf.vx * drift,
+            pf.y - origin[1] + pf.vy * drift,
+            pf.z - origin[2] + pf.vz * drift,
+          );
           s.set(sc, sc, sc);
           m.compose(p, q, s);
           mesh.setMatrixAt(i, m);
@@ -514,8 +604,11 @@ export function buildSky(): {
 // ---------- Flat style ----------
 
 /**
- * Replace MeshStandardMaterial with MeshLambertMaterial across a subtree, keeping
- * colour, emissive, transparency and side. Shared materials stay shared.
+ * Replace MeshStandardMaterial with a cheap flat-pass material across a subtree, keeping
+ * colour, emissive, transparency, side and polygon offset. A material that names a part
+ * finish (`userData.finish`, set by `partMaterial`) other than matte becomes a
+ * MeshPhongMaterial with that finish's highlight; everything else becomes a
+ * MeshLambertMaterial. Shared materials stay shared.
  */
 export function applyFlatStyle(root: THREE.Object3D): void {
   const cache = new Map<THREE.Material, THREE.Material>();
@@ -524,7 +617,7 @@ export function applyFlatStyle(root: THREE.Object3D): void {
     if (!(m instanceof THREE.MeshStandardMaterial)) return m;
     const cached = cache.get(m);
     if (cached) return cached;
-    const lambert = new THREE.MeshLambertMaterial({
+    const base = {
       color: m.color.clone(),
       emissive: m.emissive.clone(),
       emissiveIntensity: m.emissiveIntensity,
@@ -533,11 +626,26 @@ export function applyFlatStyle(root: THREE.Object3D): void {
       side: m.side,
       depthWrite: m.depthWrite,
       flatShading: false,
-    });
-    lambert.name = m.name;
-    cache.set(m, lambert);
+      polygonOffset: m.polygonOffset,
+      polygonOffsetFactor: m.polygonOffsetFactor,
+      polygonOffsetUnits: m.polygonOffsetUnits,
+    };
+    const finish = m.userData.finish as PartFinish | undefined;
+    const look = finish ? FINISH_LOOK[finish] : undefined;
+    let flat: THREE.MeshLambertMaterial | THREE.MeshPhongMaterial;
+    if (look && look.shininess > 0) {
+      // Metal reflects its own colour; paint and plastic reflect the light's.
+      const specular = new THREE.Color(look.specular, look.specular, look.specular);
+      if (finish === 'metal') specular.lerp(m.color, 0.45);
+      flat = new THREE.MeshPhongMaterial({ ...base, shininess: look.shininess, specular });
+    } else {
+      flat = new THREE.MeshLambertMaterial(base);
+    }
+    flat.name = m.name;
+    if (finish) flat.userData.finish = finish;
+    cache.set(m, flat);
     m.dispose();
-    return lambert;
+    return flat;
   };
 
   root.traverse((o) => {

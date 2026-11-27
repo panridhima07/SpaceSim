@@ -78,7 +78,9 @@ export function nozzlePerformance(d: ChamberDesign): NozzlePerformance {
   const pe = pc * Math.pow(1 + ((g - 1) / 2) * Me * Me, -g / (g - 1));
   const ve = Math.sqrt(((2 * g) / (g - 1)) * Rs * d.chamberTemperature * (1 - Math.pow(pe / pc, (g - 1) / g)));
   const Ae = At * d.expansionRatio;
-  const thrustAt = (pa: number): number => eff * (mdot * ve + (pe - pa) * Ae);
+  // The efficiency derates what the nozzle produces; the ambient back-pressure force pa * Ae is a
+  // real pressure force and is not derated (this is also the form the simulator uses).
+  const thrustAt = (pa: number): number => eff * (mdot * ve + pe * Ae) - pa * Ae;
   const thrustVac = thrustAt(0);
   return {
     massFlow: mdot,

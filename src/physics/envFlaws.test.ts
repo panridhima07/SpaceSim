@@ -192,6 +192,8 @@ describe('analyzeEnvironment', () => {
     const crush = flaws.filter((f) => f.id.startsWith('airframe-crush:'));
     expect(crush).toHaveLength(1);
     expect(crush[0].severity).toBe('critical');
+    // Past the crush load the text must not say it merely approaches it.
+    expect(crush[0].detail).toContain('exceeds');
   });
 
   it('flags excessive fin root bending stress on balsa fins as critical', () => {

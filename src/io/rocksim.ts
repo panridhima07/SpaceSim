@@ -13,6 +13,7 @@ import {
   clampMass,
   clampOffset,
   clampRadius,
+  clampRange,
   assertSafeXmlText,
 } from './limits';
 import type {
@@ -312,7 +313,7 @@ function makeFinSet(el: XNode, parentX: number, parentLen: number, bodyRadius: n
   const tipChord = mmToM(num(el, 'TipChord'), rootChord * 0.5);
   const sweepLength = clampOffset((num(el, 'SweepDistance') ?? 0) / 1000);
   const thickness = clampRadius(mmToM(num(el, 'Thickness'), 2));
-  const cant = (num(el, 'CantAngle') ?? 0) * DEG;
+  const cant = clampRange((num(el, 'CantAngle') ?? 0) * DEG, -Math.PI, Math.PI);
   const shapeCode = Math.round(num(el, 'ShapeCode') ?? 0);
   const finShape: FinSet['finShape'] = isCustom && points
     ? 'freeform'
@@ -413,7 +414,9 @@ function makeRing(el: XNode, tag: string, parentX: number, parentLen: number, bo
 }
 
 function makeParachute(el: XNode, isStreamer: boolean, parentX: number, parentLen: number): Parachute {
-  const length = mmToM(num(el, 'Len') ?? num(el, 'PackedLength'), 0.05);
+  // For streamers, Len is the strip length; only PackedLength is the packed length.
+  const packed = isStreamer ? num(el, 'PackedLength') : (num(el, 'Len') ?? num(el, 'PackedLength'));
+  const length = mmToM(packed, 0.05);
   const x = placeChild(el, parentX, parentLen, length, 0);
   let diameter = mmToM(num(el, 'Dia'), 0.3);
   if (isStreamer) {
@@ -515,6 +518,25 @@ function collectAttachedParts(
       warnings.push(`Unsupported RockSim part <${el.nodeName}> ("${nameOf(el, tag)}") was skipped.`);
     }
   }
+}
+
+const PART_TAGS = new Set([
+  'nosecone', 'bodytube', 'transition', 'innertube', 'finset', 'customfinset',
+  'ring', 'centeringring', 'bulkhead', 'tubecoupler', 'engineblock', 'launchlug', 'railbutton',
+]);
+
+/** True if any part in the document has a DensityType other than 0 (bulk), which densityOf() replaces with a default. */
+function anyPartUsesSurfaceDensity(root: XNode): boolean {
+  const queue: XNode[] = [root];
+  for (let i = 0; i < queue.length && i < 20000; i++) {
+    const n = queue[i];
+    if (PART_TAGS.has(tagOf(n))) {
+      const densityType = num(n, 'DensityType');
+      if (densityType !== undefined && densityType !== 0) return true;
+    }
+    queue.push(...kids(n));
+  }
+  return false;
 }
 
 // ---------- Public API ----------
@@ -627,12 +649,25 @@ export function parseRockSimXml(xml: string): RocketModel {
     else if (c.kind === 'transition') maxRadius = Math.max(maxRadius, c.foreRadius, c.aftRadius);
   }
 
+  const stageTotal = Math.max(1, stages.length);
+  if (stageTotal > 1) {
+    warnings.push(
+      `Rocket has ${stageTotal} stages. Stages separate only when stage motors are supplied; otherwise all stages fly as one stacked rocket.`,
+    );
+  }
+  if (components.some((c) => c.kind === 'innertube' && c.isMotorMount)) {
+    warnings.push('RockSim motor configurations are not imported; pick a motor manually.');
+  }
+  if (anyPartUsesSurfaceDensity(doc.documentElement ?? rootDoc)) {
+    warnings.push('Some RockSim parts use surface or line density; a default density was used for them.');
+  }
+
   return {
     name,
     components,
     length,
     maxRadius,
-    stageCount: Math.max(1, stages.length),
+    stageCount: stageTotal,
     ...(stages.length > 1 ? { stages } : {}),
     warnings,
   };

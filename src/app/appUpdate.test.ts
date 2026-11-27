@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { isNewer, parseVersion, updateFromRelease } from './appUpdate';
+import {
+  DEFAULT_DOWNLOAD_PREFIX,
+  isApkUrl,
+  isNewer,
+  parseVersion,
+  rememberedUpdate,
+  updateFromRelease,
+} from './appUpdate';
 import { shareBaseUrl, PUBLIC_SITE_URL } from './native';
 
 describe('parseVersion', () => {
@@ -22,6 +29,9 @@ describe('isNewer', () => {
     expect(isNewer('1.0.0', '1.0.0')).toBe(false);
     expect(isNewer('0.9.9', '1.0.0')).toBe(false);
     expect(isNewer('nonsense', '1.0.0')).toBe(false);
+    // A release is newer than its own beta, not the other way round.
+    expect(isNewer('v1.3.0', '1.3.0-beta')).toBe(true);
+    expect(isNewer('1.3.0-beta', '1.3.0')).toBe(false);
   });
 });
 
@@ -61,6 +71,73 @@ describe('updateFromRelease', () => {
     expect(updateFromRelease(null, '1.0.0')).toBeNull();
     expect(updateFromRelease('<html>', '1.0.0')).toBeNull();
     expect(updateFromRelease({ tag_name: 5 }, '1.0.0')).toBeNull();
+  });
+  it('ignores an APK and release page that live in another repository', () => {
+    const other = release({
+      html_url: 'https://github.com/someone-else/repo/releases/tag/v1.1.0',
+      assets: [
+        {
+          name: 'x.apk',
+          browser_download_url: 'https://github.com/someone-else/repo/releases/download/v1.1.0/x.apk',
+        },
+      ],
+    });
+    expect(updateFromRelease(other, '1.0.0')).toBeNull();
+  });
+  it('accepts a custom download prefix passed as the third argument', () => {
+    const local = {
+      tag_name: 'v1.1.1',
+      html_url: 'http://10.0.2.2:8787/release',
+      assets: [{ name: 'astra-1.1.1.apk', browser_download_url: 'http://10.0.2.2:8787/astra-1.1.1.apk' }],
+    };
+    expect(updateFromRelease(local, '1.1.0', 'http://10.0.2.2:8787/')).toEqual({
+      version: '1.1.1',
+      url: 'http://10.0.2.2:8787/astra-1.1.1.apk',
+    });
+  });
+});
+
+describe('rememberedUpdate', () => {
+  const apk = 'https://github.com/panridhima07/SpaceSim/releases/download/v1.1.0/astra-1.1.0.apk';
+  const raw = (over: Record<string, unknown> = {}) => JSON.stringify({ version: '1.1.0', url: apk, ...over });
+
+  it('returns a stored update that is newer and from the allowed place', () => {
+    expect(rememberedUpdate(raw(), '1.0.0')).toEqual({ version: '1.1.0', url: apk });
+    expect(rememberedUpdate(raw(), '1.0.0', DEFAULT_DOWNLOAD_PREFIX)).toEqual({ version: '1.1.0', url: apk });
+  });
+  it('returns null for missing or malformed storage', () => {
+    expect(rememberedUpdate(null, '1.0.0')).toBeNull();
+    expect(rememberedUpdate('', '1.0.0')).toBeNull();
+    expect(rememberedUpdate('not json', '1.0.0')).toBeNull();
+  });
+  it('returns null when the stored version is equal to or older than the installed one', () => {
+    expect(rememberedUpdate(raw(), '1.1.0')).toBeNull();
+    expect(rememberedUpdate(raw(), '1.2.0')).toBeNull();
+  });
+  it('returns null when the url is outside the download prefix', () => {
+    expect(rememberedUpdate(raw({ url: 'https://evil.example/astra.apk' }), '1.0.0')).toBeNull();
+  });
+  it('returns null for non-string fields', () => {
+    expect(rememberedUpdate(raw({ version: 110 }), '1.0.0')).toBeNull();
+    expect(rememberedUpdate(raw({ url: null }), '1.0.0')).toBeNull();
+  });
+});
+
+describe('isApkUrl', () => {
+  it('is true for APK file links, with any case or query string', () => {
+    expect(isApkUrl('https://github.com/panridhima07/SpaceSim/releases/download/v1.1.0/astra-1.1.0.apk')).toBe(true);
+    expect(isApkUrl('https://example.org/x.APK?download=1')).toBe(true);
+  });
+  it('is false for release pages and non-URLs', () => {
+    expect(isApkUrl('https://github.com/panridhima07/SpaceSim/releases/tag/v1.1.0')).toBe(false);
+    expect(isApkUrl('not a url')).toBe(false);
+    expect(isApkUrl('')).toBe(false);
+  });
+});
+
+describe('DEFAULT_DOWNLOAD_PREFIX', () => {
+  it('is the project releases folder on GitHub', () => {
+    expect(DEFAULT_DOWNLOAD_PREFIX).toBe('https://github.com/panridhima07/SpaceSim/releases/');
   });
 });
 

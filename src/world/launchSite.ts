@@ -256,6 +256,22 @@ export function buildLaunchSite(opts: { railLength: number }): LaunchSite {
   function dispose(): void {
     group.remove(terrain.group);
     terrain.dispose();
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    const textures = new Set<THREE.Texture>();
+    group.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh || obj instanceof THREE.Line || obj instanceof THREE.Points)) return;
+      geometries.add(obj.geometry);
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const m of mats) {
+        if (!m) continue;
+        materials.add(m);
+        for (const v of Object.values(m)) if (v instanceof THREE.Texture) textures.add(v);
+      }
+    });
+    for (const g of geometries) g.dispose();
+    for (const m of materials) m.dispose();
+    for (const t of textures) t.dispose();
   }
 
   return { group, update, setRail, updateTerrain, dispose };

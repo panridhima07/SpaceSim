@@ -15,6 +15,8 @@ const angle = (a: number[], b: number[]) => {
 };
 
 const J2000 = julianDate(new Date('2000-01-01T12:00:00Z'));
+const lonDeg = (v: ArrayLike<number>) => ((Math.atan2(v[1], v[0]) * 180) / Math.PI + 360) % 360;
+const angleDiff = (a: number, b: number) => Math.abs(((a - b + 540) % 360) - 180);
 
 describe('julianDate', () => {
   it('J2000 epoch is 2451545.0', () => {
@@ -65,6 +67,18 @@ describe('moon', () => {
     const a = moonGeocentricPosition(J2000);
     const b = moonGeocentricPosition(J2000 + 27.32);
     expect(angle(a, b)).toBeLessThan(15);
+  });
+
+  it('ecliptic longitude at J2000 is about 223.31 deg (Meeus)', () => {
+    const lon = lonDeg(moonGeocentricPosition(J2000));
+    expect(angleDiff(lon, 223.31)).toBeLessThan(1);
+  });
+});
+
+describe('ecliptic longitudes at J2000', () => {
+  it('Earth heliocentric longitude is about 100.38 deg', () => {
+    const lon = lonDeg(heliocentricPosition('Earth', J2000));
+    expect(angleDiff(lon, 100.38)).toBeLessThan(0.3);
   });
 });
 

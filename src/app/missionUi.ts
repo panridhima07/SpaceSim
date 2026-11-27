@@ -1,6 +1,7 @@
 import './motion.css';
 import './style.css';
 import './mission.css';
+import { thrustToWeight } from '../mission/adapter';
 import type { FlightMarker, FlightRecord } from '../mission/record';
 import type { FlightSnapshot } from '../mission/snapshot';
 import { MISSIONS, getMission, type MissionDef } from '../mission/vehicles';
@@ -81,6 +82,16 @@ function fmtAlt(m: number): string {
   return Math.abs(m) >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
 }
 
+/** 'T-3.0 s' on the pad, 'T+70.0 s' in flight. */
+export function formatMissionTime(t: number): string {
+  const r = Math.round(t * 10) / 10;
+  return `T${r < 0 ? '-' : '+'}${Math.abs(r).toFixed(1)} s`;
+}
+
+export function formatThrust(newtons: number): string {
+  return newtons >= 999_500 ? `${(newtons / 1e6).toFixed(2)} MN` : `${Math.round(newtons / 1000)} kN`;
+}
+
 function fmtSpeed(mps: number): string {
   return Math.abs(mps) >= 1000 ? `${(mps / 1000).toFixed(2)} km/s` : `${Math.round(mps)} m/s`;
 }
@@ -95,6 +106,13 @@ function fmtLatLon(latDeg: number, lonDeg: number): string {
 function phaseLabel(phase: string): string {
   const words = phase.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').toLowerCase();
   return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** True when a key press belongs to a form field or editable text, not to a shortcut. */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') return true;
+  return target.isContentEditable || target.closest('[contenteditable]:not([contenteditable="false"])') !== null;
 }
 
 export function createMissionUI(container: HTMLElement, callbacks: MissionUiCallbacks): MissionUi {
@@ -126,9 +144,20 @@ export function createMissionUI(container: HTMLElement, callbacks: MissionUiCall
 
   const sheetBtn = el('button', 'sfb-btn msn-sheet-toggle', 'Timeline & Health');
   sheetBtn.type = 'button';
-  sheetBtn.addEventListener('click', () => {
-    root.classList.toggle('msn-sheet-open');
-  });
+  // The sheet starts below the header, so the button that closes it stays reachable.
+  const placeSheet = (): void => {
+    if (!root.classList.contains('msn-sheet-open')) return;
+    const top = Math.round(header.getBoundingClientRect().bottom) + 8;
+    root.style.setProperty('--msn-sheet-top', `${top}px`);
+  };
+  const setSheet = (open: boolean): void => {
+    root.classList.toggle('msn-sheet-open', open);
+    sheetBtn.setAttribute('aria-expanded', String(open));
+    placeSheet();
+  };
+  if (typeof ResizeObserver === 'function') new ResizeObserver(placeSheet).observe(header);
+  setSheet(false);
+  sheetBtn.addEventListener('click', () => setSheet(!root.classList.contains('msn-sheet-open')));
 
   // The launcher's job ends in the transfer orbit; the rest of Chandrayaan-3 is on the Moon page.
   // Shown only for Chandrayaan-3 (see syncMission below).
@@ -155,6 +184,8 @@ export function createMissionUI(container: HTMLElement, callbacks: MissionUiCall
     ['q', 'Dyn Press'],
     ['g', 'Accel'],
     ['mass', 'Mass'],
+    ['thrust', 'Thrust'],
+    ['twr', 'TWR'],
     ['down', 'Downrange'],
     ['apo', 'Apoapsis'],
     ['peri', 'Periapsis'],
@@ -248,8 +279,7 @@ export function createMissionUI(container: HTMLElement, callbacks: MissionUiCall
     if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
     const idx = ['1', '2', '3', '4', '5'].indexOf(e.key);
     if (idx < 0 || root.classList.contains('sfb-hidden')) return;
-    const tag = (e.target as HTMLElement | null)?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (isTypingTarget(e.target)) return;
     selectCam(CAMERAS[idx].mode);
   });
   const scaleEl = el('span', 'msn-scale', '');
@@ -303,8 +333,7 @@ export function createMissionUI(container: HTMLElement, callbacks: MissionUiCall
   window.addEventListener('keydown', (e) => {
     if (e.key.toLowerCase() !== 'h' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
     if (root.classList.contains('sfb-hidden')) return;
-    const tag = (e.target as HTMLElement | null)?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (isTypingTarget(e.target)) return;
     togglePanels();
   });
   transport.append(playBtn, warpGroup, scrubber, camGroup, scaleEl, panelsBtn, iipEl, handles.bottom);
@@ -478,7 +507,7 @@ export function createMissionUI(container: HTMLElement, callbacks: MissionUiCall
         const top = el('div', 'msn-event-top');
         top.append(el('span', undefined, m.label));
         const times = el('div', 'msn-event-times');
-        times.append(el('span', undefined, `T+${m.t.toFixed(1)} s`));
+        times.append(el('span', undefined, formatMissionTime(m.t)));
         if (m.reference !== undefined) {
           const diff = m.t - m.reference;
           const sign = diff >= 0 ? '+' : '';
@@ -490,7 +519,7 @@ export function createMissionUI(container: HTMLElement, callbacks: MissionUiCall
         eventRows.push({ marker: m, row });
       } else {
         const sev = m.severity ?? 'info';
-        const flaw = el('div', `msn-flaw-row msn-sev-${sev}`, `T+${m.t.toFixed(1)} s · ${m.label}`);
+        const flaw = el('div', `msn-flaw-row msn-sev-${sev}`, `${formatMissionTime(m.t)} · ${m.label}`);
         flawList.append(flaw);
       }
     }
@@ -542,7 +571,7 @@ export function createMissionUI(container: HTMLElement, callbacks: MissionUiCall
   }
 
   function update(snapshot: FlightSnapshot, playing: boolean, warp: number): void {
-    setText(statEls.t, `T+${snapshot.t.toFixed(1)} s`);
+    setText(statEls.t, formatMissionTime(snapshot.t));
     setText(statEls.alt, fmtAlt(snapshot.altitude));
     setText(statEls.spd, fmtSpeed(snapshot.speed));
     setText(statEls.mach, snapshot.mach.toFixed(2));
@@ -555,6 +584,8 @@ export function createMissionUI(container: HTMLElement, callbacks: MissionUiCall
       statEls.mass,
       snapshot.mass >= 1000 ? `${(snapshot.mass / 1000).toFixed(1)} t` : `${Math.round(snapshot.mass)} kg`,
     );
+    setText(statEls.thrust, formatThrust(snapshot.thrust));
+    setText(statEls.twr, thrustToWeight(snapshot).toFixed(2));
     setText(statEls.down, snapshot.downrange !== undefined ? fmtAlt(snapshot.downrange) : '—');
     setText(statEls.apo, snapshot.apoapsis !== undefined ? fmtAlt(snapshot.apoapsis) : '—');
     setText(statEls.peri, snapshot.periapsis !== undefined ? fmtAlt(snapshot.periapsis) : '—');
@@ -656,6 +687,7 @@ export function createMissionUI(container: HTMLElement, callbacks: MissionUiCall
   return {
     setVisible(on: boolean) {
       root.classList.toggle('sfb-hidden', !on);
+      if (!on) setSheet(false);
     },
     setBusy(text: string | null) {
       if (text === null) {

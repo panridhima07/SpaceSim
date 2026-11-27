@@ -193,6 +193,8 @@ export function buildExhaustTrail(maxPuffs = 700): ExhaustTrail {
   const p = new THREE.Vector3();
   const sc = new THREE.Vector3();
   let lastT = NaN;
+  /** Record time the engines light; the ground cloud starts then, while the vehicle is still held. */
+  let ignitionT = 0;
 
   function setRecord(record: FlightRecord, vehicleRadius: number): void {
     rec = record;
@@ -203,6 +205,7 @@ export function buildExhaustTrail(maxPuffs = 700): ExhaustTrail {
     times = new Float64Array(n);
     firing = new Uint8Array(n);
     alts = new Float64Array(n);
+    ignitionT = Math.min(0, record.samples.find((s) => s.thrust > 0)?.t ?? 0);
     if (n === 0) return;
     const a0 = record.earth?.angleAtLiftoff ?? 0;
     const rate = record.earth?.rate ?? 0;
@@ -292,10 +295,11 @@ export function buildExhaustTrail(maxPuffs = 700): ExhaustTrail {
 
     // Ground cloud: billows out north and south along the flame trench for the first seconds.
     let g = 0;
-    if (t > 0 && t < GROUND_CLOUD_S + GROUND_LIFE_S) {
-      const emitEnd = Math.min(t, GROUND_CLOUD_S);
+    const burning = t - ignitionT;
+    if (burning > 0 && burning < GROUND_CLOUD_S + GROUND_LIFE_S) {
+      const emitEnd = Math.min(burning, GROUND_CLOUD_S);
       for (let e = 0; e < emitEnd && g < groundMax - 6; e += 0.15) {
-        const age = t - e;
+        const age = burning - e;
         if (age > GROUND_LIFE_S) continue;
         for (const dir of [1, -1]) {
           for (let j = 0; j < 3; j++) {
@@ -316,6 +320,8 @@ export function buildExhaustTrail(maxPuffs = 700): ExhaustTrail {
   }
 
   function dispose(): void {
+    trail.dispose();
+    groundCloud.dispose();
     geo.dispose();
     mat.dispose();
   }

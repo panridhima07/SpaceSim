@@ -162,7 +162,7 @@ export function analyzeEnvironment(
         id: `airframe-crush:${c.id}`,
         severity: util > 1 ? 'critical' : 'warning',
         title: `Airframe crush load: ${c.name}`,
-        detail: `Peak thrust of ${maxThrust.toFixed(1)} N approaches the ${crush.toFixed(1)} N crush load of ${c.name}.`,
+        detail: `Peak thrust of ${maxThrust.toFixed(1)} N ${util > 1 ? 'exceeds' : 'approaches'} the ${crush.toFixed(1)} N crush load of ${c.name}.`,
         fix: 'Use a thicker wall, a stiffer tube, or a lower-thrust motor.',
         t: maxThrustT,
         value: maxThrust,

@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { IMPORT_ACCEPT, IMPORT_EXTENSIONS, importRocketFile } from './importer';
@@ -6,7 +6,9 @@ import { toRocketModel } from '../builder/design';
 import { exportDesignJson } from '../builder/storage';
 
 const FIXTURES_DIR = join(process.cwd(), 'fixtures', 'external');
-const orkFixtures = readdirSync(FIXTURES_DIR).filter((f) => f.endsWith('.ork'));
+// fixtures/external is downloaded by scripts/fetch-data.mjs and not committed (CI has none).
+const orkFixtures = existsSync(FIXTURES_DIR) ? readdirSync(FIXTURES_DIR).filter((f) => f.endsWith('.ork')) : [];
+const withFixtures = orkFixtures.length > 0 ? it : it.skip;
 
 const SAMPLE_ENG = `; Sample Estes C6
 C6 18 70 0-3-5 0.0125 0.024 Estes
@@ -65,7 +67,7 @@ describe('importRocketFile', () => {
     expect(IMPORT_ACCEPT).toContain('text/xml');
   });
 
-  it('imports every fixture in fixtures/external/*.ork and produces a valid Design and RocketModel', async () => {
+  withFixtures('imports every fixture in fixtures/external/*.ork and produces a valid Design and RocketModel', async () => {
     expect(orkFixtures.length).toBeGreaterThan(0);
     for (const file of orkFixtures) {
       const bytes = readFileSync(join(FIXTURES_DIR, file));
@@ -83,7 +85,7 @@ describe('importRocketFile', () => {
     }
   });
 
-  it('detects .ork by content sniffing even when renamed to .bin', async () => {
+  withFixtures('detects .ork by content sniffing even when renamed to .bin', async () => {
     const bytes = readFileSync(join(FIXTURES_DIR, orkFixtures[0]));
     const res = await importRocketFile(bytes, 'mystery.bin');
     expect(res.kind).toBe('design');
@@ -91,7 +93,7 @@ describe('importRocketFile', () => {
     expect(res.model!.components.length).toBeGreaterThan(0);
   });
 
-  it('round-trips sfb-design JSON via exportDesignJson and handles SavedDesign arrays', async () => {
+  withFixtures('round-trips sfb-design JSON via exportDesignJson and handles SavedDesign arrays', async () => {
     const orkBytes = readFileSync(join(FIXTURES_DIR, orkFixtures[0]));
     const orkRes = await importRocketFile(orkBytes, orkFixtures[0]);
     const jsonText = exportDesignJson(orkRes.design!);
@@ -186,6 +188,19 @@ describe('importRocketFile', () => {
     expect(rseRes.kind).toBe('motors');
     expect(rseRes.format).toBe('rse');
     expect(rseRes.motors.length).toBe(1);
+  });
+
+  it('decodes UTF-16LE text without a BOM', async () => {
+    const utf16le = new Uint8Array(
+      [...SAMPLE_RKT].flatMap((ch) => {
+        const c = ch.charCodeAt(0);
+        return [c & 0xff, c >> 8];
+      }),
+    );
+    const res = await importRocketFile(utf16le, 'utf16.rkt');
+    expect(res.kind).toBe('design');
+    expect(res.format).toBe('rocksim');
+    expect(res.design!.stack.length).toBe(2);
   });
 
   it('throws friendly errors for empty, garbage, damaged archive, and zero-component files', async () => {

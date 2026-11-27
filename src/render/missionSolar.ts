@@ -16,6 +16,9 @@ const CO = Math.cos(OBL);
 const SO = Math.sin(OBL);
 const ORBIT_SAMPLES = 360;
 const MOON_PERIOD_DAYS = 27.321661;
+/** Planet orbits change negligibly over days, so they are refilled only every this many days. */
+const PLANET_ORBIT_REFRESH_DAYS = 10;
+const X_AXIS = new THREE.Vector3(1, 0, 0);
 
 /** J2000 ecliptic vector to the mission app frame. */
 export function eclipticToApp(v: Vec3): Vec3 {
@@ -264,15 +267,19 @@ export function buildMissionSolar(): MissionSolar {
   }
 
   const sunPos = new THREE.Vector3();
-  let orbitsJd = NaN;
+  let planetsJd = NaN;
+  let moonJd = NaN;
   let texturesRequested = false;
   const tmp = new THREE.Vector3();
 
-  function fillOrbits(jd: number): void {
+  /** Refill the orbit lines of the planets (heliocentric) or of the Moon (geocentric). */
+  function fillOrbits(jd: number, which: 'planets' | 'moon'): void {
     for (const b of bodies) {
       if (!b.orbit) continue;
+      const isMoon = b.name === 'Moon';
+      if (isMoon !== (which === 'moon')) continue;
       const arr = (b.orbit.geometry.getAttribute('position') as THREE.BufferAttribute).array as Float32Array;
-      if (b.name === 'Moon') {
+      if (isMoon) {
         for (let k = 0; k <= ORBIT_SAMPLES; k++) {
           const p = eclipticToApp(moonGeocentricPosition(jd + ((k % ORBIT_SAMPLES) / ORBIT_SAMPLES) * MOON_PERIOD_DAYS));
           arr[k * 3] = p[0];
@@ -322,9 +329,13 @@ export function buildMissionSolar(): MissionSolar {
   function update(jd: number, camEarth: THREE.Vector3, skyDark: number, earthWorld?: THREE.Vector3): void {
     const camR = camEarth.length();
     if (camR > 2e7) requestTextures();
-    if (Number.isNaN(orbitsJd) || Math.abs(jd - orbitsJd) > 1) {
-      fillOrbits(jd);
-      orbitsJd = jd;
+    if (Number.isNaN(planetsJd) || Math.abs(jd - planetsJd) > PLANET_ORBIT_REFRESH_DAYS) {
+      fillOrbits(jd, 'planets');
+      planetsJd = jd;
+    }
+    if (Number.isNaN(moonJd) || Math.abs(jd - moonJd) > 1) {
+      fillOrbits(jd, 'moon');
+      moonJd = jd;
     }
     const eh = heliocentricPosition('Earth', jd);
     const s = eclipticToApp([-eh[0], -eh[1], -eh[2]]);
@@ -361,7 +372,7 @@ export function buildMissionSolar(): MissionSolar {
         if (b.name === 'Moon') {
           // Tidally locked: the map's prime meridian (+X of the sphere) faces Earth.
           tmp.copy(b.pos).negate().normalize();
-          b.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), tmp);
+          b.mesh.quaternion.setFromUnitVectors(X_AXIS, tmp);
         }
       }
       const dist = Math.max(1, tmp.copy(camEarth).sub(b.pos).length());

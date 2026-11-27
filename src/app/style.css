@@ -1,5 +1,5 @@
 html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
-canvas { display: block; }
+canvas { display: block; touch-action: none; }
 
 /* Space Flight Builder - DOM overlay styles.
    Look: the ASTRA SPACEFLIGHT reference (dark glass, cyan accent, spaced caps, mono numerals).
@@ -130,7 +130,7 @@ canvas { display: block; }
 
 .sfb-section-title {
   margin: 0 0 10px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.28em;
   text-transform: uppercase;
@@ -174,7 +174,7 @@ canvas { display: block; }
 
 .sfb-title i {
   font-style: normal;
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: 0.2em;
   color: var(--sfb-muted);
   overflow: hidden;
@@ -367,7 +367,7 @@ canvas { display: block; }
 }
 
 .sfb-field-label {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--sfb-muted);
@@ -497,7 +497,7 @@ canvas { display: block; }
 
 .sfb-kv dt {
   align-self: center;
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--sfb-muted);
@@ -530,7 +530,7 @@ canvas { display: block; }
 }
 
 .sfb-motor-label {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--sfb-muted);
@@ -655,7 +655,7 @@ canvas { display: block; }
   border: 1px solid var(--sfb-line);
   border-radius: 999px;
   background: rgba(20, 20, 23, 0.6);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.2em;
   color: var(--sfb-accent);
@@ -674,7 +674,7 @@ canvas { display: block; }
 }
 
 .sfb-tele dt {
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--sfb-muted);
@@ -856,7 +856,7 @@ canvas { display: block; }
 
 .sfb-pill {
   display: inline-block;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -914,7 +914,7 @@ canvas { display: block; }
 
 .sfb-stress-caption {
   margin: 0 0 4px;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.2em;
   text-transform: uppercase;
@@ -941,7 +941,7 @@ canvas { display: block; }
   font-family: inherit;
   font-weight: 400;
   color: var(--sfb-muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .sfb-stress-table td:last-child,
@@ -956,7 +956,7 @@ canvas { display: block; }
 .sfb-stress-pill {
   margin: 0;
   padding: 0 6px;
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .sfb-stress-ok { color: var(--sfb-good); }
@@ -1006,7 +1006,7 @@ canvas { display: block; }
 }
 
 .sfb-warp-tag {
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: 0.2em;
   text-transform: uppercase;
 }
@@ -1214,7 +1214,7 @@ canvas { display: block; }
 
 .sfb-root.sfb-mobile .sfb-phase {
   padding: 2px 8px;
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: 0.14em;
   line-height: 1.4;
 }
@@ -1234,7 +1234,7 @@ canvas { display: block; }
 }
 
 .sfb-root.sfb-mobile .sfb-hud-k {
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: 0.08em;
   color: var(--sfb-muted);
 }
@@ -1316,7 +1316,7 @@ canvas { display: block; }
   height: 18px;
   padding: 0 4px;
   border-radius: 9px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   line-height: 18px;
   text-align: center;
@@ -1513,7 +1513,7 @@ canvas { display: block; }
   border-bottom: 2px solid transparent;
   color: var(--sfb-muted);
   font: inherit;
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.14em;
   white-space: nowrap;
   overflow: hidden;
@@ -1668,7 +1668,7 @@ canvas { display: block; }
 }
 
 .sfb-b-stat-k {
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--sfb-muted);
@@ -1717,7 +1717,7 @@ canvas { display: block; }
 .sfb-b-cat {
   appearance: none;
   font: inherit;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -1852,7 +1852,7 @@ canvas { display: block; }
 .sfb-b-mini-btn {
   min-height: 26px;
   padding: 3px 9px;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 /* Finger-sized on a phone. */
@@ -1936,7 +1936,7 @@ canvas { display: block; }
   padding: 0 5px;
   border-radius: 999px;
   font-family: var(--sfb-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 18px;
   text-align: center;
@@ -1995,7 +1995,7 @@ canvas { display: block; }
 }
 
 .sfb-b-ctrl-label {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--sfb-muted);
@@ -2378,7 +2378,7 @@ canvas { display: block; }
 }
 
 .sfb-root .sfb-stress-table {
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .sfb-root .sfb-stress-table th,
@@ -2401,7 +2401,8 @@ canvas { display: block; }
 
 .sfb-root.sfb-root.sfb-mobile .sfb-hud-cam,
 .sfb-root.sfb-root.sfb-mobile .sfb-hud-build {
-  font-size: 15px;
+  font-size: 11px;
+  letter-spacing: 0;
 }
 
 .sfb-root.sfb-root.sfb-mobile .sfb-hud-menu {
@@ -2524,7 +2525,7 @@ canvas { display: block; }
   border: none;
   background: none;
   color: var(--sfb-muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1;
   cursor: pointer;
   pointer-events: auto;
@@ -2546,4 +2547,221 @@ canvas { display: block; }
   height: 44px;
   min-height: 44px;
   font-size: 12px;
+}
+
+/* ---------- Hand flying: only the control deck and toasts stay on screen ---------- */
+
+.sfb-root.sfb-root.sfb-manual > :not(.sfb-toasts):not(.sfb-drop) {
+  display: none !important;
+}
+
+/* Thrust below weight while the motor burns. */
+.sfb-root .sfb-twr-low { color: var(--sfb-warning) !important; }
+
+/* ---------- Toasts: a root of their own, shown in every mode ---------- */
+
+/* Above the other .sfb-root layers (and so above the builder's modals), below the title screen. */
+.sfb-root.sfb-toast-root {
+  z-index: 11;
+}
+
+.sfb-root.sfb-toast-root::before,
+.sfb-root.sfb-toast-root::after {
+  display: none;
+}
+
+/* ---------- Landscape phones: two-column rail so it ends above the dock ---------- */
+
+.sfb-root.sfb-root.sfb-mobile.sfb-landscape .sfb-hud-rail {
+  display: grid;
+  grid-template-columns: repeat(2, 46px);
+}
+
+.sfb-root.sfb-root.sfb-mobile.sfb-landscape .sfb-hud-expand {
+  margin-right: 112px;
+}
+
+.sfb-root.sfb-root.sfb-mobile.sfb-landscape .sfb-replay {
+  right: calc(env(safe-area-inset-right, 0px) + 118px);
+}
+
+/* ---------- Builder: rename on phones, delete confirmation ---------- */
+
+.sfb-root.sfb-builder .sfb-b-mobile-name {
+  flex: none;
+  width: 100%;
+  font-weight: 600;
+}
+
+.sfb-b-saved-btns {
+  flex-wrap: wrap;
+}
+
+.sfb-b-saved-ask {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--sfb-warning);
+}
+
+/* ---------- 11px label floor where astraTheme.css sets smaller ---------- */
+
+.sfb-root.sfb-root .sfb-field-label,
+.sfb-root.sfb-root .sfb-tele dt,
+.sfb-root.sfb-root .sfb-b-ctrl-label,
+.sfb-root.sfb-root .sfb-b-stat-k,
+.sfb-root.sfb-root .sfb-b-mini-btn,
+.sfb-root.sfb-root.sfb-builder .sfb-b-cat,
+.sfb-root.sfb-root.sfb-builder .sfb-b-part-group,
+.sfb-root.sfb-root.sfb-builder .sfb-b-part-card .sfb-b-part-sub,
+.sfb-root.sfb-root.sfb-builder .sfb-b-part-size,
+.sfb-root.sfb-root.sfb-builder .sfb-b-stage-head {
+  font-size: 11px;
+}
+
+/* ---------- Account button (.auth-chip, from auth.css): a clear spot on each screen ---------- */
+
+/* Desktop flight: the left end of the top header. */
+.sfb-root.sfb-root:not(.sfb-mobile) .sfb-brand {
+  padding-left: 68px;
+}
+
+body:has(.sfb-root:not(.sfb-hidden):not(.sfb-mobile) .sfb-brand) .auth-chip {
+  top: calc(7px + env(safe-area-inset-top, 0px));
+}
+
+/* Desktop builder: the left end of the top bar, so the palette's search box is free. */
+.sfb-root.sfb-root.sfb-builder:not(.sfb-mobile) .sfb-b-top {
+  padding-left: 64px;
+}
+
+.sfb-root.sfb-root.sfb-builder:not(.sfb-mobile) .sfb-b-search {
+  padding-left: 0;
+}
+
+body:has(.sfb-builder:not(.sfb-hidden):not(.sfb-mobile)) .auth-chip {
+  top: calc(18px + env(safe-area-inset-top, 0px));
+  left: calc(20px + env(safe-area-inset-left, 0px));
+}
+
+/* Phones: under the top strip, level with the right rail. */
+body:has(.sfb-root.sfb-mobile:not(.sfb-hidden) .sfb-hud-rail) .auth-chip,
+body:has(.sfb-builder.sfb-mobile:not(.sfb-hidden)) .auth-chip {
+  top: calc(66px + env(safe-area-inset-top, 0px));
+  left: calc(8px + env(safe-area-inset-left, 0px));
+}
+
+/* Away while something else needs that corner: hand flying, the expanded readouts, and the
+   builder's drawers, placement banner and modals. */
+body:has(.sfb-root.sfb-manual:not(.sfb-hidden)) .auth-chip,
+body:has(.sfb-root.sfb-mobile:not(.sfb-hidden) .sfb-hud-top.is-expanded) .auth-chip,
+body:has(.sfb-builder:not(.sfb-hidden) .sfb-b-modal-backdrop:not(.sfb-hidden)) .auth-chip,
+body:has(.sfb-builder.sfb-mobile:not(.sfb-hidden) .is-drawer-open) .auth-chip,
+body:has(.sfb-builder.sfb-mobile:not(.sfb-hidden) .sfb-b-snap-banner:not(.sfb-hidden)) .auth-chip {
+  display: none;
+}
+
+/* ---------- Fit at 11px labels and beside the account button ---------- */
+
+.sfb-root.sfb-root .sfb-tele dt {
+  letter-spacing: 0.04em;
+}
+
+.sfb-root.sfb-root.sfb-mobile .sfb-phase {
+  padding: 2px 6px;
+  letter-spacing: 0.04em;
+}
+
+/* Export descriptions wrap inside their buttons. */
+.sfb-root .sfb-b-export-btn {
+  white-space: normal;
+}
+
+/* Narrow desktop windows: tighter header buttons and builder stats. */
+@media (max-width: 1100px) {
+  .sfb-root.sfb-root:not(.sfb-mobile) .sfb-brand {
+    gap: 8px;
+    padding-right: 8px;
+  }
+
+  .sfb-root.sfb-root:not(.sfb-mobile) .sfb-brand .sfb-row {
+    gap: 4px;
+  }
+
+  .sfb-root.sfb-root:not(.sfb-mobile) .sfb-brand .sfb-btn {
+    padding: 7px 8px;
+    font-size: 11px;
+    letter-spacing: 0;
+  }
+
+  .sfb-root.sfb-root.sfb-builder:not(.sfb-mobile) .sfb-b-stats {
+    justify-content: safe center;
+    gap: 6px;
+  }
+
+  .sfb-root.sfb-root.sfb-builder:not(.sfb-mobile) .sfb-b-top-actions {
+    gap: 4px;
+  }
+
+  .sfb-root.sfb-root.sfb-builder:not(.sfb-mobile) .sfb-b-top-actions .sfb-btn {
+    padding-left: 6px;
+    padding-right: 6px;
+    letter-spacing: 0;
+  }
+}
+
+/* Narrowest desktop: the header keeps the name and drops the subtitle. */
+@media (max-width: 900px) {
+  .sfb-root.sfb-root:not(.sfb-mobile) .sfb-title i {
+    display: none;
+  }
+
+}
+
+/* Small phones: the four builder stats share the width and wrap instead of running off. */
+@media (max-width: 380px) {
+  .sfb-root.sfb-root.sfb-builder.sfb-mobile .sfb-b-top {
+    padding: 6px;
+  }
+
+  .sfb-root.sfb-root.sfb-builder.sfb-mobile .sfb-b-stats {
+    gap: 4px;
+    overflow: hidden;
+  }
+
+  .sfb-root.sfb-root.sfb-builder.sfb-mobile .sfb-b-stat {
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: center;
+  }
+
+  .sfb-root.sfb-root.sfb-builder.sfb-mobile .sfb-b-stat-k {
+    letter-spacing: 0;
+    white-space: normal;
+  }
+
+  .sfb-root.sfb-root.sfb-builder.sfb-mobile .sfb-b-stat-v {
+    font-size: 12px;
+    white-space: normal;
+  }
+}
+
+/* Under 940px the builder stats get a second row, so the panels start below the taller bar. */
+@media (max-width: 940px) {
+  .sfb-root.sfb-root.sfb-builder:not(.sfb-mobile) .sfb-b-top {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    row-gap: 6px;
+  }
+
+  .sfb-root.sfb-root.sfb-builder:not(.sfb-mobile) .sfb-b-stats {
+    order: 1;
+    flex: 0 0 100%;
+    gap: 14px;
+  }
+
+  .sfb-root.sfb-root.sfb-builder:not(.sfb-mobile) .sfb-b-palette,
+  .sfb-root.sfb-root.sfb-builder:not(.sfb-mobile) .sfb-b-right,
+  .sfb-root.sfb-root.sfb-builder:not(.sfb-mobile) .sfb-b-snap-banner {
+    top: 112px;
+  }
 }

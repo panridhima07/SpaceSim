@@ -4,7 +4,7 @@ import { R_EARTH } from '../types';
 import { buildLaunchSite } from './launchSite';
 import { buildSolarSystem } from './solarSystem';
 import { julianDate } from './ephemeris';
-import { PAD_GROUND_Y, terrainHeightAt } from '../render/padTerrain';
+import { terrainHeightAt } from '../render/padTerrain';
 
 const J2000 = julianDate(new Date('2000-01-01T12:00:00Z'));
 

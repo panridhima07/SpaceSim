@@ -190,7 +190,8 @@ describe('details carried from the file to the render', () => {
     expect(lug.angle).toBeCloseTo(Math.PI / 2, 9);
     expect(lug.instanceCount).toBe(2);
     const g = buildRocketMesh(m, { tiers: 'ok' });
-    const centres = meshesOf(g, lug.id).map((x) => centreOf(x, g));
+    // The lug tube itself, once per instance (its bore and glue beads are tagged as detail).
+    const centres = meshesOf(g, lug.id).filter((x) => !x.userData.detail).map((x) => centreOf(x, g));
     expect(centres.length).toBe(2);
     for (const c of centres) {
       expect(Math.hypot(c.x, c.z)).toBeCloseTo(0.025 + 0.003, 4);
@@ -369,7 +370,7 @@ describe('boosters, pods and tube fins', () => {
     // Aft end 30 mm below the main body.
     expect(-measure(g, (x) => x.name === sb.components[1].id).yMin).toBeCloseTo(0.43, 4);
     // No booster sits on the +X axis: they are turned 45°.
-    const centres = meshesOf(g, sb.components[1].id).map((x) => x.getWorldPosition(new THREE.Vector3()));
+    const centres = meshesOf(g, sb.components[1].id).filter((x) => !x.userData.detail).map((x) => x.getWorldPosition(new THREE.Vector3()));
     expect(centres.length).toBe(4);
     for (const c of centres) expect(Math.abs(Math.abs(c.x) - Math.abs(c.z))).toBeLessThan(1e-5);
     // Booster fins are graded and drawn too.

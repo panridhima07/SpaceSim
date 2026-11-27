@@ -310,6 +310,49 @@ describe('lunar lander', () => {
       expect(Math.abs(a.landing!.vv - expected) / expected).toBeLessThan(0.08);
     });
 
+    // Pins the current touchdown thresholds (LD.LIM: vv 4.5, tilt 22; hard: vv > 3.0, vh > 1.5, tilt > 12).
+    describe('touchdown thresholds', () => {
+      function touch(vv: number, vh: number, tiltDeg: number): LanderSim {
+        const a = injected(0.5);
+        cut(a); a.hold = null;
+        const B = a.basis(), up = P.unit(a.r), t = (tiltDeg * Math.PI) / 180;
+        a.v = P.add(P.add(P.cross(a.W, a.r), P.scale(up, -vv)), P.scale(B.E, vh));
+        a.q = qFromY(P.add(P.scale(up, Math.cos(t)), P.scale(B.N, Math.sin(t))), B.E);
+        let n = 0;
+        while (!done(a) && n++ < 2000) a.advance(0.01);
+        return a;
+      }
+      const table: [string, number, number, number, 'soft' | 'hard' | 'crash'][] = [
+        ['gentle', 1.0, 0.2, 2, 'soft'],
+        ['3.5 m/s down, small tilt', 3.2, 0.2, 2, 'hard'],
+        ['5 m/s down', 4.8, 0.2, 2, 'crash'],
+        ['30 degree tilt', 1.0, 0.2, 30, 'crash'],
+        ['fast sideways', 1.0, 3.5, 2, 'crash'],
+      ];
+      for (const [name, vv, vh, tilt, want] of table) {
+        it(`${name} -> ${want}`, () => {
+          const a = touch(vv, vh, tilt);
+          if (want === 'crash') { expect(a.phase).toBe('CRASHED'); expect(a.landing!.destroyed).toBe(true); }
+          else {
+            expect(a.phase).toBe('LANDED');
+            expect(a.landing!.destroyed).toBeUndefined();
+            expect(!!a.landing!.hard).toBe(want === 'hard');
+          }
+        });
+      }
+    });
+
+    it('never spends more delta-v than the rocket equation allows when the tank runs dry', () => {
+      const a = injected(5000);
+      a.prop = 40; a.mass = a.dry + a.prop; a.prop0 = Math.max(a.prop0, 40);
+      const m0 = a.mass; a.dvUsed = 0; a.setThrottle(1); a.setInput({ thr: 1 });
+      let n = 0;
+      while (!done(a) && a.prop > 0 && n++ < 4000) a.advance(0.5);
+      expect(a.prop).toBe(0);
+      expect(a.dvUsed).toBeLessThanOrEqual(E.isp * P.G0 * Math.log(m0 / a.dry) + 1e-6);
+      expect(a.dvUsed).toBeGreaterThan(0);
+    });
+
     it('destroys a lander that touches down drifting sideways', () => {
       const a = injected(60);
       a.setHold('UP');

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { G0 } from '../src/constants.ts';
 import { initialPropellant, initialRuntime, tankOffsets, type EngineSpec, type StageSpec, type TankSpec, type VehicleSpec } from '../src/vehicle/types.ts';
 import { deltaVBudget, massProperties, stackLayout, stageMass, usablePropellant } from '../src/vehicle/massprops.ts';
+import { pslvXL } from '../src/vehicle/pslv.ts';
 import { aeroForces, aeroGeometry, freeMolecularHeatFlux, interpolate, stagnationHeatFlux } from '../src/aero/aero.ts';
 
 // ---- helpers ---------------------------------------------------------------
@@ -341,6 +342,19 @@ describe('usablePropellant, stageMass, deltaVBudget', () => {
     const prop = initialPropellant(v);
     assertRel(stageMass(v, 0, prop), 4000 + 100000 + 60000, 1e-12);
     assertRel(stageMass(v, 2, prop), (2000 + 40000) * 4, 1e-12);
+  });
+
+  test('deltaVBudget gives a solid stage the length of its thrust curve as burn time', () => {
+    // thrustVac of a curve motor is the curve's peak, so propellant / peak flow is too short.
+    const budget = deltaVBudget(pslvXL(1700));
+    const core = pslvXL(1700).stages.filter((s) => !s.parallel);
+    for (let i = 0; i < core.length; i++) {
+      const curve = core[i].engine.thrustCurve;
+      if (!curve) continue;
+      assertRel(budget[i].burnTime, curve[curve.length - 1][0] - curve[0][0], 1e-12, core[i].name);
+    }
+    // PS1 (S139) burns for well over 100 s, not the 73 s the peak-thrust estimate gave.
+    assert.ok(budget[0].burnTime > 100, `PS1 burnTime=${budget[0].burnTime}`);
   });
 
   test('deltaVBudget matches Tsiolkovsky by hand for the two-stage vehicle', () => {

@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ASTRA Spaceflight — 7-Slide Presentation Deck</title>
+  <link rel="icon" type="image/png" href="/icon-192.png" />
+  <title>ASTRA Spaceflight · Presentation</title>
   <style>
     :root {
       --bg: #0b0c11;
@@ -388,7 +389,7 @@
       <div class="toolbar-title">ASTRA Spaceflight · 7-Slide Presentation Deck</div>
       <div class="toolbar-sub">PowerPoint file generated at <code>ASTRA_Spaceflight_Presentation.pptx</code> · Print this page (Ctrl+P) for vector PDF export</div>
     </div>
-    <button class="toolbar-btn" onclick="window.print()">Print / Save PDF</button>
+    <button class="toolbar-btn" id="print-btn" type="button">Print / Save PDF</button>
   </div>
 
   <div class="deck">
@@ -397,7 +398,7 @@
       <div class="s1-left">
         <p class="s1-kicker">ASTRA 2026 · ANTERiX · VIT BHOPAL UNIVERSITY</p>
         <h1 class="s1-title">ASTRA Spaceflight</h1>
-        <p class="s1-sub">A mobile game that makes every rocket design playable, on missions from Mercury to Jupiter.</p>
+        <p class="s1-sub">A web and Android rocket simulator: build a rocket, fly it, find its flaws, then fly ISRO's LVM3, PSLV and Falcon 9 missions and land on the Moon.</p>
         <p class="s1-domain">Domain 05: Moon, Mars &amp; Deep-Space Exploration, merged with Domain 01: Indian Space Missions &amp; Space Data</p>
         <p class="s1-team-label">TEAM</p>
         <div class="s1-team-grid">
@@ -492,7 +493,7 @@
             <h3>3D Rocket Builder &amp; OpenRocket CAD</h3>
             <ul>
               <li>Drag-and-drop or tap-to-snap 3D assembly across Nose Cones, Body Tubes, Transitions, Fins, Motor Mounts, Parachutes, Payloads &amp; Rings.</li>
-              <li>Native OpenRocket (<code>.ork</code> zip/XML) &amp; RASP (<code>.eng</code>) import and export — round-trip verified on geometry, mass, CG, CP, and CNα.</li>
+              <li><code>.ork</code> OpenRocket import and export (round-trip tested on name, stages, components, length and mass); RockSim and RASP <code>.eng</code> import.</li>
               <li>Multi-stage decouplers, 2×/3×/4× radial strap-on boosters, cutaway internal X-ray view, and automatic Best / OK / Bad workmanship grading.</li>
             </ul>
           </div>
@@ -506,7 +507,7 @@
             <h3>6-DOF Pad Flight &amp; Flaw Analyzer</h3>
             <ul>
               <li>Barrowman aerodynamics (normal-force slope, CP per part, pitch damping, skin/base/pressure drag + transonic wave Cd) in an ISA atmosphere to 86 km.</li>
-              <li>Rule-based Flaw Analyzer catches 11+ failure modes (Unstable, Over-stable, Fin Flutter, Hard Landing, Thermal/Pressure faults) with timestamps &amp; fixes.</li>
+              <li>Rule-based Flaw Analyzer catches 11+ failure modes (Unstable, Over-stable, Fin Flutter, Slow Rail Exit, Hard Landing, High-g, Drift) with timestamps &amp; fixes.</li>
               <li>Interactive replay pauses at each flaw with live 3D force arrows (Thrust, Drag, Normal force at CP, Weight at CG) + 19-flight wind/rail stress sweep.</li>
             </ul>
           </div>
@@ -610,7 +611,7 @@
     <!-- SLIDE 5 -->
     <section class="slide">
       <div class="chrome-top">
-        <div class="chrome-kicker-wrap"><div class="chrome-bar"></div><div class="chrome-kicker">VALIDATION &amp; BENCHMARKS · 1,037 AUTOMATED UNIT TESTS</div></div>
+        <div class="chrome-kicker-wrap"><div class="chrome-bar"></div><div class="chrome-kicker">VALIDATION &amp; BENCHMARKS · 1,700+ AUTOMATED TESTS</div></div>
         <div class="chrome-num">05 / 07</div>
       </div>
       <h2 class="chrome-title">Verified Against OpenRocket &amp; ISRO LVM3-M4 Flight Data</h2>
@@ -618,14 +619,14 @@
       <div class="slide-body">
         <div class="kpi-row">
           <div class="kpi-card">
-            <div class="kpi-val" style="color:var(--green);">1,037</div>
-            <div class="kpi-lbl">UNIT TESTS PASSING</div>
-            <div class="kpi-sub">797 App + 240 Orbital Engine</div>
+            <div class="kpi-val" style="color:var(--green);">1,700+</div>
+            <div class="kpi-lbl">AUTOMATED TESTS PASSING</div>
+            <div class="kpi-sub">1,481 app + 280 orbital engine</div>
           </div>
           <div class="kpi-card">
-            <div class="kpi-val" style="color:var(--cyan);">&lt; 4.5%</div>
+            <div class="kpi-val" style="color:var(--cyan);">&lt; 5.5%</div>
             <div class="kpi-lbl">OPENROCKET APOGEE ERR</div>
-            <div class="kpi-sub">Well inside 10% target band</div>
+            <div class="kpi-sub">vs OpenRocket on 2 reference designs (10% target)</div>
           </div>
           <div class="kpi-card">
             <div class="kpi-val" style="color:var(--purple);">0.3 s</div>
@@ -649,7 +650,7 @@
                 <tr><th>Metric / Reference Design</th><th>Flights</th><th>Measured Error</th><th>Target</th></tr>
               </thead>
               <tbody>
-                <tr><td>Design 1: Apogee Altitude</td><td class="mono">5 sims</td><td class="mono" style="color:var(--green);font-weight:700;">-1.9% to -4.3%</td><td class="mono">&lt; 10%</td></tr>
+                <tr><td>Design 1: Apogee Altitude</td><td class="mono">5 sims</td><td class="mono" style="color:var(--green);font-weight:700;">-4.4% to +0.1%</td><td class="mono">&lt; 10%</td></tr>
                 <tr><td>Design 1: Max Velocity</td><td class="mono">5 sims</td><td class="mono" style="color:var(--green);font-weight:700;">-2.2% to -2.9%</td><td class="mono">&lt; 10%</td></tr>
                 <tr><td>Design 1: Time to Apogee</td><td class="mono">5 sims</td><td class="mono" style="color:var(--green);font-weight:700;">Within ±1.1%</td><td class="mono">&lt; 10%</td></tr>
                 <tr><td>Design 1: Rail Exit Speed</td><td class="mono">5 sims</td><td class="mono" style="color:var(--green);font-weight:700;">-1.9% to -3.4%</td><td class="mono">&lt; 10%</td></tr>
@@ -779,7 +780,7 @@
         <div class="chrome-num">07 / 07</div>
       </div>
       <h2 class="chrome-title">From Student Launch Pads to Interplanetary Missions</h2>
-      <p class="chrome-sub">Ready to play today in any browser or Android phone — built to scale across the solar system.</p>
+      <p class="chrome-sub">Ready to play today in any browser; Android app tested on the emulator.</p>
       <div class="slide-body">
         <div class="grid-3">
           <div class="card">
@@ -796,7 +797,7 @@
             <div class="eyebrow" style="color:var(--purple);">02 · ROADMAP TO JUPITER</div>
             <h3>Expanding the Mission Fleet</h3>
             <p><strong style="color:var(--purple);">Phase A · Custom Liquid Orbital Builder</strong><br/>Let players assemble custom kerolox, methalox, and hydrolox multi-stage orbital launchers in the 3D builder and fly them straight into the orbital engine.</p>
-            <p><strong style="color:var(--cyan);">Phase B · PSLV, Gaganyaan &amp; Mangalyaan</strong><br/>Add ISRO PSLV-XL, Gaganyaan crewed abort scenarios, and Mars Orbiter Mission (MOM) trans-Mars Lambert injection windows.</p>
+            <p><strong style="color:var(--cyan);">Phase B · Gaganyaan &amp; Mangalyaan</strong><br/>Gaganyaan abort scenarios and Mars Orbiter Mission transfer windows (PSLV and Falcon 9 are already flyable).</p>
             <p><strong style="color:var(--amber);">Phase C · Mercury to Jupiter Transfers</strong><br/>Unlock interactive gravity-assist trajectories across the rendered Solar System from Mercury and Venus aerocapture to Jovian moon tours.</p>
           </div>
 
@@ -817,5 +818,7 @@
       </div>
     </section>
   </div>
+  <!-- The page CSP allows no inline handlers; Vite bundles this into a same-origin file. -->
+  <script type="module">document.getElementById('print-btn')?.addEventListener('click', () => window.print());</script>
 </body>
 </html>

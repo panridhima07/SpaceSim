@@ -16,7 +16,9 @@ const APP_ENTRIES: Record<string, string> = {
 // - worker-src blob: lets bundled module workers fall back to blob URLs.
 // - 'wasm-unsafe-eval' allows WebAssembly only, not eval().
 // frame-ancestors is ignored in a meta tag; clickjacking protection needs a real response header.
-function cspFor(scriptHashes: string[]): string {
+// - The admin page alone may also call the GitHub API (APK download counts).
+function cspFor(scriptHashes: string[], page = ''): string {
+  const extraConnect = page === 'admin.html' ? ' https://api.github.com' : '';
   const hashes = scriptHashes.map((h) => `'sha256-${h}'`).join(' ');
   return [
     `default-src 'self'`,
@@ -24,7 +26,7 @@ function cspFor(scriptHashes: string[]): string {
     `style-src 'self' 'unsafe-inline'`,
     `img-src 'self' data: blob:`,
     `font-src 'self' data:`,
-    `connect-src 'self' https://*.supabase.co wss://*.supabase.co https://www.thrustcurve.org https://thrustcurve.org https://api.open-meteo.com https://archive-api.open-meteo.com`,
+    `connect-src 'self' https://*.supabase.co wss://*.supabase.co https://www.thrustcurve.org https://thrustcurve.org https://api.open-meteo.com https://archive-api.open-meteo.com${extraConnect}`,
     `worker-src 'self' blob:`,
     `object-src 'none'`,
     `base-uri 'self'`,
@@ -84,7 +86,7 @@ function htmlHardening(): Plugin {
           if (m[1].trim() === '') continue;
           hashes.push(createHash('sha256').update(m[1]).digest('base64'));
         }
-        const meta = `<meta http-equiv="Content-Security-Policy" content="${cspFor(hashes)}" />`;
+        const meta = `<meta http-equiv="Content-Security-Policy" content="${cspFor(hashes, page)}" />`;
         // First element in <head>, but after <meta charset> (which must stay in the first 1024 bytes).
         const charset = /<meta\s+charset=[^>]*>/i;
         out = charset.test(out)
@@ -96,13 +98,36 @@ function htmlHardening(): Plugin {
   };
 }
 
-// Two pages: the rocket builder (index.html) and the Moon landing view (landing.html).
+const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')) as { version: string };
+
+// Build id: UTC YYYYMMDDHHmmss. The Android app compares it with the website's bundle manifest
+// (src/app/liveUpdate.ts). The same value is written to dist/build.json, which
+// scripts/make-app-bundle.mjs reads, so the manifest can never disagree with the build.
+const BUILD_ID = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+
+function buildInfo(): Plugin {
+  return {
+    name: 'astra-build-info',
+    apply: 'build',
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'build.json',
+        source: JSON.stringify({ build: BUILD_ID, version: pkg.version }) + '\n',
+      });
+    },
+  };
+}
+
+// Three pages: the rocket builder (index.html), the Moon landing view (landing.html) and the
+// private usage dashboard (admin.html).
 export default defineConfig({
-  plugins: [htmlHardening()],
+  plugins: [htmlHardening(), buildInfo()],
   // One version for the website, the Android versionName/versionCode (android/app/build.gradle)
   // and the in-app update check (src/app/appUpdate.ts): "version" in package.json.
   define: {
-    __APP_VERSION__: JSON.stringify(JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')).version),
+    __APP_VERSION__: JSON.stringify(pkg.version),
+    __BUILD_ID__: JSON.stringify(BUILD_ID),
   },
   server: {
     port: 3000,
@@ -120,6 +145,9 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         landing: resolve(__dirname, 'landing.html'),
+        admin: resolve(__dirname, 'admin.html'),
+        parts: resolve(__dirname, 'parts.html'),
+        presentation: resolve(__dirname, 'presentation.html'),
       },
       output: {
         // Long-cacheable vendor chunks, split out of the sign-in gate chunk.

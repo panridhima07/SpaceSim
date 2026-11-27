@@ -19,6 +19,7 @@ export interface SavedDesign {
 }
 
 export const STORAGE_KEY = 'sfb.builder.designs.v1';
+export const MAX_SAVED_DESIGNS = 40;
 
 function resolveStorage(store?: StorageLike): StorageLike | null {
   if (store) return store;
@@ -89,7 +90,10 @@ export function saveDesign(
   const s = resolveStorage(store);
   if (s) {
     const existing = listSavedDesigns(s).filter((e) => e.id !== entry.id);
-    const next = [entry, ...existing].slice(0, 40);
+    if (existing.length >= MAX_SAVED_DESIGNS) {
+      throw new Error(`You have ${MAX_SAVED_DESIGNS} saved rockets. Delete one in Save / Open to save another.`);
+    }
+    const next = [entry, ...existing].slice(0, MAX_SAVED_DESIGNS);
     try {
       s.setItem(STORAGE_KEY, JSON.stringify(next));
     } catch {

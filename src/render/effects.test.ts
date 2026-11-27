@@ -8,8 +8,10 @@ import {
   buildSmokeTrail,
   buildTrajectoryLine,
   quatToThree,
+  smokeForThrust,
   vecRel,
 } from './effects';
+import { FINISH_LOOK, partMaterial } from './parts/types';
 
 describe('buildExhaust', () => {
   it('is hidden at zero thrust', () => {
@@ -28,6 +30,77 @@ describe('buildExhaust', () => {
 
     ex.update(10, 10, 0.0125, 0);
     expect(outer.scale.y).toBeGreaterThan(low);
+  });
+
+  it('follows the newtons, not the share of the motor peak, within bounds', () => {
+    const ex = buildExhaust();
+    const outer = ex.group.children[0];
+    const r = 0.0125;
+    const sizeAt = (n: number): [number, number] => {
+      ex.update(n, n, r, 0); // always at the motor's own peak
+      return [outer.scale.y, outer.scale.x];
+    };
+    const small = sizeAt(5);
+    const big = sizeAt(500);
+    expect(big[0]).toBeGreaterThan(3 * small[0]);
+    expect(big[1]).toBeGreaterThan(1.5 * small[1]);
+    for (const n of [0.001, 1e7]) {
+      const [length, width] = sizeAt(n);
+      expect(length).toBeGreaterThan(2 * r);
+      expect(length).toBeLessThan(35 * r);
+      expect(width).toBeGreaterThan(0.4 * r);
+      expect(width).toBeLessThan(1.8 * r);
+    }
+  });
+});
+
+describe('smoke and thrust', () => {
+  it('puffs come faster and bigger with more thrust', () => {
+    const small = smokeForThrust(5, 0.0125);
+    const big = smokeForThrust(500, 0.0125);
+    expect(big.rate).toBeGreaterThan(small.rate);
+    expect(big.size).toBeGreaterThan(small.size);
+    expect(big.rate).toBeLessThanOrEqual(60);
+    expect(smokeForThrust(0, 0.0125)).toEqual({ rate: 0, size: 0 });
+  });
+
+  /** Burst at a pad on the Earth's surface, then the live puffs relative to it after `age` s. */
+  const cloud = (thrust: number, age: number): { count: number; spread: number; scale: number; low: number } => {
+    const smoke = buildSmokeTrail();
+    const mesh = smoke.object as THREE.InstancedMesh;
+    const pad: [number, number, number] = [0, 6_371_000, 0];
+    smoke.burst(pad, thrust, 0.025);
+    smoke.update(age, pad);
+    const m = new THREE.Matrix4();
+    const p = new THREE.Vector3();
+    let spread = 0;
+    let scale = 0;
+    let low = Infinity;
+    let count = 0;
+    for (let i = 0; i < mesh.count; i++) {
+      mesh.getMatrixAt(i, m);
+      const s = new THREE.Vector3().setFromMatrixScale(m).x;
+      if (s === 0) continue;
+      count++;
+      p.setFromMatrixPosition(m);
+      spread = Math.max(spread, Math.hypot(p.x, p.z));
+      low = Math.min(low, p.y);
+      scale = Math.max(scale, s);
+    }
+    return { count, spread, scale, low };
+  };
+
+  it('ignition cloud spreads along the ground, scales with thrust and dies out', () => {
+    const early = cloud(10, 0.05);
+    const later = cloud(10, 1);
+    const strong = cloud(300, 1);
+    expect(later.spread).toBeGreaterThan(early.spread);
+    expect(later.low).toBeGreaterThan(0);
+    expect(strong.spread).toBeGreaterThan(later.spread);
+    expect(strong.scale).toBeGreaterThan(later.scale);
+    expect(strong.count).toBeGreaterThan(later.count);
+    expect(cloud(300, 4).count).toBe(0);
+    expect(cloud(0, 0.1).count).toBe(0);
   });
 });
 
@@ -234,6 +307,34 @@ describe('applyFlatStyle', () => {
     expect(mat.transparent).toBe(true);
     expect(mat.opacity).toBe(0.5);
     expect(mat.flatShading).toBe(false);
+  });
+
+  it('gives a part finish its highlight and keeps matte and unmarked surfaces flat', () => {
+    const ctx = { cutaway: false, maxRadius: 0.025, rocketLength: 0.3 };
+    const root = new THREE.Group();
+    const box = new THREE.BoxGeometry(1, 1, 1);
+    const add = (m: THREE.Material): THREE.Mesh => { const mesh = new THREE.Mesh(box, m); root.add(mesh); return mesh; };
+    const gloss = add(partMaterial(0xe2552f, ctx, { finish: 'gloss', offset: true }));
+    const metal = add(partMaterial(0x9aa3ad, ctx, { finish: 'metal' }));
+    const satin = add(partMaterial(0x9aa3ad, ctx, { finish: 'satin' }));
+    const matte = add(partMaterial(0xb08d5e, ctx, { finish: 'matte' }));
+    const plain = add(partMaterial(0xb08d5e, ctx));
+    applyFlatStyle(root);
+    const g = gloss.material as THREE.MeshPhongMaterial;
+    const m = metal.material as THREE.MeshPhongMaterial;
+    const s = satin.material as THREE.MeshPhongMaterial;
+    expect(g).toBeInstanceOf(THREE.MeshPhongMaterial);
+    expect(g.color.getHex()).toBe(0xe2552f);
+    expect(g.shininess).toBe(FINISH_LOOK.gloss.shininess);
+    expect(g.polygonOffset).toBe(true);
+    expect(g.polygonOffsetFactor).toBe(-2);
+    expect(m).toBeInstanceOf(THREE.MeshPhongMaterial);
+    expect(m.shininess).toBeGreaterThan(g.shininess);
+    expect(g.shininess).toBeGreaterThan(s.shininess);
+    expect(m.specular.g).toBeGreaterThan(g.specular.g);
+    expect(matte.material).toBeInstanceOf(THREE.MeshLambertMaterial);
+    expect(plain.material).toBeInstanceOf(THREE.MeshLambertMaterial);
+    expect((plain.material as THREE.MeshLambertMaterial).polygonOffset).toBe(false);
   });
 });
 

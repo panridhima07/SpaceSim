@@ -6,6 +6,9 @@ import { designationKey } from './motors';
 
 const API = 'https://www.thrustcurve.org/api/v1';
 
+/** Give up on a ThrustCurve request that has not answered after this long. */
+const FETCH_TIMEOUT_MS = 15_000;
+
 interface SearchHit {
   motorId: string;
   manufacturerAbbrev: string;
@@ -31,13 +34,20 @@ async function postJson(
   path: string,
   body: unknown,
 ): Promise<unknown | null> {
-  const r = await fetchImpl(`${API}/${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) return null;
-  return r.json();
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(new Error('ThrustCurve did not answer in time.')), FETCH_TIMEOUT_MS);
+  try {
+    const r = await fetchImpl(`${API}/${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ac.signal,
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

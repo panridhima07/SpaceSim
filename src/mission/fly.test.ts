@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
+import { padSampleAt, thrustToWeight } from './adapter';
 import { lvm3 } from './engine';
 import { flyMission } from './fly';
 import type { FlightRecord, FlightSample } from './record';
@@ -46,8 +47,36 @@ describe('flyMission lvm3-m4', () => {
     for (let i = 1; i < record.samples.length; i++) {
       expect(record.samples[i].t).toBeGreaterThan(record.samples[i - 1].t);
     }
-    expect(record.samples[0].t).toBeGreaterThanOrEqual(0);
-    expect(record.samples[0].t).toBeLessThanOrEqual(1);
+  });
+
+  it('opens on the pad before ignition and shows thrust building against the clamps', () => {
+    const first = record.samples[0];
+    expect(first.t).toBeCloseTo(-3, 6);
+    expect(first.thrust).toBe(0);
+    expect(first.stageThrottle!.every((x) => x === 0)).toBe(true);
+    const ignition = record.markers.find((m) => /ignition/.test(m.label) && m.t < 0)!;
+    expect(ignition.t).toBeCloseTo(-record.liftoffSimTime!, 6);
+    const held = record.samples.filter((s) => s.t < 0);
+    const burning = held.filter((s) => s.thrust > 0);
+    expect(burning.length).toBeGreaterThanOrEqual(2);
+    for (let i = 1; i < burning.length; i++) expect(burning[i].thrust).toBeGreaterThan(burning[i - 1].thrust);
+    // Clamped, it only turns with the Earth, and the ground carries its weight.
+    for (const s of held) {
+      const turned = padSampleAt(first, s.t, record.earth!.rate);
+      expect(Math.hypot(s.pos[0] - turned.pos[0], s.pos[1] - turned.pos[1], s.pos[2] - turned.pos[2])).toBeLessThan(0.01);
+      expect(s.accelG).toBe(1);
+    }
+  });
+
+  it('marks liftoff at T=0 and says the thrust-to-weight there is still building', () => {
+    const liftoff = markerFor('Liftoff');
+    expect(liftoff.t).toBe(0);
+    const match = /^Liftoff, thrust-to-weight ([\d.]+) at clamp release \(([\d.]+) at T\+3 s\)$/.exec(liftoff.label)!;
+    expect(match, liftoff.label).not.toBeNull();
+    expect(Number(match[2])).toBeGreaterThan(Number(match[1]));
+    expect(Number(match[2])).toBeCloseTo(thrustToWeight(sampleNear(3)), 1);
+    const release = record.samples.find((s) => s.t >= 0)!;
+    expect(release.t).toBeLessThan(0.1);
   });
 
   it('keeps every sample finite', () => {
@@ -72,7 +101,9 @@ describe('flyMission lvm3-m4', () => {
     expect(record.samples[record.samples.length - 1].altitude).toBeGreaterThan(150e3);
   });
 
-  it('matches the six reference events', () => {
+  it('is a regression snapshot of the simulator event times (six reference events)', () => {
+    // Snapshot of the simulator's own times, not the published ones in vehicles.ts: fairing
+    // jettison and C25 cutoff differ from the published times by about 42 s and 19 s.
     const events: [string, number][] = [
       ['L110 core ignition', 108.0],
       ['S200 boosters separation', 126.7],

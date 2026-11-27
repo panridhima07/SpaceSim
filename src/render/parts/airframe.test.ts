@@ -9,7 +9,7 @@ import {
   buildMotor,
   buildRailButton,
 } from './airframe';
-import { PART_COLORS, PART_TIERS, TIER_ACCENT } from './types';
+import { PART_COLORS, PART_TIERS, SKIN_FINISH, TIER_ACCENT } from './types';
 import type { PartContext, PartTier } from './types';
 
 const ctx: PartContext = { cutaway: false, maxRadius: 0.05, rocketLength: 1.5 };
@@ -369,4 +369,85 @@ describe('icons', () => {
       expect(set.size).toBe(3);
     });
   }
+});
+
+describe('surface cues and finishes', () => {
+  const byName = (o: THREE.Object3D, n: string) => meshes(o, false).find((m) => m.name === n);
+  const finishOf = (m: THREE.Mesh | undefined) => (m?.material as THREE.Material | undefined)?.userData.finish;
+  const count = (o: THREE.Object3D) => meshes(o, false).length;
+
+  it('painted skins use the tier skin finish', () => {
+    for (const t of PART_TIERS) {
+      expect(finishOf(byName(buildBodyTube(tube, t, ctx), 'skin'))).toBe(SKIN_FINISH[t]);
+      expect(finishOf(buildBoosterPod(pod, t, ctx).children[0] as THREE.Mesh)).toBe(SKIN_FINISH[t]);
+    }
+  });
+
+  it('ok tube has a faint seam, joint lines and kraft ends; best has no spiral but a vent and rivets', () => {
+    const ok = buildBodyTube(tube, 'ok', ctx);
+    for (const n of ['seam', 'joints', 'kraft-ends']) expect(byName(ok, n)).toBeDefined();
+    expect(finishOf(byName(ok, 'kraft-ends'))).toBe('matte');
+    const best = buildBodyTube(tube, 'best', ctx);
+    expect(byName(best, 'seam')).toBeUndefined();
+    for (const n of ['vent', 'vent-rim', 'rivets', 'stripe']) expect(byName(best, n)).toBeDefined();
+    expect(finishOf(byName(best, 'rivets'))).toBe('metal');
+    expect(finishOf(byName(best, 'stripe'))).toBe('gloss');
+    const bad = buildBodyTube(tube, 'bad', ctx);
+    for (const n of ['seam', 'patches', 'fray']) expect(byName(bad, n)).toBeDefined();
+  });
+
+  it('decouplers carry metal bolts at every tier, tagged as detail', () => {
+    for (const t of PART_TIERS) {
+      const b = byName(buildBodyTube(decoupler, t, ctx), 'bolts')!;
+      expect(b).toBeDefined();
+      expect(finishOf(b)).toBe('metal');
+    }
+    expect(byName(buildBodyTube(decoupler, 'ok', ctx), 'lips')!.userData.detail).toBe(true);
+    expect(byName(buildBodyTube(decoupler, 'best', ctx), 'pyro')).toBeDefined();
+    expect(byName(buildBodyTube(decoupler, 'best', ctx), 'flanges')).toBeDefined();
+  });
+
+  it('every lug has a dark bore; best is metal with a standoff, ok has glue beads', () => {
+    for (const t of PART_TIERS) expect(byName(buildLaunchLug(lug, t, ctx), 'bore')).toBeDefined();
+    expect(finishOf(buildLaunchLug(lug, 'best', ctx).children[0].children[0] as THREE.Mesh)).toBe('metal');
+    expect(byName(buildLaunchLug(lug, 'best', ctx), 'standoff')).toBeDefined();
+    expect(byName(buildLaunchLug(lug, 'ok', ctx), 'fillet')).toBeDefined();
+  });
+
+  it('rail buttons carry a metal screw (best also a dark socket)', () => {
+    for (const t of PART_TIERS) expect(finishOf(byName(buildRailButton(button, t, ctx), 'screw'))).toBe('metal');
+    expect(byName(buildRailButton(button, 'best', ctx), 'socket')).toBeDefined();
+  });
+
+  it('ok motor is a paper case with a gloss label, clay nozzles, soot and a metal hook', () => {
+    const m = buildMotor(motor, 'ok', ctx);
+    expect(finishOf(m.children[0] as THREE.Mesh)).toBe('matte');
+    expect(finishOf(byName(m, 'label'))).toBe('gloss');
+    expect(finishOf(byName(m, 'hook'))).toBe('metal');
+    for (const n of ['soot', 'throat']) expect(byName(m, n)).toBeDefined();
+    const best = buildMotor(motor, 'best', ctx);
+    expect(finishOf(best.children[0] as THREE.Mesh)).toBe('metal');
+    for (const n of ['retainer', 'thrust-ring']) expect(finishOf(byName(best, n))).toBe('metal');
+  });
+
+  it('ok pod gains a joint line, an aft band and an unflagged nozzle', () => {
+    const p = buildBoosterPod(pod, 'ok', ctx);
+    for (const n of ['joint', 'aft-band', 'nozzle', 'throat']) expect(byName(p, n)).toBeDefined();
+    expect(byName(p, 'nozzle')!.userData.bell).toBeUndefined();
+  });
+
+  it('mesh counts stay within the per-tier ceilings (best +8, ok +5, bad +6 over the old design)', () => {
+    const old: Record<string, Record<PartTier, number>> = {
+      bodytube: { best: 4, ok: 1, bad: 3 },
+      decoupler: { best: 4, ok: 1, bad: 4 },
+      launchlug: { best: 2, ok: 1, bad: 2 },
+      railbutton: { best: 1, ok: 1, bad: 2 },
+      motor: { best: 8, ok: 6, bad: 3 },
+      boosterpod: { best: 6, ok: 3, bad: 5 },
+    };
+    const extra: Record<PartTier, number> = { best: 8, ok: 5, bad: 6 };
+    for (const k of kinds) {
+      for (const t of PART_TIERS) expect(count(builders[k](t))).toBeLessThanOrEqual(old[k][t] + extra[t]);
+    }
+  });
 });

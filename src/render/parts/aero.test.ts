@@ -180,11 +180,79 @@ describe('fin', () => {
   it('best tier has a root fillet, bad tier has glue blobs', () => {
     expect(meshes(buildFin(fin(), 'best', ctx)).some((m) => m.name === 'fillet')).toBe(true);
     expect(meshes(buildFin(fin(), 'bad', ctx)).some((m) => m.name === 'glue')).toBe(true);
-    expect(meshes(buildFin(fin(), 'ok', ctx)).length).toBe(1);
+    // A kit fin: the fin, its sanded edges and one glue bead, and nothing cruder or finer.
+    const ok = meshes(buildFin(fin(), 'ok', ctx)).map((m) => m.name).sort();
+    expect(ok).toEqual(['bead', 'edge', 'fin']);
   });
   it('survives a self-intersecting freeform outline', () => {
     const c = fin({ finShape: 'freeform', points: [[0, 0], [0.1, 0.08], [0.0, 0.08], [0.1, 0], [0.05, 0.04]] });
     for (const tier of PART_TIERS) noNaN(buildFin(c, tier, ctx));
+  });
+});
+
+const finishOf = (m: THREE.Mesh) => (m.material as THREE.MeshStandardMaterial).userData.finish;
+const named = (o: THREE.Object3D, n: string) => meshes(o).filter((m) => m.name === n);
+
+describe('surface detail', () => {
+  it('skins carry the tier finish', () => {
+    const want: Record<PartTier, string> = { best: 'gloss', ok: 'satin', bad: 'matte' };
+    for (const tier of PART_TIERS) {
+      expect(finishOf(named(buildNoseCone(nose(), tier, ctx), 'shell')[0])).toBe(want[tier]);
+      expect(finishOf(named(buildTransition(trans(), tier, ctx), 'shell')[0])).toBe(want[tier]);
+      expect(finishOf(named(buildFin(fin(), tier, ctx), 'fin')[0])).toBe(want[tier]);
+    }
+  });
+  it('ok nose has seams, a joint shadow and a shoulder band; best nose has vents and metal tip', () => {
+    const ok = buildNoseCone(nose(), 'ok', ctx);
+    const n = 1;
+    expect(named(ok, 'seam').length).toBe(n);
+    expect(named(ok, 'joint').length).toBe(n);
+    expect(named(ok, 'shoulder').length).toBe(n);
+    const best = buildNoseCone(nose(), 'best', ctx);
+    expect(named(best, 'vent').length).toBe(1);
+    expect(finishOf(named(best, 'tipcap')[0])).toBe('metal');
+    expect(finishOf(named(best, 'band')[0])).toBe('gloss');
+  });
+  it('flipped ok nose puts the shadow line at the wide (fore) end', () => {
+    const o = buildNoseCone(nose({ flipped: true, x: 0.3 }), 'ok', ctx);
+    const box = new THREE.Box3().setFromObject(named(o, 'joint')[0]);
+    expect(box.max.y).toBeCloseTo(-0.3, 6);
+  });
+  it('ok transition has joint lines and shoulders at both ends; best has screws', () => {
+    const ok = buildTransition(trans(), 'ok', ctx);
+    const box = new THREE.Box3().setFromObject(named(ok, 'joint')[0]);
+    expect(box.max.y).toBeCloseTo(-0.5, 6);
+    expect(box.min.y).toBeCloseTo(-0.6, 6);
+    expect(named(ok, 'shoulder').length).toBe(1);
+    const best = buildTransition(trans(), 'best', ctx);
+    expect(named(best, 'screws').length).toBe(2);
+    expect(finishOf(named(best, 'screws')[0])).toBe('metal');
+  });
+  it('bad nose has putty and scratches', () => {
+    const o = buildNoseCone(nose(), 'bad', ctx);
+    expect(named(o, 'putty').length).toBeGreaterThan(0);
+    expect(named(o, 'scratch').length).toBe(1);
+  });
+  it('fin edges: best and bad have edge strips, ok stays a single mesh', () => {
+    expect(named(buildFin(fin(), 'best', ctx), 'edge').length).toBe(1);
+    expect(named(buildFin(fin(), 'bad', ctx), 'edge').length).toBe(1);
+    expect(named(buildFin(fin(), 'bad', ctx), 'grain').length).toBeLessThanOrEqual(1);
+    for (const finShape of ['elliptical', 'freeform'] as const) {
+      const o = buildFin(fin({ finShape, points: [[0, 0], [0.07, 0.08], [0.11, 0.08], [0.12, 0]] }), 'best', ctx);
+      noNaN(o);
+    }
+  });
+  it('mesh counts stay within budget', () => {
+    const base = { best: [5, 5, 3], ok: [1, 1, 1], bad: [6, 6, 12] } as const;
+    const extra = { best: [8, 8, 4], ok: [5, 5, 2], bad: [6, 6, 4] } as const;
+    for (const tier of PART_TIERS) {
+      const n = meshes(buildNoseCone(nose(), tier, ctx)).length;
+      const t = meshes(buildTransition(trans(), tier, ctx)).length;
+      const f = meshes(buildFin(fin(), tier, ctx)).length;
+      expect(n).toBeLessThanOrEqual(base[tier][0] + extra[tier][0]);
+      expect(t).toBeLessThanOrEqual(base[tier][1] + extra[tier][1]);
+      expect(f).toBeLessThanOrEqual(base[tier][2] + extra[tier][2]);
+    }
   });
 });
 

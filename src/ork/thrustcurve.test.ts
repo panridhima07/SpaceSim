@@ -26,7 +26,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function mockApi(search: unknown, download: unknown) {
-  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+  return vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith('/search.json')) return jsonResponse(search);
     if (url.endsWith('/download.json')) return jsonResponse(download);

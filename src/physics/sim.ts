@@ -43,6 +43,7 @@ import {
   sub,
 } from './vec';
 import { makeWindInto, siteAtmosphere } from './wind';
+import { firingMotors, motorCount } from './cluster';
 
 const MAX_SUBSTEP = 0.002; // s, while in atmosphere or thrusting
 const COAST_SUBSTEP = 0.1; // s, above HIGH_ALTITUDE and not thrusting
@@ -55,6 +56,10 @@ const RAIL_FRICTION_MU = 0.25; // kinetic friction coefficient of rail lugs/butt
 const SAFE_LANDING_SPEED = 8; // m/s, canopy impact speed still counted as a landing
 const ZERO: Vec3 = [0, 0, 0];
 const NO_CONTROLS: Controls = { gimbalPitch: 0, gimbalYaw: 0 };
+/** s, how quickly a hand-flown rocket reaches the commanded turn rate. */
+const STEER_TAU = 0.15;
+/** A powered, chute-less touchdown counts as a landing only with the nose within this of vertical, cos. */
+const UPRIGHT_COS = Math.cos((25 * Math.PI) / 180);
 
 /** Forces, torques and derived quantities at one instant. */
 interface Eval {
@@ -169,6 +174,20 @@ export function createSim(
   );
   let activeRocket: RocketModel = rocket;
   let activeMotor: Motor | null = stageMotors && stageMotors.length > 0 ? stageMotors[0].motor : motor;
+  /** Motors lighting together in the stage now at the bottom. */
+  let activeCount = motorCount(rocket);
+  /** For each firing stage, in firing order: how many motors it carries and where they sit. */
+  const carried = (stageMotors ?? []).map(({ motor: m }, s) => {
+    if (s === 0 || !rocket.stages) return { count: activeCount, station: undefined };
+    const boundary = rocket.stages[rocket.stages.length - s];
+    const upper = { ...rocket, components: rocket.components.slice(0, boundary.startComponent) };
+    const mount = firingMotors(upper)[0].mount;
+    // Station of the motor's middle: it sits at the aft end of its mount.
+    return {
+      count: motorCount(upper),
+      station: mount ? mount.x + mount.length + mount.overhang - m.length / 2 : undefined,
+    };
+  });
   let firingStageIdx = 0;
   let nextStageIgnitionT: number | undefined;
 
@@ -181,6 +200,32 @@ export function createSim(
   let ignited = false;
   let tIgnition = 0;
   let isDone = false;
+
+  // Hand flying. The motor has its own burn clock, which runs at the throttle setting: burnLag is
+  // how far it has fallen behind the wall clock, and throttle is the rate for the substep in hand.
+  // With the throttle never touched both stay 0 and 1, and the numbers are those of an auto flight.
+  let handFlown = false;
+  let engineCut = false; // the parachute was fired by hand
+  let burnLag = 0;
+  let throttle = 1;
+
+  /** Seconds of motor burn used up at time t, or -1 before ignition. */
+  function burnTimeAt(t: number): number {
+    return ignited ? t - tIgnition - burnLag - (t - state.t) * (1 - throttle) : -1;
+  }
+
+  /** The burn-clock rate to use from now: the commanded throttle while there is propellant left. */
+  function commandedThrottle(): number {
+    if (!handFlown || !activeMotor || burnTimeAt(state.t) >= activeMotor.burnTime) return 1;
+    if (engineCut) return 0;
+    const c = controls.throttle;
+    return c === undefined || !Number.isFinite(c) ? 1 : clamp(c, 0, 1);
+  }
+
+  /** Propellant left in a motor that has been lit. */
+  function motorUnburnt(): boolean {
+    return ignited && activeMotor !== null && burnTimeAt(state.t) < activeMotor.burnTime;
+  }
 
   // Rail state: distance along the rail and speed along it.
   let railS = 0;
@@ -269,13 +314,14 @@ export function createSim(
     const r = Math.sqrt(px * px + py * py + pz * pz);
     const altitude = r - R_EARTH - config.launchAltitude;
     const atm = airAt(r - R_EARTH);
-    const tBurn = ignited ? t - tIgnition : -1;
+    const tBurn = burnTimeAt(t);
     let mp: MassProps = deps.massProps(activeRocket, activeMotor, tBurn);
     if (isMultiStage && stageMotors) {
-      for (let s = firingStageIdx + 1; s < stageMotors.length; s++) {
+      // Between separation and ignition the next motor is not yet the active one: still count it.
+      for (let s = activeMotor ? firingStageIdx + 1 : firingStageIdx; s < stageMotors.length; s++) {
         const um = stageMotors[s].motor;
-        const mExtra = um.totalMass;
-        const cgExtra = activeRocket.length * 0.5;
+        const mExtra = um.totalMass * carried[s].count;
+        const cgExtra = carried[s].station ?? activeRocket.length * 0.5;
         const totalM = mp.mass + mExtra;
         if (totalM > 0) {
           mp = {
@@ -287,7 +333,9 @@ export function createSim(
       }
     }
     const thrust =
-      activeMotor && ignited && tBurn < activeMotor.burnTime ? deps.thrust(activeMotor, tBurn) : 0;
+      activeMotor && ignited && tBurn < activeMotor.burnTime
+        ? deps.thrust(activeMotor, tBurn) * activeCount * throttle
+        : 0;
     const mass = mp.mass;
 
     const gk = -MU_EARTH / (r * r * r);
@@ -443,8 +491,8 @@ export function createSim(
       fx = fx + ftx;
       fy = fy + fty;
       fz = fz + ftz;
-      // Nozzle sits (length - cgX) aft of the CG.
-      const nozzle = -(rocket.length - mp.cgX);
+      // Nozzle sits (length - cgX) aft of the CG: the length of what is still attached.
+      const nozzle = -(activeRocket.length - mp.cgX);
       const lx = ax * nozzle;
       const ly = ay * nozzle;
       const lz = az * nozzle;
@@ -475,6 +523,15 @@ export function createSim(
     od[0] = (sO[0] - g0) / iP;
     od[1] = (sO[1] - g1) / iR;
     od[2] = (sO[2] - g2) / iP;
+
+    // A hand-flown rocket turns as commanded, in the air or coasting; under a parachute it hangs.
+    const rate = controls.rate;
+    if (rate && handFlown && chuteCdA <= 0) {
+      rotate(-qx, -qy, -qz, qw, rate[0], rate[1], rate[2], sO);
+      od[0] = (sO[0] - o0) / STEER_TAU;
+      od[1] = -o1 / STEER_TAU; // no roll command
+      od[2] = (sO[2] - o2) / STEER_TAU;
+    }
 
     o.mass = mass;
     o.cgX = mp.cgX;
@@ -641,7 +698,8 @@ export function createSim(
     state.dynamicPressure = e.q;
     state.thrust = e.thrust;
     state.drag = e.drag;
-    state.accelG = e.accelG;
+    // An accelerometer on the pad reads 1 g until the thrust takes the weight.
+    state.accelG = state.phase === 'pad' ? Math.max(e.accelG, 1) : e.accelG;
     state.cgX = e.cgX;
     state.cpX = e.cpX;
     state.stabilityCal = (e.cpX - e.cgX) / e.refLength;
@@ -684,7 +742,13 @@ export function createSim(
     state.pos = scale(state.pos, k);
     state.vel = [0, 0, 0];
     state.omega = [0, 0, 0];
-    const ok = state.chuteDeployed && vDown <= SAFE_LANDING_SPEED && impact <= SAFE_LANDING_SPEED * 1.5;
+    // A pilot may also set the rocket down gently on its tail, with no parachute.
+    const upright = (): boolean =>
+      dot(quatRotate(state.quat, [0, 1, 0]), normalize(state.pos)) >= UPRIGHT_COS;
+    const ok =
+      (state.chuteDeployed || (handFlown && upright())) &&
+      vDown <= SAFE_LANDING_SPEED &&
+      impact <= SAFE_LANDING_SPEED * 1.5;
     state.phase = ok ? 'landed' : 'crashed';
     isDone = true;
     applyDerived(evaluate(state.pos, state.vel, state.omega, state.quat, state.t));
@@ -707,6 +771,81 @@ export function createSim(
     }
   }
 
+  /** A motor that ran out before the rocket could leave: the flight is over. */
+  function burntOutOnTheGround(): void {
+    burnoutT = state.t;
+    emit('burnout', 'Motor burned out before the rocket left the pad');
+    state.phase = 'landed';
+    state.vel = [0, 0, 0];
+    state.speed = 0;
+    state.accelG = 1;
+    isDone = true;
+  }
+
+  function hasStageToDrop(): boolean {
+    return Boolean(isMultiStage && stageMotors && rocket.stages && firingStageIdx + 1 < stageMotors.length);
+  }
+
+  /** Separate the firing stage at time t; the next one lights after its ignition delay. */
+  function dropStage(t: number): void {
+    if (!stageMotors || !rocket.stages) return;
+    const dropBoundary = rocket.stages[rocket.stages.length - 1 - firingStageIdx];
+    const kept = activeRocket.components.slice(0, dropBoundary.startComponent);
+    let newLen = 0;
+    let newMaxR = 0;
+    for (const c of kept) {
+      if (c.kind === 'nosecone' || c.kind === 'bodytube' || c.kind === 'transition' || c.kind === 'finset') {
+        newLen = Math.max(newLen, c.x + c.length);
+      }
+      if (c.kind === 'nosecone') newMaxR = Math.max(newMaxR, c.baseRadius);
+      else if (c.kind === 'bodytube') newMaxR = Math.max(newMaxR, c.outerRadius);
+      else if (c.kind === 'transition') newMaxR = Math.max(newMaxR, c.foreRadius, c.aftRadius);
+    }
+    // Boosters, pods and tube fins leave with the stage they are mounted on.
+    const keptSide = (activeRocket.sideBodies ?? []).filter((sb) => {
+      const x0 = Math.min(...sb.components.map((c) => c.x));
+      const x1 = Math.max(...sb.components.map((c) => c.x + c.length));
+      return (x0 + x1) / 2 <= newLen;
+    });
+    epoch++;
+    activeRocket = { ...activeRocket, components: kept, length: newLen, maxRadius: newMaxR, sideBodies: keptSide };
+    activeCount = motorCount(activeRocket);
+    const keptSet = new Set<Component>(kept);
+    for (let ci = chutes.length - 1; ci >= 0; ci--) {
+      if (!keptSet.has(chutes[ci].chute)) chutes.splice(ci, 1);
+    }
+    emit('stage separation', `Stage ${firingStageIdx + 1} separation at ${state.altitude.toFixed(1)} m`);
+    firingStageIdx++;
+    const nextStage = stageMotors[firingStageIdx];
+    nextStageIgnitionT = t + (nextStage.ignitionDelay ?? 0);
+    activeMotor = null;
+  }
+
+  function separateStage(): boolean {
+    if (!handFlown || isDone || !hasStageToDrop() || nextStageIgnitionT !== undefined) return false;
+    if (state.phase !== 'boost' && state.phase !== 'coast') return false;
+    state.phase = 'coast';
+    dropStage(state.t);
+    applyDerived(evaluate(state.pos, state.vel, state.omega, state.quat, state.t));
+    return true;
+  }
+
+  function deployChutes(): boolean {
+    if (!handFlown || isDone || state.phase === 'pad' || state.phase === 'rail') return false;
+    // Between separation and the next ignition a second press of Stage must not end the climb.
+    if (nextStageIgnitionT !== undefined) return false;
+    const packed = chutes.filter((c) => c.deployedAt === undefined);
+    if (packed.length === 0) return false;
+    epoch++;
+    engineCut = true;
+    throttle = commandedThrottle();
+    for (const run of packed) run.deployedAt = state.t;
+    state.chuteDeployed = true;
+    state.phase = 'descent';
+    emit('chuteDeploy', `Parachute fired by hand at ${state.altitude.toFixed(0)} m, speed ${state.speed.toFixed(1)} m/s`);
+    return true;
+  }
+
   /** Phase transitions and discrete events for the state just committed. */
   function transitions(e: Eval): void {
     const t = state.t;
@@ -717,6 +856,8 @@ export function createSim(
         railS = 0;
         railV = 0;
         emit('liftoff', `Liftoff with thrust ${e.thrust.toFixed(2)} N`);
+      } else if (ignited && !motorUnburnt()) {
+        burntOutOnTheGround();
       }
       return;
     }
@@ -724,19 +865,23 @@ export function createSim(
     if (state.phase === 'rail') {
       if (railS >= config.railLength) {
         railExited = true;
-        state.phase = e.thrust > 0 ? 'boost' : 'coast';
+        // A motor shut off by hand still has a boost to finish.
+        state.phase = e.thrust > 0 || (handFlown && motorUnburnt()) ? 'boost' : 'coast';
         prevRadialV = radialVelocity(state.pos, state.vel);
         emit('railExit', `Left rail at ${state.speed.toFixed(1)} m/s`);
+      } else if (railV <= 0 && ignited && !motorUnburnt()) {
+        burntOutOnTheGround();
       }
       return;
     }
 
-    const tBurn = ignited ? t - tIgnition : -1;
+    const tBurn = burnTimeAt(t);
 
     if (nextStageIgnitionT !== undefined && t >= nextStageIgnitionT && stageMotors) {
       epoch++;
       activeMotor = stageMotors[firingStageIdx].motor;
       tIgnition = t;
+      burnLag = 0;
       nextStageIgnitionT = undefined;
       state.phase = 'boost';
       emit('stage ignition', `Stage ${firingStageIdx + 1} ignition at ${state.altitude.toFixed(1)} m`);
@@ -744,36 +889,8 @@ export function createSim(
 
     if (state.phase === 'boost' && activeMotor && tBurn >= activeMotor.burnTime) {
       state.phase = 'coast';
-      if (isMultiStage && stageMotors && rocket.stages && firingStageIdx + 1 < stageMotors.length) {
-        const dropBoundary = rocket.stages[rocket.stages.length - 1 - firingStageIdx];
-        const kept = activeRocket.components.slice(0, dropBoundary.startComponent);
-        let newLen = 0;
-        let newMaxR = 0;
-        for (const c of kept) {
-          if (c.kind === 'nosecone' || c.kind === 'bodytube' || c.kind === 'transition' || c.kind === 'finset') {
-            newLen = Math.max(newLen, c.x + c.length);
-          }
-          if (c.kind === 'nosecone') newMaxR = Math.max(newMaxR, c.baseRadius);
-          else if (c.kind === 'bodytube') newMaxR = Math.max(newMaxR, c.outerRadius);
-          else if (c.kind === 'transition') newMaxR = Math.max(newMaxR, c.foreRadius, c.aftRadius);
-        }
-        // Boosters, pods and tube fins leave with the stage they are mounted on.
-        const keptSide = (activeRocket.sideBodies ?? []).filter((sb) => {
-          const x0 = Math.min(...sb.components.map((c) => c.x));
-          const x1 = Math.max(...sb.components.map((c) => c.x + c.length));
-          return (x0 + x1) / 2 <= newLen;
-        });
-        epoch++;
-        activeRocket = { ...activeRocket, components: kept, length: newLen, maxRadius: newMaxR, sideBodies: keptSide };
-        const keptSet = new Set<Component>(kept);
-        for (let ci = chutes.length - 1; ci >= 0; ci--) {
-          if (!keptSet.has(chutes[ci].chute)) chutes.splice(ci, 1);
-        }
-        emit('stage separation', `Stage ${firingStageIdx + 1} separation at ${state.altitude.toFixed(1)} m`);
-        firingStageIdx++;
-        const nextStage = stageMotors[firingStageIdx];
-        nextStageIgnitionT = t + (nextStage.ignitionDelay ?? 0);
-        activeMotor = null;
+      if (hasStageToDrop()) {
+        dropStage(t);
       } else {
         burnoutT = t;
         emit('burnout', `Burnout at ${state.speed.toFixed(1)} m/s, ${state.altitude.toFixed(1)} m`);
@@ -819,6 +936,11 @@ export function createSim(
         epoch++;
         run.deployedAt = t;
         state.chuteDeployed = true;
+        // A pilot can still have the engine lit when a parachute opens on its own: shut it.
+        if (handFlown && motorUnburnt()) {
+          engineCut = true;
+          state.phase = 'descent';
+        }
         if (first) {
           if (state.phase === 'coast') state.phase = 'descent';
           emit(
@@ -859,6 +981,11 @@ export function createSim(
   }
 
   function substep(h: number): void {
+    const next = commandedThrottle();
+    if (next !== throttle) {
+      epoch++;
+      throttle = next;
+    }
     const t0 = state.t;
     const t1 = t0 + h;
     let cand: Kin;
@@ -895,6 +1022,7 @@ export function createSim(
       railS = railNext.s;
       railV = railNext.v;
     }
+    if (ignited) burnLag += h * (1 - throttle);
     state.t = t1;
     state.pos = cand.pos;
     state.vel = cand.vel;
@@ -922,11 +1050,20 @@ export function createSim(
     epoch++;
     ignited = true;
     tIgnition = state.t;
-    emit('ignition', `Ignition: ${motor.manufacturer} ${motor.designation}`);
+    const lit = activeMotor ?? motor;
+    const many = activeCount > 1 ? `${activeCount} x ` : '';
+    emit('ignition', `Ignition: ${many}${lit.manufacturer} ${lit.designation}`);
   }
 
   function step(dt: number, ctrl?: Controls): void {
-    controls = ctrl ?? NO_CONTROLS;
+    const next = ctrl ?? NO_CONTROLS;
+    // The cached evaluation of the current state is stale once the commands change.
+    const a = controls.rate;
+    const b = next.rate;
+    const sameRate = a === b || (!!a && !!b && a[0] === b[0] && a[1] === b[1] && a[2] === b[2]);
+    controls = next;
+    if (!sameRate) epoch++;
+    if (next.throttle !== undefined || next.rate !== undefined) handFlown = true;
     if (isDone || !(dt > 0)) return;
     let remaining = dt;
     let n = 0;
@@ -954,5 +1091,7 @@ export function createSim(
     },
     ignite,
     step,
+    deployChutes,
+    separateStage,
   };
 }

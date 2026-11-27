@@ -109,8 +109,8 @@ export function mountHero(container: HTMLElement, opts: HeroOptions): Hero | nul
 
   function onKey(e: KeyboardEvent): void {
     if (e.key !== 'Enter' || e.repeat) return;
-    // A focused title button already handles Enter through its own click.
-    if (e.target instanceof HTMLButtonElement && title?.contains(e.target)) return;
+    // A focused control handles Enter itself (title buttons, the account button, form fields).
+    if (e.target instanceof Element && e.target.closest('button, a, input, select, textarea, [role=button]')) return;
     e.preventDefault();
     dismiss();
     opts.onFly();
@@ -143,14 +143,14 @@ export function mountHero(container: HTMLElement, opts: HeroOptions): Hero | nul
         dismiss();
         opts.onBuild();
       }),
-      makeButton('astra-hero-btn--ghost', 'FLY THE SAMPLE', () => {
+      makeButton('astra-hero-btn--ghost', 'TRY THE SAMPLE ROCKET', () => {
         dismiss();
         opts.onFly();
       }),
       makeButton('astra-hero-btn--ghost', 'MOON LANDING', () => {
         opts.onMoon();
       }),
-      makeButton('astra-hero-btn--ghost', 'FLY LVM3 MISSION', () => {
+      makeButton('astra-hero-btn--ghost', "FLY ISRO'S LVM3", () => {
         dismiss();
         opts.onMission?.();
       }),

@@ -12,12 +12,16 @@ import {
   MAX_CURVE_POINTS,
   SimBudgetError,
   SimJobError,
+  LOG_COLUMNS,
+  isFlightJobResult,
+  isMissionJobResult,
   motorSpec,
   parseResultJson,
   parseSimJob,
   runSimJob,
   runSimJobAsync,
   stringifyResult,
+  thinRecord,
   type SimJobRequest,
 } from './simJob';
 
@@ -132,5 +136,38 @@ describe('time budget', () => {
     let t = 0;
     const now = (): number => (t += 10_000);
     expect(() => runSimJob(parseSimJob(request()), { budgetMs: 25_000, now })).toThrow(SimBudgetError);
+  });
+});
+
+describe('result validators and thinRecord', () => {
+  const row = (t: number): number[] => {
+    const r = new Array<number>(LOG_COLUMNS.length).fill(0);
+    r[0] = t;
+    return r;
+  };
+  const flight = (rows: number[][], events: { t: number; type: string }[] = []) => ({
+    kind: 'flight', complete: true, events, log: { rows },
+  });
+
+  it('rejects flight rows whose time goes backwards', () => {
+    expect(isFlightJobResult(flight([row(0), row(1)], [{ t: 0, type: 'a' }, { t: 1, type: 'b' }]))).toBe(true);
+    expect(isFlightJobResult(flight([row(1), row(0)]))).toBe(false);
+    // Events may legitimately be slightly out of order (burnout logged before maxQ).
+    expect(isFlightJobResult(flight([row(0)], [{ t: 2, type: 'a' }, { t: 1, type: 'b' }]))).toBe(true);
+    expect(isFlightJobResult(flight([row(0)], [{ t: NaN, type: 'a' }]))).toBe(false);
+  });
+
+  it('rejects mission samples without a finite t and non-object markers', () => {
+    const m = (samples: unknown[], markers: unknown[] = []) => ({ kind: 'mission', record: { samples, markers } });
+    expect(isMissionJobResult(m([{ t: 0 }, { t: 1 }], [{ t: 1 }]))).toBe(true);
+    expect(isMissionJobResult(m([{ x: 1 }]))).toBe(false);
+    expect(isMissionJobResult(m([{ t: NaN }]))).toBe(false);
+    expect(isMissionJobResult(m([{ t: 0 }], [5]))).toBe(false);
+  });
+
+  it('thinRecord throws SimBudgetError when it cannot fit', () => {
+    const samples = Array.from({ length: 500 }, (_, i) => ({ t: i }));
+    const record = { source: 'mission', samples, markers: [] } as never;
+    expect(() => thinRecord(record, 10)).toThrow(SimBudgetError);
   });
 });

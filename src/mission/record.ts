@@ -1,7 +1,7 @@
 import type { Quat, Vec3 } from '../types';
 
 export interface FlightSample {
-  t: number;              // s since liftoff
+  t: number;              // s since liftoff; negative while the vehicle is still on the pad
   pos: Vec3;              // app frame, metres, Earth-centred
   quat: Quat;             // app convention, body +Y is the nose
   vel: Vec3;              // app frame, m/s
@@ -64,6 +64,7 @@ export interface FlightOutcome {
 
 export interface FlightRecord {
   source: 'design' | 'mission';
+  /** Starts on the pad a few seconds before release (t < 0), so samples[0] is not liftoff. */
   samples: FlightSample[]; markers: FlightMarker[];
   orbit?: { apoapsis: number; periapsis: number; inclinationDeg: number };
   vehicleName?: string;

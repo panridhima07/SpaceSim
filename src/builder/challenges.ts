@@ -167,6 +167,10 @@ export function markChallengesCompleted(ids: string[], store?: StorageLike): Set
   const done = loadCompletedChallenges(store);
   for (const id of ids) done.add(id);
   const s = resolveStorage(store);
-  if (s) s.setItem(COMPLETED_KEY, JSON.stringify([...done]));
+  try {
+    if (s) s.setItem(COMPLETED_KEY, JSON.stringify([...done]));
+  } catch {
+    // Storage full or blocked: the challenge still counts for this visit.
+  }
   return done;
 }

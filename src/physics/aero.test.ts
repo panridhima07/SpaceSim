@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aeroProps, dragBreakdown, transonicWaveCd } from './aero';
+import { aeroProps, compressibilityFactor, dragBreakdown, transonicWaveCd } from './aero';
 import { massProps } from './massprops';
 import { FIXTURE_ROCKET, FIXTURE_MOTOR } from './fixture';
 
@@ -144,5 +144,28 @@ describe('transonicWaveCd', () => {
     expect(transonicWaveCd(1.15)).toBeCloseTo(0.30, 6);
     expect(transonicWaveCd(1.5)).toBeLessThan(transonicWaveCd(1.15));
     expect(transonicWaveCd(2.0)).toBeLessThan(transonicWaveCd(1.5));
+  });
+});
+
+describe('fin compressibility factor', () => {
+  it('follows Prandtl-Glauert below Mach 0.8 and 1/sqrt(M^2-1) above Mach 1.2', () => {
+    expect(compressibilityFactor(0)).toBe(1);
+    expect(compressibilityFactor(0.6)).toBeCloseTo(1 / Math.sqrt(1 - 0.36), 12);
+    expect(compressibilityFactor(2)).toBeCloseTo(1 / Math.sqrt(3), 12);
+  });
+
+  it('has no step anywhere from Mach 0.5 to 3 (it used to drop 9.5% at Mach 1.2)', () => {
+    let prev = compressibilityFactor(0.5);
+    for (let M = 0.501; M <= 3; M += 0.001) {
+      const f = compressibilityFactor(M);
+      expect(Math.abs(f - prev)).toBeLessThan(0.01);
+      prev = f;
+    }
+  });
+
+  it('centre of pressure moves smoothly through Mach 1.2', () => {
+    const below = aeroProps(FIXTURE_ROCKET, 1.1999, 0).cpX;
+    const above = aeroProps(FIXTURE_ROCKET, 1.2001, 0).cpX;
+    expect(Math.abs(above - below)).toBeLessThan(1e-4);
   });
 });

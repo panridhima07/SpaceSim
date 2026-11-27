@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Overlay for the Google Play build type (npm run android:bundle, Gradle task bundlePlay).
+     Play updates the app itself and does not allow an app to install APKs, so the install
+     permission is taken out and the app is told it is a Play build (no update bar). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" tools:node="remove" />
+
+    <application>
+        <meta-data android:name="astra.playBuild" android:value="true" tools:replace="android:value" />
+    </application>
+</manifest>

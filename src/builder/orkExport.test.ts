@@ -272,4 +272,10 @@ describe('orkExport round-trip', () => {
     expect(pMount.kind === 'innertube' && pMount.motor?.designation).toBe('G64W');
     expect(pMount.kind === 'innertube' && pMount.overhang).toBeCloseTo(0.005, 5);
   });
+  it('strips XML-invalid control characters from names', () => {
+    const d = createEmptyDesign('Bad' + String.fromCharCode(1) + 'Name');
+    const xml = exportOrkXml(d);
+    expect(xml).toContain('BadName');
+    expect(xml.includes(String.fromCharCode(1))).toBe(false);
+  });
 });

@@ -183,12 +183,18 @@ export function createImportFix(cloudReady: Promise<Cloud>, hooks: ImportFixHook
     noteOpen = false;
     render();
     const cloud = await cloudReady;
-    hooks.toast(
-      cloud.store.enabled
-        ? 'Fix saved to your account. This file will open your way from now on.'
-        : 'Fix saved in this browser. Sign in to keep it on every device.',
-    );
-    await cloud.store.saveCorrection(record, cloud.mayCollect());
+    if (cloud.store.enabled) {
+      // Toast only after the account write is known, so a failed save is not reported as a success.
+      const ok = await cloud.store.saveCorrection(record, cloud.mayCollect());
+      hooks.toast(
+        ok
+          ? 'Fix saved to your account. This file will open your way from now on.'
+          : 'Fix saved in this browser. Saving it to your account failed; it will open your way on this device.',
+      );
+    } else {
+      hooks.toast('Fix saved in this browser. Sign in to keep it on every device.');
+      await cloud.store.saveCorrection(record, cloud.mayCollect());
+    }
   }
 
   async function forgetFix(): Promise<void> {

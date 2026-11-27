@@ -57,6 +57,8 @@ export interface Design {
   nextId: number;
   /** Boosters, pods and tube fins carried over from an imported file, unchanged. */
   sideBodies?: SideBody[];
+  /** Warnings from the import that produced this design; kept so they survive edits. */
+  importWarnings?: string[];
 }
 
 export function isExternal(c: Component): c is ExternalComponent {
@@ -83,9 +85,14 @@ function allocId(nextId: number): { id: string; nextId: number } {
   return { id: `p${nextId}`, nextId: nextId + 1 };
 }
 
+/** Unique-enough design id (time plus random suffix) so two designs made in the same ms never collide. */
+export function newDesignId(): string {
+  return `d_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export function createEmptyDesign(name = 'New Rocket'): Design {
   return {
-    id: `d_${Date.now().toString(36)}`,
+    id: newDesignId(),
     name,
     stack: [],
     nextId: 1,
@@ -346,6 +353,14 @@ function resolveChildX(parentX: number, parentLen: number, childLen: number, anc
   }
 }
 
+/**
+ * Keep a non-fin child from starting ahead of its parent. Aft overhang is allowed: motor tubes
+ * often stick out of the airframe's tail on purpose, and imported designs rely on it.
+ */
+function clampChildX(x: number, parentX: number, _parentLen: number, _childLen: number): number {
+  return Math.max(x, parentX);
+}
+
 /** Convert an editable Design into the canonical RocketModel consumed by physics, mesh and flaws. */
 export function toRocketModel(design: Design): RocketModel {
   const components: Component[] = [];
@@ -365,6 +380,7 @@ export function toRocketModel(design: Design): RocketModel {
     const ext = cloneComponent(node.part);
     ext.id = node.id;
     ext.x = cursor;
+    if (ext.cgOverride !== undefined) ext.cgOverride += ext.x - node.part.x;
     cursor += ext.length;
 
     components.push(ext);
@@ -394,6 +410,8 @@ export function toRocketModel(design: Design): RocketModel {
         child.radialOffset = parentOuter + child.outerRadius;
       }
       child.x = resolveChildX(ext.x, ext.length, child.length, ch.anchor, ch.offset);
+      if (child.kind !== 'finset') child.x = clampChildX(child.x, ext.x, ext.length, child.length);
+      if (child.cgOverride !== undefined) child.cgOverride += child.x - ch.part.x;
       components.push(child);
       if (child.kind === 'finset') {
         length = Math.max(length, child.x + child.length);
@@ -426,7 +444,7 @@ export function toRocketModel(design: Design): RocketModel {
     maxRadius,
     stageCount: stages ? stages.length : 1,
     ...(stages ? { stages } : {}),
-    warnings: [],
+    warnings: design.importWarnings ? [...design.importWarnings] : [],
     ...(design.sideBodies && design.sideBodies.length > 0
       ? { sideBodies: design.sideBodies.map((sb) => placeSideBody(sb, placed)) }
       : {}),
@@ -546,10 +564,11 @@ export function fromRocketModel(rocket: RocketModel): Design {
   }
 
   return {
-    id: `d_${Date.now().toString(36)}`,
+    id: newDesignId(),
     name: rocket.name || 'Imported Rocket',
     stack,
     nextId,
+    ...(rocket.warnings && rocket.warnings.length > 0 ? { importWarnings: [...rocket.warnings] } : {}),
     ...(rocket.sideBodies && rocket.sideBodies.length > 0
       ? { sideBodies: rocket.sideBodies.map((sb) => mountSideBody(sb, stack, stations)) }
       : {}),

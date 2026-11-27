@@ -58,6 +58,29 @@ export const PART_COLORS = {
 
 const CUTAWAY_OPACITY = 0.25;
 
+/**
+ * How a surface catches the light. Pick the one the real material has:
+ * `matte`  bare paper and cardboard, raw wood, fabric, cork, soot, rough casting;
+ * `satin`  primer, sanded and sealed wood, phenolic, ordinary moulded plastic, epoxy;
+ * `gloss`  paint under clear coat, polished plastic, vinyl decal, mylar film, glass;
+ * `metal`  machined or anodised aluminium, steel, brass, lead.
+ */
+export type PartFinish = 'matte' | 'satin' | 'gloss' | 'metal';
+
+/**
+ * What each finish means to the two renderers. `roughness` / `metalness` are for the
+ * standard material (model export, part gallery before the flat pass); `shininess` and
+ * `specular` (a grey level 0..1, mixed toward the surface colour for metal) are what the
+ * app's flat pass draws. Metalness stays low: no scene has an environment map, and a
+ * true metal would render black.
+ */
+export const FINISH_LOOK: Record<PartFinish, { roughness: number; metalness: number; shininess: number; specular: number }> = {
+  matte: { roughness: 0.92, metalness: 0, shininess: 0, specular: 0 },
+  satin: { roughness: 0.58, metalness: 0.02, shininess: 22, specular: 0.14 },
+  gloss: { roughness: 0.24, metalness: 0.04, shininess: 80, specular: 0.38 },
+  metal: { roughness: 0.3, metalness: 0.3, shininess: 120, specular: 0.62 },
+};
+
 // ---------------------------------------------------------------------------------------
 // per-part sharing
 //
@@ -108,11 +131,13 @@ export function sharedGeometry<G extends THREE.BufferGeometry>(ctx: PartContext,
 }
 
 /**
- * The only material part designs use. The app later swaps it for a flat Lambert
- * material, so roughness and metalness never reach the screen: express a tier with
- * shape and colour. `shell: true` marks an outer skin, which turns see-through in
- * cutaway view. `offset: true` adds a little polygon offset so thin decoration never
- * z-fights the skin under it.
+ * The only material part designs use. The app later swaps it for a cheap flat-pass
+ * material (see `applyFlatStyle`), so a hand-set roughness or metalness never reaches the
+ * screen: say how the surface catches light with `finish`, and express everything else
+ * with shape and colour. Without `finish` the surface is drawn with no highlight at all.
+ * `shell: true` marks an outer skin, which turns see-through in cutaway view.
+ * `offset: true` adds a little polygon offset so thin decoration never z-fights the skin
+ * under it.
  *
  * Inside a `scopedPart` call, equal arguments return the same material: never modify
  * the result (ask for what you need through `opts`).
@@ -120,19 +145,21 @@ export function sharedGeometry<G extends THREE.BufferGeometry>(ctx: PartContext,
 export function partMaterial(
   color: number,
   ctx: PartContext,
-  opts: { shell?: boolean; offset?: boolean } = {},
+  opts: { shell?: boolean; offset?: boolean; finish?: PartFinish } = {},
 ): THREE.MeshStandardMaterial {
   const see = !!opts.shell && ctx.cutaway;
   const scope = scopes.get(ctx);
-  const key = `${color}|${see ? 1 : 0}|${opts.offset ? 1 : 0}`;
+  const key = `${color}|${see ? 1 : 0}|${opts.offset ? 1 : 0}|${opts.finish ?? ''}`;
   const hit = scope?.materials.get(key);
   if (hit) return hit;
+  const look = opts.finish ? FINISH_LOOK[opts.finish] : undefined;
   const m = new THREE.MeshStandardMaterial({
     color,
-    roughness: 0.45,
-    metalness: 0.05,
+    roughness: look?.roughness ?? 0.45,
+    metalness: look?.metalness ?? 0.05,
     side: THREE.DoubleSide,
   });
+  if (opts.finish) m.userData.finish = opts.finish;
   if (see) {
     m.transparent = true;
     m.opacity = CUTAWAY_OPACITY;
@@ -146,6 +173,12 @@ export function partMaterial(
   scope?.materials.set(key, m);
   return m;
 }
+
+/**
+ * Finish of a painted outer skin (nose, tube, transition, fin, pod) per tier, so skins
+ * drawn by different part files match: clear-coated, primer-and-paint, bare and unsealed.
+ */
+export const SKIN_FINISH: Record<PartTier, PartFinish> = { best: 'gloss', ok: 'satin', bad: 'matte' };
 
 // ---------------------------------------------------------------------------------------
 // radial detail

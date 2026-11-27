@@ -1,17 +1,17 @@
 # Astra — system design
 
-Written 21 Nov 2026. Status updated 23 Nov 2026. This is the target design for the finished project and the list of rounds that get there. Each round is one opencode prompt in `docs/opencode/`.
+Written 21 Nov 2026. Status updated 26 Nov 2026. This is the target design for the finished project and the list of rounds that get there. Each round is one opencode prompt in `docs/opencode/`.
 
 ## What exists today
 
 | Piece | Where it lives now | State |
 |---|---|---|
-| Space Flight Builder web app (`.ork` import, 3D, 6-DOF model-rocket sim, flaw report, replay, solar system, Android shell) | main checkout, branch `app`, repo root | 1183 tests pass in 84 files, typecheck clean (23 Nov 2026). Partly committed on `app`; the working tree has uncommitted changes. |
-| Orbital launch physics library (`rocket-physics/`: 6-DOF ascent, guidance, staging, orbits, LVM3 / Chandrayaan-3 preset) | main checkout, branch `app`, `rocket-physics/` | 280 tests pass in 45 suites (23 Nov 2026). Partly committed on `app`; the working tree has uncommitted changes. No rendering in this folder. |
+| Space Flight Builder web app (`.ork` import, 3D, 6-DOF model-rocket sim, flaw report, replay, solar system, Android shell) | main checkout, branch `app`, repo root | 1,481+ tests in about 98 files (vitest), typecheck clean (26 Nov 2026). Partly committed on `app`; the working tree has uncommitted changes. |
+| Orbital launch physics library (`rocket-physics/`: 6-DOF ascent, guidance, staging, orbits, LVM3 / Chandrayaan-3 preset) | main checkout, branch `app`, `rocket-physics/` | about 280 to 289 tests (`node --test`), passing (26 Nov 2026). Partly committed on `app`; the working tree has uncommitted changes. No rendering in this folder. |
 | Single-file OpenRocket 3D viewer with internal systems (`rocket-viewer/index.html`) | branch `claude/3d-texture-visualization-91ee2f` | Committed on its branch. Separate from the app. |
 | Godot project (`space-flight-godot/`) | main checkout, untracked | Abandoned. Not part of the design. |
 
-`main` holds only a README and four name files. The first job is to get the two working codebases into one committed tree.
+This was written when `main` held only a README and a few name files; `main` now carries the app tree (check `git ls-tree main`). Active work is on branch `app`.
 
 ## The product
 
@@ -151,7 +151,7 @@ Vector conversion is a fixed rotation: `app = (x, z, −y)` (determinant +1, so 
 | 5 | Model accuracy: fin CNα is ~20 % low (stability margin reads 0.5–1 calibre high), dry mass 3.4 % high, validate on a second and third OpenRocket design | Margin within 0.3 calibre on three designs | mostly done (23 Nov 2026): CNα within 3.6 % and CP within 0.14 calibre of OpenRocket's stored values on three designs (`src/validate/aeroOpenRocket.test.ts`). Margin within 0.24 and 0.31 calibre on the two single-stage designs; the rest is CG 4 to 9 mm forward. Open: dry mass 2.6 % high on the simple rocket, three-stage CNα at high angle of attack. |
 | 6 | Multi-stage `.ork` flight (currently stacked into one rocket with a warning) | The two-stage example flies with separation | done |
 | 7 | ISRO content: RH-200 sounding rocket sample, a second mission vehicle, lunar transfer view using the library's Lambert example | — | partly done: RH-200 sample, real-flight reference times, and PSLV-C61 and Falcon 9 missions exist. Open: no lunar transfer view in the app (the Lambert solver is in `rocket-physics/src/orbit/lambert.ts`). |
-| 8 | Polish and submission: planets aligned to real sky, transonic drag, README, demo script, deploy the site | — | partly done: planets aligned to the real sky; README updated 23 Nov 2026. Open: transonic drag is an uncalibrated placeholder; no demo script found; deploy script ready (`npm run deploy`) but no live URL recorded. |
+| 8 | Polish and submission: planets aligned to real sky, transonic drag, README, demo script, deploy the site | — | partly done: planets aligned to the real sky; README updated 26 Nov 2026; judge demo guide in `docs/DEMO.md`; site live at https://astra-spaceflight.vercel.app (`npm run deploy`, which runs `npm test` first). Open: transonic drag is an uncalibrated placeholder. |
 
 Rounds 5–8 are independent of each other and can be reordered by what the judges need. The single-file viewer's internal-systems visuals are a possible source for round 8 cutaway polish; the file itself is not merged.
 

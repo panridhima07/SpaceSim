@@ -112,7 +112,7 @@
 
 .msn-stat-label {
   font-family: var(--sfb-mono);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--sfb-muted);
@@ -404,13 +404,30 @@
   }
 
   /* Timeline + health both appear inside the slide-up sheet on phone, keeping the middle third clear. */
+  /* The sheet: timeline above, health below, sharing the height under the header with an 8px
+     gap, so the two never meet. missionUi.ts measures --msn-sheet-top while the sheet is open. */
+  .msn-root {
+    --msn-sheet-start: var(--msn-sheet-top, calc(env(safe-area-inset-top, 0px) + 128px));
+    --msn-sheet-room: calc(
+      100vh - var(--msn-sheet-start) - env(safe-area-inset-bottom, 0px) - 16px
+    );
+  }
+
+  @supports (height: 100dvh) {
+    .msn-root {
+      --msn-sheet-room: calc(
+        100dvh - var(--msn-sheet-start) - env(safe-area-inset-bottom, 0px) - 16px
+      );
+    }
+  }
+
   .msn-col-right {
     display: none;
     position: fixed;
     left: 8px;
     right: 8px;
-    bottom: 108px;
-    max-height: 44vh;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
+    max-height: calc(var(--msn-sheet-room) * 0.6);
     overflow-y: auto;
     z-index: 25;
   }
@@ -428,8 +445,8 @@
     position: fixed;
     left: 8px;
     right: 8px;
-    top: 128px;
-    max-height: 28vh;
+    top: var(--msn-sheet-start);
+    max-height: calc(var(--msn-sheet-room) * 0.4);
     overflow-y: auto;
     z-index: 25;
   }
@@ -668,92 +685,143 @@
 
 /* ---------- Manual flight controls ---------- */
 
-.msn-pilot {
-  grid-column: 2;
-  grid-row: 2;
-  align-self: end;
-  justify-self: center;
-  max-width: 640px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  animation: o-rise 240ms var(--sfb-ease-out) backwards;
+/* The flight deck (flightDeck.css) covers the view. These offsets keep it clear of the header,
+   the transport bar and the telemetry column; it adds its own 8px and the safe-area insets.
+   Desktop: the telemetry column and its handle stay, so the deck starts to the right of them. */
+.msn-root.msn-piloting {
+  --fdk-top: 74px;
+  --fdk-bottom: 74px;
+  --fdk-left: 366px;
+  --fdk-right: 4px;
 }
 
-.msn-pilot-status {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px 18px;
+.msn-root.msn-piloting.msn-left-off {
+  --fdk-left: 52px;
 }
 
-.msn-pilot-mode {
-  font-family: var(--sfb-mono);
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  padding: 3px 9px;
-  border-radius: 999px;
-  border: 1px solid var(--sfb-line);
-  color: var(--sfb-muted);
-  transition: color 150ms var(--sfb-ease-out), border-color 150ms var(--sfb-ease-out), background-color 150ms var(--sfb-ease-out);
-}
-
-.msn-pilot-mode.is-manual {
-  color: var(--sfb-accent);
-  border-color: var(--sfb-accent);
-  background: rgba(245, 166, 91, 0.12);
-}
-
-.msn-pilot-stat {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-}
-
-.msn-pilot-stat b {
-  font-family: var(--sfb-mono);
-  font-size: 14px;
-  font-weight: 400;
-  color: var(--sfb-text);
-  min-width: 3ch;
-}
-
-.msn-pilot-stat b.is-warn { color: var(--sfb-accent); }
-.msn-pilot-stat b.is-danger { color: #ff6b5e; font-weight: 600; }
-
-.msn-pilot-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.msn-pilot-hint {
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--sfb-muted);
-}
-
-/* The outcome card and the controls share the middle column; while flying, the card waits. */
-.msn-piloting .msn-outcome {
+/* The outcome card waits while flying, and the right arrows take the health column's place. */
+.msn-root.msn-piloting .msn-outcome,
+.msn-root.msn-piloting .msn-col-right,
+.msn-root.msn-piloting .sfb-btn.msn-handle-right {
   display: none;
 }
 
-@media (pointer: coarse) {
-  .msn-pilot-hint { display: none; }
+/* One row whatever the width, so the bar's height is known. It swipes sideways if it must. */
+.msn-root.msn-piloting .msn-transport {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.msn-root.msn-piloting .msn-transport > * {
+  flex-shrink: 0;
+}
+
+.msn-root.msn-piloting .msn-transport > .msn-scrubber {
+  flex-shrink: 1;
+}
+
+/* Too narrow for the telemetry column beside the deck. */
+@media (max-width: 999px), (max-height: 500px) {
+  .msn-root.msn-piloting,
+  .msn-root.msn-piloting.msn-left-off {
+    --fdk-left: 4px;
+  }
+
+  .msn-root.msn-piloting .msn-col-left,
+  .msn-root.msn-piloting .sfb-btn.msn-handle-left {
+    display: none;
+  }
+}
+
+/* Phones, either way up: the deck takes priority. The header keeps Back, the name and Restart;
+   the bar keeps pause, warp and the cameras (a live flight has nothing to scrub). */
+@media (max-width: 760px), (max-height: 500px) {
+  .msn-root.msn-piloting .msn-header {
+    flex-wrap: nowrap;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .msn-root.msn-piloting .msn-case-note,
+  .msn-root.msn-piloting .msn-header-right > :not(.msn-pilot-start),
+  .msn-root.msn-piloting .msn-transport > .msn-scrubber,
+  .msn-root.msn-piloting .msn-transport > .msn-scale,
+  .msn-root.msn-piloting .msn-transport > .msn-panels-toggle {
+    display: none;
+  }
+
+  .msn-root.msn-piloting .msn-transport {
+    padding: 6px 8px;
+  }
 }
 
 @media (max-width: 760px) {
-  .msn-pilot {
-    position: fixed;
-    left: calc(env(safe-area-inset-left, 0px) + 8px);
-    right: calc(env(safe-area-inset-right, 0px) + 8px);
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 124px);
-    max-width: none;
-    z-index: 24;
+  .msn-root.msn-piloting,
+  .msn-root.msn-piloting.msn-left-off {
+    --fdk-top: 66px;
+    --fdk-bottom: 66px;
+    --fdk-left: 0px;
+    --fdk-right: 0px;
   }
 
-  .msn-pilot-row .sfb-btn {
-    flex: 1 1 22%;
+  /* The account button sits where the deck's readouts go. */
+  body:has(.msn-root.msn-piloting:not(.sfb-hidden)) .auth-chip {
+    display: none;
+  }
+}
+
+/* Phone in landscape: no height to spare, so the bar moves between the lever and the arrows. */
+@media (max-height: 500px) {
+  .msn-root.msn-piloting,
+  .msn-root.msn-piloting.msn-left-off {
+    --fdk-top: 44px;
+    --fdk-bottom: 0px;
+    --fdk-left: 0px;
+    --fdk-right: 0px;
+    padding-top: calc(env(safe-area-inset-top, 0px) + 4px);
+  }
+
+  .msn-root.msn-piloting .msn-header {
+    min-height: 0;
+    padding-top: 2px;
+    padding-bottom: 2px;
+  }
+
+  .msn-root.msn-piloting .msn-header .sfb-btn {
+    min-height: 36px;
+  }
+
+  .msn-root.msn-piloting .msn-transport {
+    position: fixed;
+    left: calc(env(safe-area-inset-left, 0px) + 92px);
+    right: calc(env(safe-area-inset-right, 0px) + 156px);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 4px);
+    padding: 3px 6px;
+  }
+}
+
+/* Short phones: no height to stack the sheet, so its two panels sit side by side. */
+@media (max-width: 760px) and (max-height: 500px) {
+  .msn-root .msn-col-right {
+    left: calc(50% + 4px);
+    max-height: calc(var(--msn-sheet-room) + 8px);
+  }
+
+  .msn-root.msn-sheet-open .msn-timeline-panel {
+    right: calc(50% + 4px);
+    max-height: calc(var(--msn-sheet-room) + 8px);
+  }
+}
+
+/* Phone: the account button takes the left end of the header's first row. */
+@media (max-width: 760px) {
+  .msn-root:not(.msn-piloting) .msn-header-left {
+    padding-left: 52px;
+  }
+
+  body:has(.msn-root:not(.sfb-hidden)) .auth-chip {
+    top: calc(21px + env(safe-area-inset-top, 0px));
+    left: calc(21px + env(safe-area-inset-left, 0px));
   }
 }

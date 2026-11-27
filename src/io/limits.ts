@@ -75,8 +75,9 @@ export function isFiniteNum(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
 }
 
-/** Clamp to [0, max]; non-finite gives the fallback. */
+/** Clamp v to [min, max]; a non-finite v (NaN or ±Infinity) gives the fallback, which is `min`. */
 export function clampRange(v: number, min: number, max: number): number {
+  if (!Number.isFinite(v)) return min;
   return Math.min(max, Math.max(min, v));
 }
 export function clampLength(v: number): number {
@@ -683,12 +684,19 @@ export function sanitizeDesignObject(
   );
 
   const sideBodies = sanitizeSideBodies(rawDesign.sideBodies, warnings);
+  const importWarnings = Array.isArray(rawDesign.importWarnings)
+    ? rawDesign.importWarnings
+        .filter((w): w is string => typeof w === 'string')
+        .slice(0, 50)
+        .map((w) => w.slice(0, 300))
+    : [];
 
   return {
-    id: strOr(rawDesign.id, `d_${Date.now().toString(36)}`, MAX_ID),
+    id: strOr(rawDesign.id, `d_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, MAX_ID),
     name: strOr(rawDesign.name, fallbackName),
     stack,
     nextId,
     ...(sideBodies.length > 0 ? { sideBodies } : {}),
+    ...(importWarnings.length > 0 ? { importWarnings } : {}),
   };
 }

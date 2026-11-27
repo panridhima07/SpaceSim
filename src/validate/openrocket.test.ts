@@ -14,11 +14,13 @@ const FIXTURE = fileURLToPath(
   new URL('../../fixtures/external/A_simple_model_rocket.ork', import.meta.url),
 );
 const haveFixture = fs.existsSync(FIXTURE);
+if (!haveFixture) console.warn('[validate] OpenRocket fixtures missing: run node scripts/fetch-data.mjs; accuracy tests are skipped.');
 
 const DUAL_FIXTURE = fileURLToPath(
   new URL('../../fixtures/external/Dual_parachute_deployment.ork', import.meta.url),
 );
 const haveDualFixture = fs.existsSync(DUAL_FIXTURE);
+if (!haveDualFixture) console.warn('[validate] OpenRocket fixtures missing: run node scripts/fetch-data.mjs; accuracy tests are skipped.');
 
 function pct(ours: number, ref: number): number {
   if (!Number.isFinite(ours) || !Number.isFinite(ref) || ref === 0) return NaN;
@@ -67,6 +69,11 @@ describe.skipIf(!haveFixture)('our sim vs OpenRocket (A simple model rocket)', (
       expect(r.ours!.maxAltitude).toBeGreaterThan(0);
       // Every motor in this design is embedded in the .ork, so the designer's exact motor is flown.
       expect(r.note ?? '').toContain('motor from embedded');
+      // Bounds: 1.5x the worst measured error (alt 4.4, vmax 3.0, tApo 5.8, rodV 3.5), floored at the dual-describe bounds.
+      expect(Math.abs(pct(r.ours!.maxAltitude, r.sim.maxAltitude))).toBeLessThan(8);
+      expect(Math.abs(pct(r.ours!.maxVelocity, r.sim.maxVelocity))).toBeLessThan(5);
+      expect(Math.abs(pct(r.ours!.timeToApogee, r.sim.timeToApogee))).toBeLessThan(9);
+      expect(Math.abs(pct(r.ours!.launchRodVelocity, r.sim.launchRodVelocity))).toBeLessThan(6);
     }
   }, 120_000);
 });

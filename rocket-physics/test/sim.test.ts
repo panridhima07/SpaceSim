@@ -91,6 +91,30 @@ describe('engine start on the pad', () => {
   });
 });
 
+describe('engine spool-up', () => {
+  // The engine spools as 1 - exp(-t / tau). Each step is flown at the mean throttle over the
+  // step, so the propellant burned does not depend on the step size.
+  const burned = (dt: number): number => {
+    const sim = new Simulation(twoStageKerolox(), { ...CFG, dt });
+    const mass0 = sim.diag.mass;
+    sim.ignite(0);
+    sim.step(3);
+    return mass0 - sim.diag.mass;
+  };
+
+  test('propellant burned while spooling up matches the exponential, at any step size', () => {
+    const e = twoStageKerolox().stages[0].engine;
+    const tau = (e.spoolTime ?? 1) / 3;
+    const fullFlow = (9 * e.thrustVac) / (G0 * e.ispVac);
+    const expected = fullFlow * (3 - tau * (1 - Math.exp(-3 / tau)));
+    const coarse = burned(0.04);
+    const fine = burned(0.0025);
+    relClose(coarse, expected, 1e-6, 'dt 0.04');
+    relClose(fine, expected, 1e-6, 'dt 0.0025');
+    relClose(coarse, fine, 1e-6, 'coarse vs fine');
+  });
+});
+
 describe('full autopilot ascent to 200 km', () => {
   test('reaches the target orbit', () => {
     assert.equal(main.reachedTarget, true);

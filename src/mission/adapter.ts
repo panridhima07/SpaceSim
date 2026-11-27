@@ -23,6 +23,64 @@ const SQRT_HALF = Math.SQRT1_2;
 const ECI_TO_APP: Quat = [-SQRT_HALF, 0, 0, SQRT_HALF];
 const APP_BODY_TO_LIB_BODY: Quat = [0, 0, -SQRT_HALF, SQRT_HALF];
 
+/** A record opens at least this long before liftoff, s. */
+export const PAD_LEAD_S = 3;
+/** Spacing of samples before ignition, when nothing moves but the Earth, s. */
+export const COUNTDOWN_SAMPLE_S = 0.5;
+/** Spacing of samples while the engines build thrust against the hold-down clamps, s. */
+export const PAD_SAMPLE_S = 0.1;
+/** The liftoff marker also quotes thrust-to-weight this long after release, s. */
+export const LIFTOFF_TWR_AT_S = 3;
+const G0 = 9.80665;
+
+/** Thrust over weight (at standard gravity) of a recorded sample. */
+export function thrustToWeight(s: { thrust: number; mass: number }): number {
+  return s.mass > 0 ? s.thrust / (s.mass * G0) : 0;
+}
+
+/** Mission time at which a record opens, for a vehicle lit at t=0 and released `liftoffTime` s later. */
+export function padStartTime(liftoffTime: number): number {
+  return -Math.max(PAD_LEAD_S, liftoffTime + COUNTDOWN_SAMPLE_S);
+}
+
+/**
+ * The vehicle waiting on the pad at mission time `t`, before ignition. `ignition` is the
+ * sample of the unlit vehicle at ignition time; until then only the Earth turns it.
+ */
+export function padSampleAt(ignition: FlightSample, t: number, earthRate: number): FlightSample {
+  const angle = earthRate * (t - ignition.t);
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  // The Earth's axis is app +Y.
+  const turn = (v: Vec3): Vec3 => [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c];
+  const out: FlightSample = {
+    ...ignition,
+    t,
+    pos: turn(ignition.pos),
+    vel: turn(ignition.vel),
+    quat: quatMul([0, Math.sin(angle / 2), 0, Math.cos(angle / 2)], ignition.quat),
+  };
+  if (ignition.stageThrottle) out.stageThrottle = ignition.stageThrottle.slice();
+  if (ignition.propellant) out.propellant = ignition.propellant.slice();
+  if (ignition.health) out.health = { ...ignition.health };
+  return out;
+}
+
+/**
+ * The library quotes thrust-to-weight at the instant the clamps let go, which for a solid
+ * motor is part-way up its ignition ramp. Say so, and add the figure once it has built up.
+ */
+function liftoffLabel(message: string, samples: ReadonlyArray<FlightSample>): string {
+  const label = `${message} at clamp release`;
+  const i = samples.findIndex((s) => s.t >= LIFTOFF_TWR_AT_S);
+  if (i < 1) return label;
+  const a = samples[i - 1];
+  const b = samples[i];
+  const f = (LIFTOFF_TWR_AT_S - a.t) / (b.t - a.t);
+  const twr = thrustToWeight(a) + (thrustToWeight(b) - thrustToWeight(a)) * f;
+  return `${label} (${twr.toFixed(2)} at T+${LIFTOFF_TWR_AT_S} s)`;
+}
+
 /** Earth-centred inertial (Z-up) to the app world frame (Y-up). */
 export function eciToApp(v: Vec3): Vec3 {
   return [v[0], v[2], -v[1]];
@@ -43,6 +101,7 @@ export function toMarkers(
   events: ReadonlyArray<{ t: number; type: string; message: string }>,
   liftoffTime: number,
   reference: ReadonlyArray<ReferenceEvent> = [],
+  samples: ReadonlyArray<FlightSample> = [],
 ): FlightMarker[] {
   const used = new Set<number>();
   return events.map((e) => {
@@ -53,7 +112,7 @@ export function toMarkers(
     const marker: FlightMarker = {
       t: e.t - liftoffTime,
       kind: 'event',
-      label: e.message,
+      label: e.type === 'liftoff' ? liftoffLabel(e.message, samples) : e.message,
       severity,
     };
     const idx = reference.findIndex((r, i) => !used.has(i) && r.pattern.test(e.message));
@@ -92,7 +151,8 @@ export function toSample(sim: Simulation): FlightSample {
     speed: tm.speed,
     mach: tm.mach,
     q: tm.q,
-    accelG: tm.accelG,
+    // Clamped to the pad the ground carries the weight, so an accelerometer reads 1 g.
+    accelG: sim.held ? 1 : tm.accelG,
     mass: tm.mass,
     thrust: tm.thrust,
     stage: core >= 0 ? core : Math.max(0, sim.vehicle.stages.length - 1),

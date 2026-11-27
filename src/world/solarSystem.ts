@@ -23,6 +23,7 @@ import {
   bodyPositionEarthCentred,
   eclipticToWorld,
   fillHeliocentricOrbitWorld,
+  heliocentricPosition,
   moonGeocentricPosition,
   type BodyDef,
 } from './ephemeris';
@@ -836,8 +837,12 @@ export function buildSolarSystem(): SolarSystem {
     skyOpacity.value = starMaterial.opacity;
     brightMaterial.opacity = starMaterial.opacity;
 
+    // Earth's heliocentric position is solved once per frame; every planet's Earth-centred position is
+    // derived from it (same result as bodyPositionEarthCentred, without a Kepler solve per body).
+    const earthHelio = heliocentricPosition('Earth', jd);
+
     // Sun position relative to the origin.
-    const sunEC = bodyPositionEarthCentred('Sun', jd);
+    const sunEC = eclipticToWorld([-earthHelio[0], -earthHelio[1], -earthHelio[2]]);
     sunRel[0] = sunEC[0] - ox;
     sunRel[1] = sunEC[1] - oy;
     sunRel[2] = sunEC[2] - oz;
@@ -853,7 +858,13 @@ export function buildSolarSystem(): SolarSystem {
     sunLight.position.copy(sunDirection);
 
     for (const b of bodies) {
-      const pos = bodyPositionEarthCentred(b.def.name, jd);
+      const pos =
+        b.def.name === 'Earth' || b.def.name === 'Moon'
+          ? bodyPositionEarthCentred(b.def.name, jd)
+          : (() => {
+              const p = heliocentricPosition(b.def.name, jd);
+              return eclipticToWorld([p[0] - earthHelio[0], p[1] - earthHelio[1], p[2] - earthHelio[2]]);
+            })();
       const rx = pos[0] - ox, ry = pos[1] - oy, rz = pos[2] - oz;
       b.mesh.position.set(rx, ry, rz);
       if (b.def.name === 'Moon') {

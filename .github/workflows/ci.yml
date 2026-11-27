@@ -1,0 +1,54 @@
+# Typecheck and tests for the app and rocket-physics, then a production build.
+# Tests that need fixtures/external (downloaded OpenRocket data, not committed) skip themselves.
+name: CI
+
+on:
+  push:
+    branches: [main, app]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install app dependencies
+        run: npm ci
+
+      - name: Typecheck app
+        run: npm run typecheck
+
+      - name: Test app
+        run: npm test
+
+      - name: Typecheck rocket-physics
+        run: npx tsc -p rocket-physics/tsconfig.json --noEmit
+
+      - name: Install rocket-physics dependencies
+        working-directory: rocket-physics
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Test rocket-physics
+        working-directory: rocket-physics
+        run: npm test
+
+      - name: Build app
+        env:
+          VITE_SUPABASE_URL: ""
+          VITE_SUPABASE_ANON_KEY: ""
+        run: npm run build

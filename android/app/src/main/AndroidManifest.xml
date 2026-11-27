@@ -32,6 +32,9 @@
 
         </activity>
 
+        <!-- "true" only in the Google Play build type (src/play/AndroidManifest.xml). Read by ApkUpdaterPlugin. -->
+        <meta-data android:name="astra.playBuild" android:value="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -46,4 +49,7 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Lets the app hand a downloaded update APK to Android's installer (ApkUpdaterPlugin).
+         Removed again in the Google Play build type: Play updates the app itself. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 </manifest>

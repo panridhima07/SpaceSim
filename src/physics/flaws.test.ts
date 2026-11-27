@@ -169,6 +169,32 @@ describe('analyzeFlight', () => {
     expect(ids(flaws, 'critical')).toEqual([]);
   });
 
+  it('fin flutter is less likely near the ground than at 10 km for the same airspeed', () => {
+    // Flutter speed is about 400 m/s at sea level and about 690 m/s at 10 km for these fins.
+    const fins: RocketModel['components'][number] = {
+      kind: 'finset', id: 'fins', name: 'Fins', x: 0.15, length: 0.06, density: 600,
+      count: 3, rootChord: 0.06, tipChord: 0.02, span: 0.05, sweepLength: 0.02, thickness: 0.003,
+      cant: 0, bodyRadius: BODY_R, finShape: 'trapezoid',
+    };
+    const base = makeRocket(false);
+    const rocket: RocketModel = { ...base, components: [...base.components, fins] };
+    const motor = makeMotor(6, 1.5);
+    const cfg = config();
+    const sim = runFlight(rocket, motor, cfg, makeDeps(0.15));
+    // The same 600 m/s peak, first at the ground and then at 10 km.
+    const flutterFlawAt = (altitude: number) => {
+      const log = sim.log.map((s) => ({ ...s, speed: 600, airspeed: 600, altitude }));
+      return analyzeFlight({ log, events: sim.events }, rocket, motor, cfg).find((f) =>
+        f.id.startsWith('fin-flutter:'),
+      );
+    };
+    const near = flutterFlawAt(0);
+    const high = flutterFlawAt(10_000);
+    expect(near).toBeDefined();
+    expect(high).toBeDefined();
+    expect(high!.limit!).toBeGreaterThan(near!.limit!);
+  });
+
   it('reports no-motor as critical when there is no motor', () => {
     const rocket = makeRocket(true);
     const sim = { log: [], events: [] };

@@ -10,7 +10,7 @@ import type { VehicleSpec } from './types.ts';
  *
  * Sources for the figures (see the Starlink mission file for the flight itself):
  *   - propellant, dry mass, stage length, diameter, payload to LEO: Wikipedia, "Falcon 9 Block 5"
- *   - thrust: Wikipedia (934 kN Merlin Vacuum, 7 607 kN first-stage total); Merlin 1D vacuum
+ *   - thrust: Wikipedia (981 kN Block 5 Merlin Vacuum, 7 607 kN first-stage total); Merlin 1D vacuum
  *     914 kN and Isp 311 s / 282 s SL from the Spaceflight 101 Falcon 9 pages
  *   - fairing diameter 5.2 m: Wikipedia; fairing mass, length and payload envelope: assumed
  *
@@ -65,7 +65,7 @@ export function falcon9Block5(payloadMass: number): VehicleSpec {
         ],
         engine: {
           name: 'Merlin Vacuum',
-          thrustVac: 934e3,
+          thrustVac: 981e3,
           ispVac: 348,
           exitArea: 6,
           minThrottle: 0.39,
@@ -75,7 +75,7 @@ export function falcon9Block5(payloadMass: number): VehicleSpec {
           ignitions: 4,
         },
         engineCount: 1,
-        ignitionDelay: 5,
+        ignitionDelay: 8,
         rcsTorque: 4000,
       },
     ],

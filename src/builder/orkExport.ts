@@ -21,6 +21,7 @@ const DEFAULT_CONFIG_ID = 'sfb-default-config';
 
 function esc(s: string): string {
   return s
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')

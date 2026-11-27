@@ -267,6 +267,13 @@ describe('Failure injection, destructive consequences, and outcome classificatio
       gimbalLockSafe.endMt >= 120 && gimbalLockSafe.endMt <= 180,
       `endMt=${gimbalLockSafe.endMt}`,
     );
+    // It came down near the pad (Sriharikota, 13.72 N 80.23 E); the outcome must say where.
+    const hit = gimbalLockSafe.outcome.impact;
+    assert.ok(hit !== null, 'expected an impact point for a ground impact');
+    assert.ok(Math.abs(hit.latDeg - 13.72) < 2 && Math.abs(hit.lonDeg - 80.23) < 2, `impact ${hit.latDeg}, ${hit.lonDeg}`);
+    assert.ok(Math.abs(hit.t - gimbalLockSafe.endMt) < 1e-6, `impact t=${hit.t}`);
+    assert.match(gimbalLockSafe.outcome.summary, /deg N, .* deg E/);
+    assert.doesNotMatch(gimbalLockSafe.outcome.summary, /rad/);
   });
 
   test('gimbal-lock with destructive: true ends in breakup before 120 s', () => {

@@ -111,7 +111,11 @@ describe('nozzlePerformance (ideal engine)', () => {
   test('efficiency 0.95 scales thrust by 0.95', () => {
     const eff = nozzlePerformance({ ...ideal, efficiency: 0.95 });
     assertRel(eff.thrustVac, 0.95 * p.thrustVac, 1e-12);
-    assertRel(eff.at(P0).thrust, 0.95 * p.at(P0).thrust, 1e-12);
+    // Back pressure is not derated: only the nozzle's own output is.
+    assertRel(eff.at(P0).thrust, 0.95 * p.thrustVac - P0 * p.exitArea, 1e-12);
+    // Same answer as the engine model the simulator flies.
+    const flown = engineOutput(engineFromChamber('e', { ...ideal, efficiency: 0.95 }), 1, P0).thrust;
+    assertRel(eff.at(P0).thrust, flown, 1e-12);
   });
 });
 

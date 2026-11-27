@@ -221,6 +221,62 @@ describe('createMissionUI', () => {
     expect(document.querySelector('.msn-stat-val')!.textContent).toBe('T+70.0 s');
   });
 
+  it('reads out thrust and thrust-to-weight, and counts down on the pad', () => {
+    const ui = createMissionUI(document.body, makeCallbacks());
+    const rec = makeRecord();
+    rec.samples.unshift({ ...rec.samples[0], t: -3, thrust: 0 });
+    rec.markers.unshift({ t: -0.34, kind: 'event', label: 'S200 ignition' });
+    ui.setRecord(rec, getMission('lvm3-m4')!);
+    const stat = (label: string): string =>
+      Array.from(document.querySelectorAll('.msn-stat'))
+        .find((box) => box.querySelector('.msn-stat-label')!.textContent === label)!
+        .querySelector('.msn-stat-val')!.textContent!;
+
+    expect(document.querySelector<HTMLInputElement>('.msn-scrubber')!.min).toBe('-3');
+    expect(document.querySelector('.msn-event-row')!.textContent).toContain('T-0.3 s');
+
+    ui.update(snapshotAt(rec, -3), true, 1);
+    expect(stat('Time')).toBe('T-3.0 s');
+    expect(stat('Thrust')).toBe('0 kN');
+    expect(stat('TWR')).toBe('0.00');
+
+    ui.update(snapshotAt(rec, 0), true, 1);
+    expect(stat('Time')).toBe('T+0.0 s');
+    expect(stat('Thrust')).toBe('9.00 MN');
+    expect(stat('TWR')).toBe('1.43');
+
+    ui.update({ ...snapshotAt(rec, 100), thrust: 981_400 }, true, 1);
+    expect(stat('Thrust')).toBe('981 kN');
+    expect(stat('TWR')).toBe('0.50');
+  });
+
+  it('tracks the phone sheet in aria-expanded and closes it when hidden', () => {
+    const ui = createMissionUI(document.body, makeCallbacks());
+    ui.setVisible(true);
+    const root = document.querySelector('.msn-root')!;
+    const toggle = document.querySelector<HTMLButtonElement>('.msn-sheet-toggle')!;
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    toggle.click();
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(root.classList.contains('msn-sheet-open')).toBe(true);
+    ui.setVisible(false);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(root.classList.contains('msn-sheet-open')).toBe(false);
+  });
+
+  it('leaves the shortcut keys alone while editable text has them', () => {
+    const cbs = makeCallbacks();
+    const ui = createMissionUI(document.body, cbs);
+    ui.setVisible(true);
+    const editable = document.createElement('div');
+    editable.setAttribute('contenteditable', 'true');
+    document.body.append(editable);
+    for (const key of ['1', 'h']) editable.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    expect(cbs.onCamera).not.toHaveBeenCalled();
+    expect(document.querySelector('.msn-panels-off')).toBeNull();
+    ui.setVisible(false);
+  });
+
   it('works for a mission with no failureCases and no faults', () => {
     const cbs = makeCallbacks();
     const ui = createMissionUI(document.body, cbs);

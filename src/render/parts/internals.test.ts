@@ -223,6 +223,104 @@ describe('internals: degenerate input', () => {
   });
 });
 
+describe('internals: realism', () => {
+  const finishes = (o: THREE.Object3D) =>
+    new Set(allMeshes(o, false).map((m) => (m.material as THREE.MeshStandardMaterial).userData.finish as string | undefined));
+  const parts = (o: THREE.Object3D) => allMeshes(o, false).map((m) => m.userData.part as string | undefined);
+  const bulkhead = (o: Partial<Ring> = {}) => ring({ ringType: 'bulkhead', innerRadius: 0, length: 0.006, ...o });
+  const coupler = (o: Partial<Ring> = {}) => ring({ ringType: 'tubecoupler', innerRadius: 0.0105, length: 0.05, ...o });
+
+  it('ok bulkhead carries a metal eyebolt (washer and nut merged in) in a pocket on the fore face', () => {
+    const o = buildRing(bulkhead(), 'ok', ctx);
+    const eye = allMeshes(o, false).find((m) => m.userData.part === 'eyebolt')!;
+    expect(eye).toBeDefined();
+    expect((eye.material as THREE.MeshStandardMaterial).userData.finish).toBe('metal');
+    expect(eye.parent?.userData.detail).toBe(true);
+    eye.updateWorldMatrix(true, false);
+    const s = stats([eye]);
+    expect(s.yMax).toBeLessThanOrEqual(-X + 1e-9);
+    expect(s.yMin).toBeGreaterThan(-(X + 0.006));
+    expect(s.rMax).toBeLessThan(0.22 * 0.0115);
+  });
+
+  it('best bulkhead has a U-bolt, backing plate, nuts and a vent; bad keeps a bent screw-eye', () => {
+    const best = parts(buildRing(bulkhead(), 'best', ctx));
+    for (const p of ['ubolt', 'backplate', 'nuts', 'vent']) expect(best).toContain(p);
+    expect(parts(buildRing(bulkhead(), 'bad', ctx))).toContain('eyebolt');
+  });
+
+  it('every tier sets a finish on all its materials, and hardware is metal', () => {
+    for (const tier of PART_TIERS) {
+      for (const o of [
+        buildInnerTube(tube(), tier, ctx), buildRing(ring(), tier, ctx), buildRing(bulkhead(), tier, ctx),
+        buildRing(coupler(), tier, ctx), buildMass(mass(), tier, ctx), buildPackedChute(chute(), tier, ctx),
+      ]) {
+        for (const f of finishes(o)) expect(['matte', 'satin', 'gloss', 'metal']).toContain(f);
+      }
+    }
+    expect(finishes(buildRing(ring(), 'best', ctx))).toContain('metal');
+    expect(finishes(buildMass(mass(), 'best', ctx))).toContain('metal');
+    expect(finishes(buildPackedChute(chute(), 'ok', ctx))).toContain('metal');
+    expect(finishes(buildRing(ring(), 'best', ctx))).toContain('satin');
+    expect(finishes(buildRing(ring(), 'ok', ctx))).toContain('matte');
+  });
+
+  it('plywood rim shows layers on a thick ring and one edge band on a thin one', () => {
+    const thick = buildRing(ring({ length: 0.004 }), 'ok', ctx);
+    const thin = buildRing(ring({ length: 0.0012 }), 'ok', ctx);
+    const edge = (o: THREE.Object3D) => allMeshes(o, false).find((m) => m.userData.part === 'plyedge')!;
+    expect(edge(thick).geometry.getAttribute('position').count).toBeGreaterThan(edge(thin).geometry.getAttribute('position').count);
+  });
+
+  it('best tube coupler has a stiffener, ok has a pencil line, ok tube has a winding seam', () => {
+    expect(parts(buildRing(coupler(), 'best', ctx))).toContain('stiffener');
+    expect(allMeshes(buildRing(coupler(), 'ok', ctx), false).length).toBeGreaterThanOrEqual(4);
+    expect(parts(buildInnerTube(tube(), 'ok', ctx))).toContain('seam');
+    expect(parts(buildInnerTube(tube(), 'best', ctx))).toContain('thrustring');
+  });
+
+  it('mass and chute read as real objects per tier', () => {
+    expect(parts(buildMass(mass(), 'best', ctx))).toEqual(expect.arrayContaining(['knurl', 'bolt']));
+    expect(parts(buildMass(mass(), 'ok', ctx))).toEqual(expect.arrayContaining(['strap', 'buckle', 'label']));
+    expect(parts(buildMass(mass(), 'bad', ctx))).toContain('tape');
+    expect(parts(buildPackedChute(chute(), 'ok', ctx))).toEqual(expect.arrayContaining(['wraps', 'nomex', 'shockcord', 'swivel']));
+    expect(parts(buildPackedChute(chute(), 'best', ctx))).toEqual(expect.arrayContaining(['bag', 'lines', 'quicklink']));
+  });
+
+  it('keeps mesh counts and triangles inside the per-call budget', () => {
+    // before this pass: ring 4/1/6+, bulkhead 2/1/6+, coupler 2/1/1, tube 3/1/5+, mass 6/1/1, chute 8/1/13
+    const ceil: Record<string, [number, number, number]> = {
+      ring: [12, 6, 8], bulkhead: [10, 6, 14], coupler: [10, 6, 7], tube: [11, 6, 12], mass: [14, 6, 7], chute: [16, 6, 14],
+    };
+    const make: Record<string, (t: PartTier) => THREE.Object3D> = {
+      ring: (t) => buildRing(ring(), t, ctx),
+      bulkhead: (t) => buildRing(bulkhead(), t, ctx),
+      coupler: (t) => buildRing(coupler(), t, ctx),
+      tube: (t) => buildInnerTube(tube(), t, ctx),
+      mass: (t) => buildMass(mass(), t, ctx),
+      chute: (t) => buildPackedChute(chute(), t, ctx),
+    };
+    for (const [k, mk] of Object.entries(make)) {
+      PART_TIERS.forEach((t) => {
+        const n = allMeshes(mk(t), false).length;
+        expect(n).toBeLessThanOrEqual(ceil[k][t === 'best' ? 0 : t === 'ok' ? 1 : 2]);
+      });
+    }
+  });
+
+  it('best is richer than ok, which is richer than bad, at a glance (mesh count of detail)', () => {
+    const detail = (o: THREE.Object3D) => allMeshes(o, false).length - allMeshes(o, true).length;
+    for (const mk of [
+      (t: PartTier) => buildRing(bulkhead(), t, ctx),
+      (t: PartTier) => buildInnerTube(tube(), t, ctx),
+      (t: PartTier) => buildPackedChute(chute(), t, ctx),
+    ]) {
+      expect(detail(mk('ok'))).toBeGreaterThan(0);
+      expect(detail(mk('best'))).toBeGreaterThanOrEqual(detail(mk('ok')));
+    }
+  });
+});
+
 describe('internals: icons', () => {
   const keys = Object.keys(INTERNAL_ICONS) as (keyof typeof INTERNAL_ICONS)[];
   it('has all six kinds', () => {

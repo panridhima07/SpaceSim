@@ -341,6 +341,16 @@ export interface Controls {
   /** Thrust-vector gimbal angles, rad. Zero for a passive rocket. */
   gimbalPitch: number;
   gimbalYaw: number;
+  /**
+   * Hand-flown flights only. 0..1 of the motor's burn rate; absent means 1. The same propellant
+   * is burned more slowly, so total impulse is unchanged. 0 shuts the engine off until reopened.
+   */
+  throttle?: number;
+  /**
+   * Hand-flown flights only. Commanded angular velocity, world frame, rad/s (the roll part is
+   * ignored). Absent: the airframe flies itself.
+   */
+  rate?: Vec3;
 }
 
 export type FlightPhase = 'pad' | 'rail' | 'boost' | 'coast' | 'descent' | 'landed' | 'crashed';
@@ -399,6 +409,10 @@ export interface Sim {
   ignite(): void;
   /** Advance by dt seconds of sim time (internally sub-stepped). */
   step(dt: number, controls?: Controls): void;
+  /** Hand-flown: fire every parachute still packed and cut the engine. False if nothing was done. */
+  deployChutes(): boolean;
+  /** Hand-flown: drop the burning stage now. False if there is no stage to drop. */
+  separateStage(): boolean;
 }
 
 export type FlawSeverity = 'info' | 'warning' | 'critical';

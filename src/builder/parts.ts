@@ -82,10 +82,10 @@ export const PART_CATEGORIES: readonly PartCategory[] = [
 // Standard model-rocket tube outer diameters (m).
 export const TUBE_DIAMETERS = {
   BT20: 0.0187, // 18.7 mm (18 mm motor)
-  BT50: 0.0248, // 24.8 mm (24 mm motor / standard Estes)
+  BT50: 0.0248, // 24.8 mm (standard Estes; inner dia 23.8 mm fits an 18 mm mount, a 24 mm mount needs BT55)
   BT55: 0.0337, // 33.7 mm
   BT60: 0.0416, // 41.6 mm
-  AF54: 0.0570, // 57.0 mm (54 mm motor airframe)
+  AF54: 0.0570, // 57.0 mm (inner dia 54.0 mm fits a 38 mm mount; a 54 mm mount needs BT80)
   BT80: 0.0660, // 66.0 mm
 } as const;
 
@@ -1019,7 +1019,7 @@ export const PART_PRESETS: readonly PartPreset[] = [
       length: 0.003,
       density: 680,
       outerRadius: 0.0119,
-      innerRadius: 0.00945,
+      innerRadius: 0.00965,
     }),
   },
   {
@@ -1038,7 +1038,7 @@ export const PART_PRESETS: readonly PartPreset[] = [
       length: 0.003,
       density: 630,
       outerRadius: 0.0162,
-      innerRadius: 0.01245,
+      innerRadius: 0.01265,
     }),
   },
   {

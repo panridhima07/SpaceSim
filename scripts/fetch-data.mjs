@@ -32,9 +32,10 @@ const post = async (path, body) => {
     await throttle();
     const r = await fetch(`${TC}/${path}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
     });
-    if (r.status === 429 && attempt < BACKOFF_MS.length) {
-      console.warn(`429 on ${path}, retry ${attempt + 1} in ${BACKOFF_MS[attempt] / 1000}s`);
+    if ((r.status === 429 || r.status >= 500) && attempt < BACKOFF_MS.length) {
+      console.warn(`${r.status} on ${path}, retry ${attempt + 1} in ${BACKOFF_MS[attempt] / 1000}s`);
       await sleep(BACKOFF_MS[attempt]);
       continue;
     }
@@ -70,8 +71,14 @@ for (const [manufacturer, commonName] of MOTORS) {
     console.log('motor', manufacturer, commonName, impulse.toFixed(1), 'N s');
   } catch (e) { console.warn('failed', commonName, e.message); }
 }
-await writeFile('src/ork/motorData.json', JSON.stringify(motors));
-console.log(`wrote ${motors.length} of ${MOTORS.length} motors to src/ork/motorData.json`);
+const minMotors = Math.ceil(MOTORS.length * 0.8);
+if (motors.length < minMotors) {
+  console.error(`fetched ${motors.length} of ${MOTORS.length} requested motors (need at least ${minMotors}); motorData.json was left unchanged`);
+  process.exitCode = 1;
+} else {
+  await writeFile('src/ork/motorData.json', JSON.stringify(motors));
+  console.log(`wrote ${motors.length} of ${MOTORS.length} motors to src/ork/motorData.json`);
+}
 
 const OR = 'https://raw.githubusercontent.com/openrocket/openrocket/unstable/core/src/main/resources/datafiles/examples/';
 const DESIGNS = ['A simple model rocket.ork', 'Dual parachute deployment.ork', 'Three stage low power rocket.ork', 'Two stage high power rocket.ork'];
@@ -82,8 +89,19 @@ for (const name of DESIGNS) {
     console.log('design exists, skipping', path);
     continue;
   }
-  const r = await fetch(OR + encodeURIComponent(name));
-  if (!r.ok) { console.warn('design failed', name, r.status); continue; }
-  await writeFile(path, Buffer.from(await r.arrayBuffer()));
-  console.log('design', name);
+  try {
+    const r = await fetch(OR + encodeURIComponent(name), { signal: AbortSignal.timeout(30_000) });
+    if (!r.ok) { console.warn('design failed', name, r.status); process.exitCode = 1; continue; }
+    // The source URL uses a moving branch, so validate the bytes before saving.
+    const buf = Buffer.from(await r.arrayBuffer());
+    const isZip = buf[0] === 0x50 && buf[1] === 0x4b;
+    const isXml = buf.subarray(0, 5).toString('latin1') === '<?xml';
+    if (buf.length <= 1000 || !(isZip || isXml)) {
+      console.warn(name, 'not an .ork file, skipped'); process.exitCode = 1; continue;
+    }
+    await writeFile(path, buf);
+    console.log('design', name);
+  } catch (e) {
+    console.warn('design failed', name, e.message); process.exitCode = 1;
+  }
 }

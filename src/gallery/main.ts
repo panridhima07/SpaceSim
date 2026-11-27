@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import type { Component, RocketModel } from '../types';
 import { buildRocketMesh, disposeGroup } from '../render/rocketMesh';
+import { applyFlatStyle } from '../render/effects';
 import { PART_ICONS, PART_LABELS, partKey, type PartKindKey } from '../render/parts/grade';
 import { PART_TIERS, type PartTier } from '../render/parts/types';
 import { parseOrkXml } from '../ork/parser';
@@ -13,7 +14,7 @@ const R = 0.025;
 const base = { id: 'p', name: 'part', density: 0 };
 
 /** A one-part rocket per kind, sized like a mid-power model. */
-const SAMPLES: { key: PartKindKey; part: Component; cutaway?: boolean; with?: Component[] }[] = [
+const SAMPLES: { key: PartKindKey; label?: string; part: Component; cutaway?: boolean; with?: Component[] }[] = [
   { key: 'nosecone', part: { ...base, kind: 'nosecone', x: 0, length: 0.12, shape: 'ogive', shapeParam: 1, baseRadius: R, thickness: 0.002 } },
   { key: 'bodytube', part: { ...base, kind: 'bodytube', x: 0, length: 0.14, outerRadius: R, thickness: 0.002 } },
   { key: 'decoupler', part: { ...base, kind: 'bodytube', x: 0, length: 0.05, outerRadius: R, thickness: 0.002, isDecoupler: true } },
@@ -41,6 +42,11 @@ const SAMPLES: { key: PartKindKey; part: Component; cutaway?: boolean; with?: Co
   { key: 'tubecoupler', cutaway: true, part: { ...base, kind: 'ring', x: 0, length: 0.05, outerRadius: 0.024, innerRadius: 0.0225, ringType: 'tubecoupler' } },
   { key: 'mass', cutaway: true, part: { ...base, kind: 'mass', x: 0, length: 0.03, mass: 0.05 } },
   { key: 'parachute', cutaway: true, part: { ...base, kind: 'parachute', x: 0, length: 0.06, diameter: 0.4, cd: 0.8, deployEvent: 'apogee', deployAltitude: 0, deployDelay: 0, mass: 0.02 } },
+  // Cargo that gets its own model, picked by name (see cargoKind / isStreamer).
+  { key: 'mass', label: 'Balance weight', cutaway: true, part: { ...base, name: 'Balance weight', kind: 'mass', x: 0, length: 0.03, mass: 0.05 } },
+  { key: 'mass', label: 'Flight computer', cutaway: true, part: { ...base, name: 'Flight computer', kind: 'mass', x: 0, length: 0.08, mass: 0.04 } },
+  { key: 'mass', label: 'Camera', cutaway: true, part: { ...base, name: 'Camera', kind: 'mass', x: 0, length: 0.04, mass: 0.03 } },
+  { key: 'parachute', label: 'Streamer', cutaway: true, part: { ...base, name: 'Streamer', kind: 'parachute', x: 0, length: 0.06, diameter: 0.1, cd: 0.3, deployEvent: 'apogee', deployAltitude: 0, deployDelay: 0, mass: 0.01 } },
 ];
 
 const W = 440;
@@ -63,6 +69,8 @@ function still(sample: (typeof SAMPLES)[number], tier: PartTier): string {
     group.clear();
     group.add(...buildRocketMesh(rocket, { cutaway: true, tiers }).children);
   }
+  // Same material pass as the builder and the flight view, so a still shows what the app draws.
+  applyFlatStyle(group);
 
   const scene = new THREE.Scene();
   scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 1.6));
@@ -94,14 +102,14 @@ for (const sample of SAMPLES) {
   const row = grid.insertRow();
   const kind = row.insertCell();
   kind.className = 'kind';
-  kind.textContent = PART_LABELS[sample.key];
+  kind.textContent = sample.label ?? PART_LABELS[sample.key];
   if (partKey(sample.part) !== sample.key) kind.textContent += ' (key mismatch)';
   for (const tier of PART_TIERS) {
     const cell = row.insertCell();
     const wrap = document.createElement('div');
     wrap.className = 'cell';
     const img = document.createElement('img');
-    img.alt = `${PART_LABELS[sample.key]}, ${tier} design`;
+    img.alt = `${sample.label ?? PART_LABELS[sample.key]}, ${tier} design`;
     img.src = still(sample, tier);
     const icon = document.createElement('span');
     icon.className = 'icon';
@@ -127,6 +135,7 @@ document.body.append(title, rowEl);
 wholeNames.forEach((name, i) => {
   const rocket = parseOrkXml(MOCK_CASES.find((c) => c.name === name)!.xml);
   const group = buildRocketMesh(rocket);
+  applyFlatStyle(group);
   const scene = new THREE.Scene();
   scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 1.6));
   const sun = new THREE.DirectionalLight(0xffffff, 2.2);

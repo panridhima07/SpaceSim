@@ -16,8 +16,8 @@ import { G0, MU_EARTH, RE } from '../constants.ts';
 import { add, angleBetween, clamp, cross, dot, norm, scale, sub, unit, type Vec3 } from '../math/vec.ts';
 import { engineOutput } from '../propulsion/engine.ts';
 import { stageMass, usablePropellant } from '../vehicle/massprops.ts';
-import { boosterCount } from '../vehicle/types.ts';
-import { elementsFromState, timeToApoapsis, timeToPeriapsis } from '../orbit/kepler.ts';
+import { boosterCount, type StageSpec } from '../vehicle/types.ts';
+import { elementsFromState, propagateKepler, timeToApoapsis, timeToPeriapsis } from '../orbit/kepler.ts';
 import { burnTime, launchAzimuth } from '../orbit/maneuvers.ts';
 import { propagate } from '../orbit/propagate.ts';
 import { groundVelocity, localFrame } from '../env/earth.ts';
@@ -229,12 +229,18 @@ export class AscentAutopilot implements FlightComputer {
 
   private setupTargetPlane(sim: Simulation): void {
     const lf = localFrame(sim.r);
-    const lat = lf.lat;
-    const inc = Math.max(((this.opts.target.inclinationDeg ?? 0) * Math.PI) / 180, Math.abs(lat) + 1e-9);
+    const rhat = unit(sim.r);
+    // cos(i) = cos(lat) sin(beta) is a spherical relation: it needs the geocentric latitude and a
+    // heading perpendicular to the radius vector, not the geodetic latitude and north.
+    const lat = Math.asin(clamp(rhat[2], -1, 1));
+    const lo = Math.abs(lat) + 1e-9;
+    const wanted = ((this.opts.target.inclinationDeg ?? 0) * Math.PI) / 180;
+    const inc = Math.min(Math.max(wanted, lo), Math.PI - lo);
     const az = launchAzimuth(lat, inc, this.targetState().speed, this.opts.target.southward);
     this.azimuth = az.rotating;
-    const heading = add(scale(lf.east, Math.sin(az.inertial)), scale(lf.north, Math.cos(az.inertial)));
-    this.planeNormal = unit(cross(unit(sim.r), heading));
+    const north = cross(rhat, lf.east);
+    const heading = add(scale(lf.east, Math.sin(az.inertial)), scale(north, Math.cos(az.inertial)));
+    this.planeNormal = unit(cross(rhat, heading));
     if (this.opts.target.compensateOblateness) this.cutoffSpeed = this.speedForFarApsis(sim);
   }
 
@@ -355,21 +361,63 @@ export class AscentAutopilot implements FlightComputer {
         // Spent and about to be dropped.
         t0 += Math.max(0, (s.separationDelay ?? 2) - (sim.t - st.burnoutTime)) + (next?.ignitionDelay ?? 3);
         m -= wet;
+        if (idx === 0 && next && sim.rt.fairingAttached && veh.fairing) m -= veh.fairing.mass;
         return;
       }
       if (!st.engineOn) {
         if (st.ignitionsUsed > 0) return; // already cut off by guidance
         if (idx === 0) t0 += Math.max(0, (s.ignitionDelay ?? 3) - (sim.t - this.lastSepTime));
       }
-      const mdot = (s.engine.thrustVac * s.engineCount) / (G0 * s.engine.ispVac);
       const usable = usablePropellant(veh, i, sim.prop);
-      const duration = usable / mdot;
-      if (duration > 0.05) segs.push({ start: t0, duration, ve: G0 * s.engine.ispVac, tau: m / mdot });
+      let duration: number;
+      if (s.engine.thrustCurve) {
+        // A solid motor: thrustVac is the curve's peak, so plan one constant-thrust piece per curve interval.
+        duration = this.curveSegments(s, st.engineOn ? sim.t - st.ignitionTime : 0, usable, t0, m, segs);
+      } else {
+        const mdot = (s.engine.thrustVac * s.engineCount) / (G0 * s.engine.ispVac);
+        duration = usable / mdot;
+        if (duration > 0.05) segs.push({ start: t0, duration, ve: G0 * s.engine.ispVac, tau: m / mdot });
+      }
       t0 += duration + (s.separationDelay ?? 2) + (next?.ignitionDelay ?? 3);
       m -= wet;
       if (idx === 0 && next && sim.rt.fairingAttached && veh.fairing) m -= veh.fairing.mass;
     });
     return segs;
+  }
+
+  /**
+   * Plan the rest of a thrust-curve (solid) stage as back-to-back constant-thrust segments, one per
+   * curve interval, never exceeding `usable` propellant. Returns the planned time from `elapsed`
+   * (time since ignition) to the end of the last interval.
+   */
+  private curveSegments(s: StageSpec, elapsed: number, usable: number, t0: number, mass: number, segs: BurnSegment[]): number {
+    const curve = s.engine.thrustCurve!;
+    const ve = G0 * s.engine.ispVac;
+    const mdotPeak = (s.engine.thrustVac * s.engineCount) / ve;
+    let planned = 0; // propellant planned so far in this stage
+    let end = elapsed;
+    for (let k = 1; k < curve.length; k++) {
+      const [ta, fa] = curve[k - 1];
+      const [tb, fb] = curve[k];
+      if (tb <= elapsed) continue;
+      const a = Math.max(ta, elapsed);
+      const fAtA = tb === ta ? fb : fa + ((fb - fa) * (a - ta)) / (tb - ta);
+      let d = tb - a;
+      if (d <= 0) continue;
+      const mdot = (0.5 * (fAtA + fb)) * mdotPeak;
+      let last = false;
+      if (mdot > 1e-9 && planned + mdot * d >= usable) {
+        d = Math.max(usable - planned, 0) / mdot;
+        last = true;
+      }
+      if (mdot > 1e-9 && d > 1e-6) {
+        segs.push({ start: t0 + (a - elapsed), duration: d, ve, tau: (mass - planned) / mdot });
+        planned += mdot * d;
+      }
+      end = a + d;
+      if (last) break;
+    }
+    return end - elapsed;
   }
 
   private closedLoop(sim: Simulation): number | void {
@@ -467,6 +515,14 @@ export class AscentAutopilot implements FlightComputer {
     }
   }
 
+  /** Seconds from now to the middle of a node's burn. */
+  private timeToNode(sim: Simulation, node: ManeuverNode, el: ReturnType<typeof elementsFromState>): number {
+    if (node.at === 'apoapsis') return timeToApoapsis(el, MU_EARTH);
+    if (node.at === 'periapsis') return timeToPeriapsis(el, MU_EARTH);
+    if ('time' in node.at) return node.at.time - sim.t;
+    return this.insertionTime + node.at.afterInsertion - sim.t;
+  }
+
   private coast(sim: Simulation): number | void {
     const node = this.opts.nodes?.[this.nodeIndex];
     if (!node) {
@@ -479,7 +535,22 @@ export class AscentAutopilot implements FlightComputer {
     const el = elementsFromState(sim.r, sim.v, MU_EARTH);
     let dv: number;
     let dir: BurnDirection = node.direction ?? 'prograde';
-    if (node.deltaV === 'circularize') {
+    if (node.deltaV === 'circularize' && typeof node.at !== 'string') {
+      // Away from an apsis the radial velocity has to go too: aim the burn at the circular velocity vector.
+      const tNode = Math.max(this.timeToNode(sim, node, el), 0);
+      const atNode = propagateKepler(sim.r, sim.v, tNode, MU_EARTH);
+      const rN = norm(atNode.r);
+      const hN = cross(atNode.r, atNode.v);
+      const vCirc = scale(unit(cross(hN, atNode.r)), Math.sqrt(MU_EARTH / rN));
+      const dvVec = sub(vCirc, atNode.v);
+      dv = norm(dvVec);
+      if (dv < 1e-6) {
+        sim.event('burn', `${node.name ?? 'Burn'} skipped: orbit is already circular`);
+        this.nodeIndex++;
+        return;
+      }
+      dir = unit(dvVec);
+    } else if (node.deltaV === 'circularize') {
       const rA = node.at === 'periapsis' ? el.rp : el.ra;
       dv = Math.sqrt(MU_EARTH / rA) - Math.sqrt(MU_EARTH * (2 / rA - 1 / el.a));
       if (dv < 0) {
@@ -494,11 +565,7 @@ export class AscentAutopilot implements FlightComputer {
 
     // Re-estimate the start while far away (the orbit drifts under J2), then commit.
     if (!isFinite(this.burnStart) || this.burnStart - sim.t > 60) {
-      let tNode: number;
-      if (node.at === 'apoapsis') tNode = timeToApoapsis(el, MU_EARTH);
-      else if (node.at === 'periapsis') tNode = timeToPeriapsis(el, MU_EARTH);
-      else if ('time' in node.at) tNode = node.at.time - sim.t;
-      else tNode = this.insertionTime + node.at.afterInsertion - sim.t;
+      const tNode = this.timeToNode(sim, node, el);
       let start = tNode - duration / 2;
       if (start < 0 && typeof node.at === 'string') start += el.period;
       this.burnStart = sim.t + Math.max(start, 0);

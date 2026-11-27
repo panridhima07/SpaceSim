@@ -1,7 +1,7 @@
 // Offline support for the website build. Pages (navigations and .html) go network-first so a
 // new release is picked up on the next load, falling back to the cache when offline. Other
 // same-origin GETs (hashed assets, images) are served from cache and refreshed in the background.
-const CACHE = 'sfb-v2';
+const CACHE = 'sfb-v3';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(['./', './manifest.webmanifest'])).then(() => self.skipWaiting()));
@@ -26,6 +26,8 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
   if (req.method !== 'GET' || url.origin !== self.location.origin) return;
+  // These must always come from the network (live API and the Android update manifest/bundles).
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/app-update/')) return;
 
   if (isPage(req, url)) {
     event.respondWith(

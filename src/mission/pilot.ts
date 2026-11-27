@@ -6,7 +6,15 @@
 // sequencing (ignition, staging, fairing, cutoff). With manual control on, the pilot's
 // attitude and throttle replace the autopilot's commands; with it off, the autopilot flies.
 
-import { toMarkers, toSample } from './adapter';
+import {
+  COUNTDOWN_SAMPLE_S,
+  LIFTOFF_TWR_AT_S,
+  PAD_SAMPLE_S,
+  padSampleAt,
+  padStartTime,
+  toMarkers,
+  toSample,
+} from './adapter';
 import {
   AscentAutopilot,
   FaultMonitor,
@@ -123,7 +131,21 @@ function unit(v: V3): V3 {
   return [v[0] / n, v[1] / n, v[2] / n];
 }
 
+/**
+ * When the clamps will let go, s after ignition. Found by running the countdown on a spare
+ * simulation: nothing the pilot does changes it, and the clock needs it to count down.
+ */
+function padLiftoffTime(def: MissionDef, step: number): number {
+  const autopilot = new AscentAutopilot(def.ascent);
+  const sim = new Simulation(def.vehicle(), def.config, autopilot);
+  while (sim.held && !sim.ended && autopilot.phase !== 'aborted' && sim.t < def.tMax) sim.step(step);
+  if (sim.held) throw new Error('The vehicle never left the pad.');
+  return sim.liftoffTime;
+}
+
 export function startPilotedFlight(def: MissionDef): PilotedFlight {
+  const padStep = def.config.dt ?? 0.02;
+  const liftoffAt = padLiftoffTime(def, padStep);
   const vehicle = def.vehicle();
   const autopilot = new AscentAutopilot(def.ascent);
   const monitor = def.faults ? new FaultMonitor(vehicle, def.faults()) : undefined;
@@ -152,7 +174,7 @@ export function startPilotedFlight(def: MissionDef): PilotedFlight {
       const e = dot(v, d.east as V3), n = dot(v, d.north as V3);
       if (Math.hypot(e, n) > 5) heading = Math.atan2(e, n);
     }
-    throttle = clamp(sim.cmd.throttle, 0, 1);
+    throttle = sim.held ? 1 : clamp(sim.cmd.throttle, 0, 1);
   };
 
   /** The liquid engines burning now: the throttle range they share and where they have spooled to. */
@@ -248,9 +270,9 @@ export function startPilotedFlight(def: MissionDef): PilotedFlight {
     vehicleName: def.name,
     stageSeparation,
     fairingSeparation: null,
-    earth: { angleAtLiftoff: sim.earthAngle, rate: OMEGA_EARTH },
+    earth: { angleAtLiftoff: sim.earthAngle + OMEGA_EARTH * liftoffAt, rate: OMEGA_EARTH },
     epochJD: sim.epochJD,
-    liftoffSimTime: 0,
+    liftoffSimTime: liftoffAt,
     iipTrack: [],
   };
 
@@ -260,13 +282,31 @@ export function startPilotedFlight(def: MissionDef): PilotedFlight {
   let markerVersion = 0;
   let lastKeptT = -Infinity;
   let newestIsProvisional = false;
-  let earthFixed = false;
+  let twrQuoted = false;
+  /** False during the countdown, before the engines light. */
+  let lit = false;
+  /** Pad time asked for but not yet stepped. */
+  let padOwed = 0;
 
   const done = (): boolean =>
     sim.ended || autopilot.phase === 'done' || autopilot.phase === 'aborted' || sim.t >= def.tMax;
 
-  const takeSample = (): void => {
+  const keep = (sample: FlightSample, interval: number): void => {
+    // Between kept samples the newest one is only the current frame: replace it.
+    if (newestIsProvisional) samples.pop();
+    samples.push(sample);
+    if (sample.t - lastKeptT >= interval - 1e-9 || samples.length === 1) {
+      lastKeptT = sample.t;
+      newestIsProvisional = false;
+    } else {
+      newestIsProvisional = true;
+    }
+  };
+
+  const readSim = (): FlightSample => {
     const sample = toSample(sim);
+    // Before release the library has no mission time yet: count back from the known liftoff.
+    if (sim.held) sample.t = sim.t - liftoffAt;
     sample.stageThrottle = sim.rt.stages.map((st) => (st.attached && st.engineOn ? st.throttle : 0));
     sample.phase = manual ? 'manual' : autopilot.phase;
     if (monitor) {
@@ -276,18 +316,18 @@ export function startPilotedFlight(def: MissionDef): PilotedFlight {
       sample.ambientPressure = sim.diag.pressure;
       sample.health = { ...monitor.health };
     }
-    // Between kept samples the newest one is only the current frame: replace it.
-    if (newestIsProvisional) samples.pop();
-    samples.push(sample);
-    if (sample.t - lastKeptT >= KEEP_INTERVAL || samples.length === 1) {
-      lastKeptT = sample.t;
-      newestIsProvisional = false;
-    } else {
-      newestIsProvisional = true;
-    }
+    return sample;
   };
 
-  const afterStep = (): void => {
+  /** The unlit vehicle at ignition; the countdown samples are this one turned with the Earth. */
+  const ignition = readSim();
+  const padStart = padStartTime(liftoffAt);
+  keep(padSampleAt(ignition, padStart, OMEGA_EARTH), COUNTDOWN_SAMPLE_S);
+
+  const markersNow = (): FlightRecord['markers'] =>
+    toMarkers(sim.events, Number.isFinite(sim.liftoffTime) ? sim.liftoffTime : liftoffAt, def.reference, samples);
+
+  const afterStep = (wasHeld: boolean): void => {
     sim.rt.stages.forEach((st, i) => {
       if (priorAttached[i] && !st.attached && Number.isFinite(sim.missionTime)) {
         stageSeparation[i] = sim.missionTime;
@@ -299,29 +339,49 @@ export function startPilotedFlight(def: MissionDef): PilotedFlight {
     }
     priorFairing = sim.rt.fairingAttached;
 
-    if (!Number.isFinite(sim.liftoffTime)) return;
-    if (!earthFixed) {
-      earthFixed = true;
-      record.earth = { angleAtLiftoff: sim.earthAngle - OMEGA_EARTH * (sim.t - sim.liftoffTime), rate: OMEGA_EARTH };
-      record.liftoffSimTime = sim.liftoffTime;
-    }
-    takeSample();
-    if (sim.events.length !== eventCount) {
+    const sample = readSim();
+    // The sample at release is always kept.
+    keep(sample, sim.held ? PAD_SAMPLE_S : wasHeld ? 0 : KEEP_INTERVAL);
+    const twrDue = !twrQuoted && sample.t >= LIFTOFF_TWR_AT_S;
+    if (sim.events.length !== eventCount || twrDue) {
       eventCount = sim.events.length;
-      record.markers = toMarkers(sim.events, sim.liftoffTime, def.reference);
+      twrQuoted ||= twrDue;
+      record.markers = markersNow();
       markerVersion++;
     }
   };
 
+  let countdown = padStart;
   const advance = (dt: number): void => {
     if (done() || !(dt > 0)) return;
-    sim.step(dt);
-    afterStep();
+    if (!lit) {
+      const wait = ignition.t - countdown;
+      if (dt < wait) {
+        countdown += dt;
+        keep(padSampleAt(ignition, countdown, OMEGA_EARTH), COUNTDOWN_SAMPLE_S);
+        return;
+      }
+      lit = true;
+      dt -= wait;
+      keep(ignition, 0);
+    }
+    if (sim.held) {
+      // Whole physics steps only, so release comes at the same instant at any frame rate.
+      padOwed += dt;
+      while (sim.held && !done() && padOwed > padStep - 1e-9) {
+        sim.step(padStep);
+        padOwed -= padStep;
+        afterStep(true);
+      }
+      if (sim.held) return;
+      dt = padOwed;
+      padOwed = 0;
+    }
+    if (dt > 1e-9) {
+      sim.step(dt);
+      afterStep(false);
+    }
   };
-
-  // Run the countdown so the record starts with the vehicle on the pad at liftoff.
-  for (let i = 0; i < 600 && samples.length === 0 && !done(); i++) advance(0.1);
-  if (samples.length === 0) throw new Error('The vehicle never left the pad.');
 
   let finished = false;
   const finish = (): FlightRecord => {
@@ -337,7 +397,9 @@ export function startPilotedFlight(def: MissionDef): PilotedFlight {
     };
     record.reachedTarget = autopilot.reachedTarget;
     record.outcome = classifyOutcome(sim, autopilot);
-    record.markers = toMarkers(sim.events, sim.liftoffTime, def.reference);
+    // Stopped during the countdown: the pilot called it off, the vehicle did not fail.
+    if (sim.held) record.outcome.summary = 'Flight ended before liftoff.';
+    record.markers = markersNow();
     if (monitor) {
       const faults: FlightFault[] = monitor.report();
       record.faults = faults;
@@ -393,6 +455,8 @@ export function startPilotedFlight(def: MissionDef): PilotedFlight {
       Object.assign(input, next);
     },
     setThrottle(level: number): void {
+      // The engines run at full power until the clamps let go.
+      if (sim.held) return;
       const eng = engines(sim);
       throttle = clamp(level, eng.min ?? 0, 1);
     },

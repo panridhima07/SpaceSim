@@ -27,8 +27,13 @@ export const STRESS_FLIGHT_COUNT =
 const RAD_PER_DEG = Math.PI / 180;
 const DEG_PER_RAD = 180 / Math.PI;
 const STEP_S = 0.05; // s of sim time per step() call
-const MAX_FLIGHT_S = 300; // s of sim time before a case is marked 'timeout'
+// A slow descent from a high apogee takes many minutes, so the limit on a flight is generous
+// (the loop ends at touchdown anyway). A rocket still on the pad or rail gets a short one.
+const MAX_FLIGHT_S = 1800; // s of sim time before an airborne case is marked 'timeout'
+const MAX_GROUND_S = 300; // s of sim time before a case that never left the ground is marked 'timeout'
 const SEVERITY_RANK: Record<FlawSeverity, number> = { info: 1, warning: 2, critical: 3 };
+/** Deploy speeds closer than this (m/s) count as the same. */
+const DEPLOY_SPEED_TIE = 1e-6;
 
 export interface StressProgress {
   done: number;
@@ -59,7 +64,10 @@ function* runCaseSteps(
   const sim = createSim(rocket, motor, config, deps);
   sim.ignite();
   let n = 0;
-  while (!sim.done && sim.state.t < MAX_FLIGHT_S) {
+  for (;;) {
+    const phase = sim.state.phase;
+    const limit = phase === 'pad' || phase === 'rail' ? MAX_GROUND_S : MAX_FLIGHT_S;
+    if (sim.done || sim.state.t >= limit) break;
     sim.step(STEP_S);
     if (++n % STEPS_PER_SLICE === 0) yield progress;
   }
@@ -187,8 +195,18 @@ function summarize(
   }
 
   // Ejection delay.
+  const speeds = delay.map((r) => r.deploySpeed).filter((v) => Number.isFinite(v));
+  const delayIrrelevant =
+    speeds.length === delay.length &&
+    speeds.length > 1 &&
+    Math.max(...speeds) - Math.min(...speeds) < DEPLOY_SPEED_TIE;
   if (bestDelay === null) {
     out.push('No tested ejection delay deploys the parachute.');
+  } else if (delayIrrelevant) {
+    // The parachute opens on altitude or apogee, not on the motor's ejection charge.
+    out.push(
+      `Ejection delay makes no difference: the parachute deploys at ${num(speeds[0], 1)} m/s with every delay tested.`,
+    );
   } else {
     const best = delay.find((r) => r.result.config.ejectionDelay === bestDelay);
     if (best) {
@@ -217,7 +235,18 @@ function summarize(
       `Apogee is ${calm.apogee.toFixed(0)} m in calm air and ${top.apogee.toFixed(0)} m at ${top.config.windSpeed} m/s wind.`,
     );
   }
-  out.push(`Lands ${top.drift.toFixed(0)} m from the pad at ${top.config.windSpeed} m/s wind.`);
+  if (!Number.isFinite(top.railExitSpeed)) {
+    // No rail exit: the motor burned out with the rocket still on the pad or the rail. The
+    // simulator ends such a flight as 'landed', but nothing flew, so there is no landing point.
+    out.push(`Never left the launch rail at ${top.config.windSpeed} m/s wind.`);
+  } else if (top.outcome === 'timeout') {
+    // The case ran out of time, so its last position is not a landing point.
+    out.push(
+      `Did not land within the time limit at ${top.config.windSpeed} m/s wind; last seen ${top.drift.toFixed(0)} m from the pad.`,
+    );
+  } else {
+    out.push(`Lands ${top.drift.toFixed(0)} m from the pad at ${top.config.windSpeed} m/s wind.`);
+  }
 
   // Rail tilt.
   const badRail = rail.find((r) => r.worst === 'critical');
@@ -252,12 +281,22 @@ function buildReport(
     maxSafeWind = r.config.windSpeed;
   }
 
+  // Lowest deploy speed wins; among equal speeds, the delay closest to the one already fitted,
+  // so a rocket whose delay does not matter is not told to change it.
+  const current = base.ejectionDelay ?? mountMotorDelay(rocket);
   let bestDelay: number | null = null;
   let bestSpeed = Infinity;
   for (const r of delay) {
-    if (Number.isFinite(r.deploySpeed) && r.deploySpeed < bestSpeed) {
-      bestSpeed = r.deploySpeed;
-      bestDelay = r.result.config.ejectionDelay ?? null;
+    if (!Number.isFinite(r.deploySpeed)) continue;
+    const d = r.result.config.ejectionDelay ?? null;
+    const better = r.deploySpeed < bestSpeed - DEPLOY_SPEED_TIE;
+    const tied = !better && r.deploySpeed < bestSpeed + DEPLOY_SPEED_TIE;
+    const closer =
+      tied && d !== null && bestDelay !== null && current !== undefined &&
+      Math.abs(d - current) < Math.abs(bestDelay - current);
+    if (better || closer) {
+      bestSpeed = Math.min(bestSpeed, r.deploySpeed);
+      bestDelay = d;
     }
   }
 

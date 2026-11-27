@@ -2,6 +2,10 @@
 
 Build a rocket, see it in 3D on a launch pad, fly it with a 6-DOF physics sim, and get a list of where and when the design fails. Import OpenRocket (`.ork`) designs or build from parts, fly real-vehicle missions (LVM3, Falcon 9, PSLV), and go on to the Moon. One codebase, two builds: a website and an Android app.
 
+**Live:** https://astra-spaceflight.vercel.app
+
+Judge demo guide: [docs/DEMO.md](docs/DEMO.md). Third-party licences: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 Built for ASTRA 2026 (ANTERiX, VIT Bhopal). Plan and validation numbers: [docs/PLAN.md](docs/PLAN.md). Round-by-round log: [docs/PROGRESS.md](docs/PROGRESS.md).
 
 ## Goal
@@ -10,15 +14,15 @@ Turn this from a hackathon demo into a proper website and app for rocket buildin
 
 ### 2-day plan
 
-Status as of 23 Nov 2026. Nothing below is ticked yet: each item bundles several parts, and the notes say which parts exist in code.
+Status as of 26 Nov 2026. Only the deploy item is ticked: each other item bundles several parts, and the notes say which parts exist in code.
 
 **Day 1: ship it and make it persistent**
-- [ ] Deploy the static build to a real URL (Vercel) and set `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` in the host's environment
-  - `npm run deploy` is ready. The folder is linked to a Vercel project (`.vercel/project.json`), but no live URL is recorded in the repo.
+- [x] Deploy the static build to a real URL (Vercel) and set `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` in the host's environment
+  - `npm run deploy` is ready. The folder is linked to a Vercel project (`.vercel/project.json`). The site is deployed on Vercel at https://astra-spaceflight.vercel.app (production deploy via `npm run deploy`, which runs `npm test` first).
 - [ ] Real routes for landing, builder and simulator; PWA manifest and offline caching
-  - Separate HTML pages (`index.html`, `landing.html`, `parts.html`, `presentation.html`). Manifest and service worker exist (`public/manifest.webmanifest`, `public/sw.js`).
+  - Separate HTML pages (`index.html` app, `landing.html` Moon landing, `admin.html` usage dashboard, `parts.html` part gallery, `presentation.html` pitch deck). Manifest and service worker exist (`public/manifest.webmanifest`, `public/sw.js`).
 - [ ] Supabase tables with row-level security: `rockets` (owner, name, design JSON, public flag) and `flights` (rocket, result summary)
-  - `supabase/migrations/0001_cloud_data.sql` turns on row-level security for 5 tables: `profiles`, `designs`, `rocket_files`, `import_corrections`, `sim_runs`. There is no `rockets` or `flights` table. `0002_training_consent.sql` limits the team's training export to users whose consent is still on. Whether the migrations are applied to the live project is not verified (`supabase db push` applies them).
+  - `supabase/migrations/0001_cloud_data.sql` turns on row-level security for 5 tables: `profiles`, `designs`, `rocket_files`, `import_corrections`, `sim_runs`. There is no `rockets` or `flights` table. `0002_training_consent.sql` limits the team's training export to users whose consent is still on. `0003_usage_and_admin.sql` adds anonymous usage counts and the `admins` table. `0004_row_and_size_caps.sql` adds per-user row caps, size limits and a storage-path check (not yet applied). Whether 0001 to 0003 are applied to the live project is not verified (`supabase db push` applies them).
 - [ ] Save designs from the builder, a "My rockets" page, and read-only share links (`/r/<id>`)
   - Saving to the cloud works for signed-in users (`src/cloud/designSync.ts`). There is no "My rockets" page and no `/r/<id>` links. Share links carry the design in the URL hash (`src/io/shareLink.ts`).
 
@@ -30,7 +34,7 @@ Status as of 23 Nov 2026. Nothing below is ticked yet: each item bundles several
 - [ ] Cut 3D load time; rebuild the Android APK from the final web build
   - A debug APK exists at `android/app/build/outputs/apk/debug/app-debug.apk` (built 23 Nov 2026). Load time was not measured.
 - [ ] Final demo run-through on the deployed URL
-  - Not done: there is no deployed URL to run through.
+  - Not done: the site is deployed on Vercel at https://astra-spaceflight.vercel.app, but no demo run-through on it is recorded.
 
 **Out of scope for the 2 days:** public gallery, leaderboards and server-side score validation. The backend is Supabase (auth, Postgres, storage) plus one small serverless function for the stress test (`api/simulate.ts`).
 
@@ -47,35 +51,35 @@ Status as of 23 Nov 2026. Nothing below is ticked yet: each item bundles several
 
 **Builder and import**
 - Parts-based rocket builder with snapping, undo history, saved designs, challenges, a first-run tutorial, and a friendlier part-description layer.
-- `.ork` import and export, RockSim import (`.rkt`, `.rse`), 3D model export (GLB, STL, OBJ), and share links (`src/io/`, `src/builder/`).
+- `.ork` import and export, RockSim import (`.rkt`, `.rse`), plus `.json`, `.eng` motor files and `.xml` (`src/io/importer.ts`), 3D model export (GLB, STL, OBJ), and share links (`src/io/`, `src/builder/`).
 - Flaw analyzer with timestamps and a list of fixes; motor library with certified thrust curves.
 
 **Cloud and server**
 - Signed-in users save designs to Supabase (`src/cloud/designSync.ts`, `src/cloud/store.ts`). Schema and row-level security: `supabase/migrations/0001_cloud_data.sql`.
-- The stress test runs on the server (`api/simulate.ts`: same-origin, rate limited, optional sign-in token). If the server call fails, the same code runs in the browser (`src/cloud/remoteSim.ts`).
+- The stress test runs on the server (`api/simulate.ts`: no CORS headers are sent (browsers on other sites cannot read the response); requests are rate limited per server instance and sign-in is optional). If the server call fails, the same code runs in the browser (`src/cloud/remoteSim.ts`).
 - Research consent gates data collection (`src/cloud/consent.ts`).
 
 **3D and UI**
 - Three.js rendering: rocket meshes, launch complex, launcher staging and plume, orbit and trajectory lines, rotating Earth, solar system with time warp, force arrows. Planets are placed for the launch site's real sky (`eclipticToSiteWorld` and `gmstFromJd` in `src/world/ephemeris.ts`).
 - Mission mode HUD with timeline scrubber, health panel, camera presets, and a mobile mission sheet. Unified UI tokens and 44 px touch targets.
-- Landing page, hero, and a presentation (`presentation.html`, `ASTRA_Spaceflight_Presentation.pptx`).
+- Landing page, hero, and a presentation (`presentation.html`, `ASTRA_Spaceflight_Presentation.pptx`). The landing-page mission cards are Chandrayaan-3, Starlink and EOS-09 (flyable) and the Starship booster catch (info card only, `src/auth/presets.ts`).
 
 **Accounts and platform**
-- Supabase auth with a sign-in gate and a journey flow (`src/auth/`).
+- Supabase auth with a sign-in gate and a journey flow (`src/auth/`). "Continue as guest" is remembered for the browser tab (sessionStorage `astra-guest`); if the Supabase env vars are missing, the app still opens in guest mode.
+- CI: `.github/workflows/ci.yml` runs typecheck, tests, rocket-physics typecheck and tests, and the build on pushes to `main` and `app` and on pull requests.
+- Security headers come from `scripts/build-vercel-output.mjs` (prebuilt deploys) and `vercel.json` (Git builds).
 - Capacitor Android build with native save dialog.
 
-**Last recorded checks** (23 Nov 2026): `npm run typecheck` clean; `tsc -p rocket-physics/tsconfig.json` clean; app tests 84 files, 1183 tests, all passing; `rocket-physics` tests (`npm test` in `rocket-physics/`) 45 suites, 280 tests, all passing; `npm run build` passing. Re-run `npm test` before relying on these numbers.
+**Last recorded checks** (23 Nov 2026; test counts updated 26 Nov 2026): `npm run typecheck` clean; `tsc -p rocket-physics/tsconfig.json` clean; app tests (vitest) 1,481+ tests in about 98 files, passing; `rocket-physics` tests (`npm test` in `rocket-physics/`) about 280 to 289 tests, passing; `npm run build` passing. Re-run `npm test` before relying on these numbers.
 
 **Not done yet**
-- Live deployment: the deploy script is ready, but no live URL is in the repo.
 - Database-backed share links (`/r/<id>`) and a "My rockets" page.
 - A compare-flights view.
 - A lunar transfer view in the app. The Lambert solver and example are in `rocket-physics/`.
 - Model accuracy: fin lift slope now matches OpenRocket's stored values within 3.6 % on three designs (fixed 23 Nov 2026). Still open: CG 4 to 9 mm forward of OpenRocket's and mass 2.6 % high on the simple rocket (see [docs/PLAN.md](docs/PLAN.md)).
 - Transonic wave drag is an uncalibrated placeholder.
-- A demo script was not found.
 
-**Not verified:** whether the `supabase/migrations/` files are applied to the Supabase project; the app on a real phone (it runs on the Android 16 emulator as of 24 Nov 2026: sign-in gate, guest builder, Back button, update check); the 3D load time.
+**Not verified:** whether the `supabase/migrations/` files are applied (0004 is known not applied) to the Supabase project; the app on a real phone (it runs on the Android 16 emulator as of 24 Nov 2026: sign-in gate, guest builder, Back button, update check); the 3D load time.
 
 Plan, status and validation numbers: [docs/PLAN.md](docs/PLAN.md).
 
@@ -86,8 +90,10 @@ npm install
 npm run dev        # http://localhost:5173
 npm test           # unit tests
 npm run build      # production site in dist/ (installable, works offline)
-npm run deploy     # build, package for Vercel and deploy (needs the Vercel CLI, logged in and linked)
+npm run deploy     # npm test, build, make-app-bundle, build-vercel-output, then vercel deploy --prebuilt --prod (needs the Vercel CLI, logged in and linked)
 ```
+
+The site counts anonymous usage (app opens, flights, missions, imports) with no IP address, email or rocket data. The owner dashboard is at `/admin.html`, and only accounts in the `admins` table can see it. Setup is in the owner setup section of [docs/MOBILE-RELEASE.md](docs/MOBILE-RELEASE.md).
 
 ## Android app
 
@@ -105,6 +111,8 @@ npm run android:bundle    # signed AAB in release/ (for Google Play)
 ```
 
 Both need a signing key in `android/keystore.properties`. The app version comes from `"version"` in `package.json`. Signing, the in-app update check, installing on a phone and publishing to Google Play or the App Store: [docs/MOBILE-RELEASE.md](docs/MOBILE-RELEASE.md).
+
+Web changes reach installed apps through website deploys, with no taps on the phone. APK updates are downloaded inside the app and opened with Android's installer. Details are in [docs/MOBILE-RELEASE.md](docs/MOBILE-RELEASE.md).
 
 ## Data scripts
 

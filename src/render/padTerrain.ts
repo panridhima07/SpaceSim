@@ -880,6 +880,7 @@ export function buildPadTerrain(opts: { trees?: number; spaceport?: boolean } = 
   function dispose(): void {
     group.traverse((o) => {
       if (o instanceof THREE.Mesh) {
+        if ((o as THREE.InstancedMesh).isInstancedMesh) (o as THREE.InstancedMesh).dispose();
         o.geometry.dispose();
         const m = o.material;
         if (Array.isArray(m)) m.forEach((x) => x.dispose());

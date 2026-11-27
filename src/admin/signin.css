@@ -1,0 +1,69 @@
+/* Sign-in form and message screens of /admin.html (src/admin/main.ts). The dashboard itself is
+   styled in admin.css, which also provides .admin-signin, .admin-message and .admin-btn. */
+.admin-signin {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.admin-signin-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.admin-signin .admin-message {
+  margin: 0;
+  padding: 0;
+}
+
+.admin-signin .admin-message:empty {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.admin-signin-wide {
+  width: 100%;
+  min-height: 44px;
+}
+
+.admin-signin-or {
+  color: #8a8a90;
+  font-size: 12px;
+  text-align: center;
+}
+
+.admin-signin-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.admin-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: #8a8a90;
+}
+
+.admin-field input {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(17, 17, 19, 0.78);
+  color: #e8e8ea;
+  font: inherit;
+  font-size: 15px;
+}
+
+.admin-field input:focus-visible {
+  outline: 2px solid #f5a65b;
+  outline-offset: 1px;
+}

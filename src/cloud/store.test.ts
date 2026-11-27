@@ -85,12 +85,13 @@ describe('disabled store', () => {
     const { client, calls } = fakeClient();
     for (const store of [createCloudStore(null, UID), createCloudStore(client, null)]) {
       expect(store.enabled).toBe(false);
-      expect(await store.getConsent()).toBeNull();
+      expect(await store.getConsent()).toBeUndefined(); // disabled store: no read happened
       expect(await store.listDesigns()).toEqual([]);
       expect(await store.saveDesign({ name: 'x', design: goodDesign() })).toBeNull();
       expect(await store.getCorrection('abc')).toBeNull();
-      await store.setConsent({ research: true, version: 1, decidedAt: 1 });
-      await store.deleteDesign('a');
+      expect(await store.setConsent({ research: true, version: 1, decidedAt: 1 })).toBe(false);
+      expect(await store.deleteDesign('a')).toBe(false);
+      expect(await store.saveCorrection(correction(), true)).toBe(false);
       await store.uploadRocketFile({ sha256: 'a', filename: 'a.ork', format: 'ork', bytes: new Uint8Array(1) });
       await store.logSimRun({ kind: 'flight', config: {}, summary: {}, durationMs: 1, ranOn: 'browser' });
     }
@@ -106,7 +107,7 @@ describe('column mapping', () => {
     });
     const store = createCloudStore(f.client, UID);
     expect(await store.getConsent()).toEqual({ research: true, version: 1, decidedAt: Date.parse(at) });
-    await store.setConsent({ research: false, version: 1, decidedAt: Date.parse(at) });
+    expect(await store.setConsent({ research: false, version: 1, decidedAt: Date.parse(at) })).toBe(true);
     const up = f.calls.find((c) => c.op === 'upsert')!;
     expect(up.args[0]).toEqual({
       user_id: UID,
@@ -214,8 +215,8 @@ describe('failures never throw', () => {
     expect(await store.listDesigns()).toEqual([]);
     expect(await store.listDesigns()).toEqual([]);
     expect(await store.saveDesign({ name: 'x', design: goodDesign() })).toBeNull();
-    expect(await store.getConsent()).toBeNull();
-    await expect(store.saveCorrection(correction(), true)).resolves.toBeUndefined();
+    expect(await store.getConsent()).toBeUndefined(); // failed read, not "no answer"
+    expect(await store.saveCorrection(correction(), true)).toBe(false);
     await expect(store.deleteCorrection('x')).resolves.toBeUndefined();
     // list designs twice -> one warning; plus insert, consent, correction = 4 total
     expect(warn).toHaveBeenCalledTimes(4);
@@ -284,8 +285,22 @@ describe('saveCorrection', () => {
       importer_version: IMPORTER_VERSION,
       note: 'fins wrong',
     });
-    await store.saveCorrection(correction(), false);
+    expect(await store.saveCorrection(correction(), false)).toBe(true);
     const second = f.calls.filter((c) => c.op === 'upsert')[1];
     expect((second.args[0] as Record<string, unknown>).share_for_training).toBe(false);
+  });
+
+  it('returns false when the database returns an error', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const f = fakeClient({ 'import_corrections.upsert': { error: { message: 'rls denied' } } });
+    expect(await createCloudStore(f.client, UID).saveCorrection(correction(), true)).toBe(false);
+  });
+
+  it('returns true from deleteDesign and false when the delete errors', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ok = fakeClient();
+    expect(await createCloudStore(ok.client, UID).deleteDesign('d1')).toBe(true);
+    const bad = fakeClient({ 'designs.delete': { error: { message: 'network' } } });
+    expect(await createCloudStore(bad.client, UID).deleteDesign('d1')).toBe(false);
   });
 });

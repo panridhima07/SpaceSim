@@ -29,6 +29,8 @@ export interface UICallbacks {
   onBuild?(): void;
   /** Switch to LVM3 mission mode. */
   onMission?(): void;
+  /** Put the loaded rocket on the pad and fly it by hand. */
+  onManual?(): void;
 }
 
 /** One component's build-quality grade, as listed in the UI. */
@@ -69,4 +71,6 @@ export interface UI {
   getConfig(): SimConfig;
   setVisible(visible: boolean): void;
   setBuildLabel?(label: string): void;
+  /** Clear the panels away while the rocket is flown by hand; toasts stay. */
+  setManual?(on: boolean): void;
 }

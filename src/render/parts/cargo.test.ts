@@ -222,3 +222,42 @@ describe('cargoKind / isStreamer', () => {
     expect(isStreamer(streamer({ name: 'Parachute 60 cm' }))).toBe(false);
   });
 });
+
+describe('cargo builders: finishes and budgets', () => {
+  const finishes = (o: THREE.Object3D) => {
+    const set = new Set<string>();
+    for (const m of allMeshes(o)) set.add(String((m.material as THREE.Material).userData.finish));
+    return set;
+  };
+  const maxMeshes: Record<PartTier, number> = { best: 29, ok: 18, bad: 28 };
+
+  for (const k of kinds) {
+    for (const tier of PART_TIERS) {
+      it(`${k.name} / ${tier} sets a finish on every material and stays at a few draw calls`, () => {
+        const o = k.build(0.06, 'ms-1', tier);
+        expect(finishes(o).has('undefined')).toBe(false);
+        expect(allMeshes(o).length).toBeLessThanOrEqual(k.name === 'streamer' ? 35 : maxMeshes[tier]);
+        expect(triangles(o)).toBeLessThanOrEqual(1500);
+      });
+    }
+  }
+
+  it('best hardware is metal, kit plastics are satin, the camera glass is gloss', () => {
+    expect(finishes(kinds[0].build(0.06, 'a', 'best')).has('metal')).toBe(true);
+    expect(finishes(kinds[1].build(0.06, 'a', 'ok'))).toEqual(new Set(['satin', 'metal', 'matte', 'gloss']));
+    expect(finishes(kinds[2].build(0.06, 'a', 'ok')).has('gloss')).toBe(true);
+    expect(finishes(kinds[3].build(0.06, 'a', 'best')).has('gloss')).toBe(true);
+  });
+
+  it('decals lying on a surface use an offset material', () => {
+    const o = kinds[1].build(0.06, 'a', 'best');
+    const offs = allMeshes(o).filter((m) => (m.material as THREE.Material & { polygonOffset: boolean }).polygonOffset);
+    expect(offs.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('best detail outranks ok outranks bad in triangles for the ballast and the computer', () => {
+    for (const k of [kinds[0], kinds[1]]) {
+      expect(triangles(k.build(0.06, 'r', 'best'))).toBeGreaterThan(triangles(k.build(0.06, 'r', 'ok')));
+    }
+  });
+});

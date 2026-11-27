@@ -55,6 +55,11 @@ function decodeText(bytes: Uint8Array): string {
     raw = new TextDecoder('utf-16le').decode(bytes.subarray(2));
   } else if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
     raw = new TextDecoder('utf-16be').decode(bytes.subarray(2));
+  } else if (bytes.length >= 2 && bytes[0] !== 0 && bytes[1] === 0) {
+    // No BOM, but ASCII-range text encoded as UTF-16LE (NUL in the high byte of the first char).
+    raw = new TextDecoder('utf-16le').decode(bytes);
+  } else if (bytes.length >= 2 && bytes[0] === 0 && bytes[1] !== 0) {
+    raw = new TextDecoder('utf-16be').decode(bytes);
   } else {
     const start = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
     raw = new TextDecoder('utf-8').decode(bytes.subarray(start));

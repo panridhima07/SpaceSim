@@ -15,13 +15,19 @@ function run(name, args) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
+    let finished = false;
+    // 'error' (spawn failure) and 'close' can both fire; report and resolve only once.
+    const finish = (code, extra = '') => {
+      if (finished) return;
+      finished = true;
+      const secs = ((Date.now() - started) / 1000).toFixed(1);
+      process.stdout.write(`\n── ${name} (${secs} s, exit ${code}) ──\n${out}${extra}`);
+      resolve(code);
+    };
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (out += d));
-    child.on('close', (code) => {
-      const secs = ((Date.now() - started) / 1000).toFixed(1);
-      process.stdout.write(`\n── ${name} (${secs} s, exit ${code}) ──\n${out}`);
-      resolve(code ?? 1);
-    });
+    child.on('error', (e) => finish(1, `spawn error: ${e.message}\n`));
+    child.on('close', (code) => finish(code ?? 1));
   });
 }
 

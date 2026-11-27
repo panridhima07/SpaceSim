@@ -276,10 +276,13 @@ export function deltaVBudget(v: VehicleSpec): { stage: string; deltaV: number; b
     const usable = usablePropellant(v, i, full);
     const m0 = above + wet;
     const mdot = (s.engine.thrustVac * s.engineCount) / (G0 * s.engine.ispVac);
+    // A solid burns along its thrust curve, and thrustVac is the curve's peak, not its mean:
+    // its burn lasts as long as the curve does.
+    const curve = s.engine.thrustCurve;
     out.unshift({
       stage: s.name,
       deltaV: G0 * s.engine.ispVac * Math.log(m0 / (m0 - usable)),
-      burnTime: usable / mdot,
+      burnTime: curve ? curve[curve.length - 1][0] - curve[0][0] : usable / mdot,
       twr: (s.engine.thrustVac * s.engineCount) / (m0 * G0),
     });
     above = m0;

@@ -27,11 +27,12 @@ import {
 } from '../types';
 import { createSim } from '../physics/sim';
 import { analyzeFlight } from '../physics/flaws';
+import { liftoffStats, type LiftoffStats } from '../physics/liftoff';
 import { initCloud } from '../cloud/session';
 import { createImportFix } from '../cloud/importFix';
 import { pullDesigns, pushDesign, removeDesign } from '../cloud/designSync';
-import { runSimJobRemote } from '../cloud/remoteSim';
-import { motorSpec } from '../cloud/simJob';
+import { prepareFlight, runMissionFlight, runStressTest, runsOnServer } from '../cloud/runPhysics';
+import { logUsage } from '../cloud/usage';
 import { atmosphere } from '../physics/atmosphere';
 import { windVector } from '../physics/wind';
 import { massProps } from '../physics/massprops';
@@ -51,6 +52,7 @@ import {
   buildSky,
   buildSmokeTrail,
   buildTrajectoryLine,
+  smokeForThrust,
 } from '../render/effects';
 import { buildSolarSystem } from '../world/solarSystem';
 import { buildLaunchSite } from '../world/launchSite';
@@ -91,6 +93,7 @@ import {
   saveDesign,
 } from '../builder/storage';
 import { importRocketFile, type ImportFormat } from '../io/importer';
+import { MAX_FILE_BYTES } from '../io/limits';
 import { exportDesign, type ExportFormat } from '../io/exporter';
 import { buildShareUrl, decodeDesignFromHash, SHARE_HASH_KEY } from '../io/shareLink';
 import { saveBlob } from './saveFile';
@@ -111,6 +114,7 @@ import { snapshotAt } from '../mission/snapshot';
 import type { FlightRecord } from '../mission/record';
 import { startPilotedFlight, type PilotedFlight } from '../mission/pilot';
 import { createPilotControls } from './pilotControls';
+import { createManualFlight } from './manualFlight';
 import type { FlyOptions } from '../mission/fly';
 import type { ScenarioId } from '../mission/engine';
 
@@ -118,28 +122,33 @@ type Markers = ReturnType<typeof buildCgCpMarkers>;
 type Exhaust = ReturnType<typeof buildExhaust>;
 
 const PHYSICS_DEPS = cachedDeps({ atmosphere, massProps, aeroProps, thrust: thrustAt });
-const TWR_TARGET = 5; // peak thrust-to-weight wanted before the rocket leaves the rail
+const TWR_TARGET = 5; // thrust-to-weight wanted over the first half second
+const RAIL_EXIT_TARGET = 15; // m/s, slowest safe speed off the rail
 const SEVERITY_RANK: Record<Flaw['severity'], number> = { critical: 0, warning: 1, info: 2 };
 const SMOKE_ALT_LIMIT = 30_000; // m, no exhaust puffs above this
-const SMOKE_PUFFS_PER_SIM_S = 40;
 const TRAIL_INTERVAL_S = 0.05; // 20 Hz of sim time
 const WARP_CAP_ATMOSPHERE = 10;
 const WARP_CAP_ALTITUDE = 100_000; // m
+// One sim step covers at most 2000 s of coasting (20000 substeps of 0.1 s): above this warp a
+// frame would ask for more and time would quietly run slower than the figure shown.
+const WARP_CAP_COAST = 10_000;
+
+/** Takeoff plays at this fraction of real time, easing to full speed. */
+const LIFTOFF_SLOW = 0.2;
+const LIFTOFF_HOLD_S = 0.5; // sim seconds at the slowest rate
+const LIFTOFF_EASE_S = 0.9; // sim seconds to reach real time
 
 /**
- * Realistic time-scale modulation during liftoff and touchdown at 1x warp:
- * eases into ignition and rail exit so the rocket doesn't snap off the pad instantaneously,
- * and eases into final ground contact so the parachute landing is clearly perceived.
+ * Time scaling at 1x warp. A model rocket is off the rail in a fifth of a second, so takeoff plays
+ * in slow motion, at the same rate for every rocket: a heavy one visibly labours and a light one
+ * leaps. The last metres under a parachute are slowed a little so the touchdown can be seen.
  */
 function realisticTimeFactor(s: Sim | null, warp: number): number {
   if (!s || s.done || warp !== 1) return 1;
   const { phase, t, altitude } = s.state;
-  if (phase === 'pad' || phase === 'rail') {
-    return 0.45 + 0.35 * Math.min(1, t / 0.6);
-  }
-  if (phase === 'boost' && t < 1.2) {
-    const u = Math.max(0, Math.min(1, (t - 0.3) / 0.9));
-    return 0.8 + 0.2 * u;
+  if (phase !== 'descent' && t < LIFTOFF_HOLD_S + LIFTOFF_EASE_S) {
+    const u = Math.max(0, Math.min(1, (t - LIFTOFF_HOLD_S) / LIFTOFF_EASE_S));
+    return LIFTOFF_SLOW + (1 - LIFTOFF_SLOW) * u * u * (3 - 2 * u);
   }
   if (phase === 'descent' && altitude < 15) {
     const u = Math.max(0, Math.min(1, altitude / 15));
@@ -181,8 +190,10 @@ scene.add(solar.group, site.group, sky.mesh, smoke.object, trail.line, arrows.gr
 let constellationsOn = false;
 window.addEventListener('keydown', (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || e.key.toLowerCase() !== 'c') return;
-  const tag = (e.target as HTMLElement | null)?.tagName;
-  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (appMode !== 'flight') return;
+  const target = e.target as HTMLElement | null;
+  const tag = target?.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
   constellationsOn = solar.setConstellations(!constellationsOn);
 });
 
@@ -269,6 +280,15 @@ document.addEventListener('visibilitychange', () => {
 // ---------- Helpers ----------
 
 function errorMessage(e: unknown): string {
+  // A failed fetch is a TypeError too ("Failed to fetch", Safari "Load failed"): say so plainly.
+  if (e instanceof TypeError && /fetch|network|load failed/i.test(e.message)) {
+    return 'no connection to the server (check the internet connection and try again)';
+  }
+  // Programming errors (TypeError etc.) mean nothing to a user: log them, show a plain line.
+  if (e instanceof TypeError || e instanceof ReferenceError || e instanceof RangeError) {
+    console.error(e);
+    return 'something went wrong inside the app (details in the browser console)';
+  }
   return e instanceof Error ? e.message : String(e);
 }
 
@@ -346,7 +366,6 @@ function refreshMotorList(): void {
 function preflightFlaws(
   r: RocketModel,
   m: Motor | null,
-  mass: number,
   stabilityCal: number,
 ): StaticFlaw[] {
   const out: StaticFlaw[] = [];
@@ -445,16 +464,32 @@ function preflightFlaws(
     });
   }
 
-  const twr = peakThrust(m) / (mass * G0);
-  if (twr < TWR_TARGET) {
+  if (r.stages && r.stages.length > 1 && !resolveStageMotors(r)) {
+    out.push({
+      flaw: {
+        id: 'static-stage-motor',
+        severity: 'warning',
+        title: 'A stage has no known motor',
+        detail: 'Not every stage names a motor that can be found, so the flight is simulated as a single stage with the selected motor.',
+        fix: 'Give every stage a motor mount with a known motor, or load its .eng file.',
+      },
+      covers: [],
+    });
+  }
+
+  const lift = takeoffFigures(r, m);
+  const figures = `${lift.thrust.toFixed(1)} N of thrust against ${lift.weight.toFixed(1)} N of weight (${lift.twr.toFixed(2)} to 1)`;
+  const rail = lift.railExitSpeed > 0 ? `about ${lift.railExitSpeed.toFixed(1)} m/s off the rail` : 'never reaching the end of the rail';
+  if (lift.twr < TWR_TARGET || lift.railExitSpeed < RAIL_EXIT_TARGET) {
+    const grounded = lift.railExitSpeed <= 0;
     out.push({
       flaw: {
         id: 'static-twr',
-        severity: 'warning',
-        title: 'Low thrust-to-weight',
-        detail: `Peak thrust-to-weight is ${twr.toFixed(2)} with this motor, below the target of ${TWR_TARGET}, so the rocket will be slow off the rail.`,
-        fix: 'Use a higher-thrust motor or reduce mass.',
-        value: twr,
+        severity: grounded ? 'critical' : 'warning',
+        title: grounded ? 'Too heavy to leave the rail' : 'Low thrust-to-weight',
+        detail: `The first half second gives ${figures}, ${rail}. Aim for ${TWR_TARGET} to 1 and at least ${RAIL_EXIT_TARGET} m/s.`,
+        fix: 'Use a motor with more early thrust, reduce mass, or lengthen the rail.',
+        value: lift.twr,
         limit: TWR_TARGET,
         unit: 'ratio',
       },
@@ -473,14 +508,15 @@ function refreshRocketInfo(): void {
   const mp = massProps(rocket, motor, 0);
   const ap = aeroProps(rocket, 0.1, mp.cgX);
   padLift = rocket.length - mp.cgX;
+  const stageMotors = resolveStageMotors(rocket);
   const stabilityCal = (ap.cpX - mp.cgX) / (2 * rocket.maxRadius);
   ui.setRocket({
     name: rocket.name,
     length: rocket.length,
     diameter: 2 * rocket.maxRadius,
-    mass: mp.mass,
+    mass: motor ? takeoffFigures(rocket, motor).mass : mp.mass,
     stabilityCal,
-    motor: motor ? motorKey(motor) : null,
+    motor: stageMotors ? stageMotors.map((s) => motorKey(s.motor)).join(' + ') : motor ? motorKey(motor) : null,
     warnings: rocket.warnings,
     parts: gradeRocket(rocket).filter((g) => g.external).map((g) => ({
       name: g.name,
@@ -490,12 +526,20 @@ function refreshRocketInfo(): void {
       reasons: g.reasons.map((r) => r.text),
     })),
   });
-  staticFlaws = preflightFlaws(rocket, motor, mp.mass, stabilityCal);
+  staticFlaws = preflightFlaws(rocket, motor, stabilityCal);
+}
+
+/** Thrust against weight on the pad, with the rail now set and every stage's motor aboard. */
+function takeoffFigures(r: RocketModel, m: Motor): LiftoffStats {
+  const cfg = ui.getConfig();
+  return liftoffStats(r, m, cfg.railLength, resolveStageMotors(r), cfg.railAngle);
 }
 
 /** Choose a motor (or none), then refresh the lists and reset the flight. */
 function applyMotor(m: Motor | null): void {
   clearStress();
+  // Flaws from an earlier flight belong to the motor it flew with.
+  lastFlightFlaws = [];
   motor = m;
   motorPeak = m ? peakThrust(m) : 0;
   refreshMotorList();
@@ -592,7 +636,13 @@ function loadRocket(r: RocketModel): void {
   resetSim();
 }
 
+/** Bumped by every newer choice of rocket; an import that is no longer the latest is dropped. */
+let importSeq = 0;
+
 function loadSample(): void {
+  importSeq++;
+  // Nor may a saved fix for an earlier file arrive on top of the sample.
+  importFix.clear();
   try {
     const model = parseOrkXml(SAMPLE_ORK_XML);
     // Keep the builder in step with the pad (enterBuilder only seeds from the pad when empty).
@@ -621,7 +671,9 @@ const FORMAT_LABELS: Record<ImportFormat, string> = {
 function toastWarnings(warnings: string[]): void {
   if (warnings.length === 0) return;
   const extra = warnings.length > 1 ? ` (+${warnings.length - 1} more)` : '';
-  ui.toast(`Note: ${warnings[0]}${extra}`);
+  // A dropped or missing part matters more than whatever happens to be listed first.
+  const first = warnings.find((w) => /ignored|not supported|missing|not imported/i.test(w)) ?? warnings[0];
+  ui.toast(`Note: ${first}${extra}`);
 }
 
 // Account storage, the consent decision and remembered import fixes (src/cloud).
@@ -648,15 +700,21 @@ function loadImportedDesign(design: Design, model: RocketModel, embedded: Motor[
 }
 
 async function importFile(file: File): Promise<void> {
+  if (manualFlight.active) manualFlight.exit();
+  const seq = ++importSeq;
   try {
+    // Checked before reading: a huge file must not be pulled into memory first.
+    if (file.size > MAX_FILE_BYTES) throw new Error('The file is too large (limit 20 MB).');
     const bytes = new Uint8Array(await file.arrayBuffer());
+    if (seq !== importSeq) return;
     const result = await importRocketFile(bytes, file.name);
+    if (seq !== importSeq) return;
     if (result.kind === 'motors') {
       if (result.motors.length === 0) {
         ui.toast(`No motors found in ${file.name}`);
         return;
       }
-      extraMotors = [...extraMotors, ...result.motors];
+      adoptEmbeddedMotors(result.motors);
       ui.toast(`Added ${result.motors.length} motor(s) from ${file.name}`);
       if (rocket && !motor) {
         const found = resolveMotorFromRef();
@@ -674,6 +732,7 @@ async function importFile(file: File): Promise<void> {
     }
     const model = result.model ?? toRocketModel(design);
     loadImportedDesign(design, model, result.motors);
+    logUsage('import');
     ui.toast(`Loaded "${result.name}" (${FORMAT_LABELS[result.format] ?? result.format})`);
     toastWarnings(result.warnings);
     // Files from other programs can be drawn wrong; our own JSON is already the user's design.
@@ -681,6 +740,7 @@ async function importFile(file: File): Promise<void> {
       void importFix.afterImport({ bytes, filename: file.name, format: result.format, parsedModel: model, imported: design });
     }
   } catch (e) {
+    if (seq !== importSeq) return;
     ui.toast(`Could not load ${file.name}: ${errorMessage(e)}`);
   }
 }
@@ -702,7 +762,12 @@ function resolveStageMotors(r: RocketModel): { motor: Motor; ignitionDelay?: num
   return out.length > 1 ? out : undefined;
 }
 
+/** A launch waiting for the server to compute its flight. */
+let launchAbort: AbortController | null = null;
+
 function resetSim(): void {
+  launchAbort?.abort();
+  launchAbort = null;
   const baseCfg = ui.getConfig();
   const stageMotors = rocket ? resolveStageMotors(rocket) : undefined;
   activeConfig = stageMotors ? { ...baseCfg, stageMotors } : baseCfg;
@@ -739,13 +804,45 @@ function launch(): void {
   }
   if (!sim) resetSim();
   if (!sim) return;
-  if (launched) return;
+  if (launched || launchAbort) return;
   if (sim.done) {
     ui.toast('Flight is over - press Reset to fly again');
     return;
   }
+  // The website has the server compute the flight. A hand-flown one needs the physics here, and
+  // the app on a phone always flies on the phone.
+  if (manualFlight.active || !runsOnServer()) ignite();
+  else void launchFromServer(rocket, motor);
+}
+
+function ignite(): void {
+  if (!sim || !rocket) return;
   sim.ignite();
   launched = true;
+  // Dust and smoke off the pad, sized by the motor's push.
+  smoke.burst([0, R_EARTH + activeConfig.launchAltitude - padLift, 0], motorPeak, rocket.maxRadius);
+  logUsage('flight');
+}
+
+/** Fetch the flight, then light the motor. Falls back to computing it here. */
+async function launchFromServer(forRocket: RocketModel, forMotor: Motor): Promise<void> {
+  const ac = new AbortController();
+  launchAbort = ac;
+  ui.toast('Computing the flight on the server…');
+  try {
+    const run = await prepareFlight(forRocket, forMotor, activeConfig, { signal: ac.signal });
+    // A reset, a new rocket or a new setting since the request makes this flight stale.
+    if (launchAbort !== ac) return;
+    launchAbort = null;
+    sim = run.sim;
+    lastEventCount = -1;
+    if (run.fallbackReason) ui.toast(`Flying on this device: ${run.fallbackReason}.`);
+    ignite();
+  } catch (e) {
+    if (launchAbort !== ac) return;
+    launchAbort = null;
+    if (!isAbortError(e)) ui.toast(`Could not launch: ${errorMessage(e)}`);
+  }
 }
 
 function onConfigChanged(): void {
@@ -754,6 +851,10 @@ function onConfigChanged(): void {
     ui.toast('Reset to apply');
     return;
   }
+  // Flaws from a flight under the old settings no longer apply.
+  lastFlightFlaws = [];
+  // The rail length changes the takeoff checks.
+  refreshRocketInfo();
   resetSim();
 }
 
@@ -776,6 +877,13 @@ function onFlightDone(): void {
   if (!sim || !rocket) return;
   flightDuration = sim.state.t;
   const flight = analyzeFlight(sim, rocket, motor, activeConfig);
+  const leftThePad = sim.events.some((e) => e.type === 'liftoff');
+  if (manualFlight.active) {
+    // A hand-flown flight says nothing about the design: show the design checks only, and leave
+    // the challenges for flights the rocket makes by itself.
+    ui.setFlaws(staticFlaws.map((s) => s.flaw));
+    return;
+  }
   lastFlightFlaws = flight;
   // Pre-flight checks join the flight flaws unless a flight flaw already says the same thing.
   const flightIds = new Set(flight.map((f) => f.id));
@@ -788,7 +896,11 @@ function onFlightDone(): void {
   let apogee = 0;
   for (const s of sim.log) apogee = Math.max(apogee, s.altitude);
   const outcome = sim.state.phase === 'crashed' ? 'Crashed' : 'Landed';
-  ui.toast(`${outcome}. Apogee ${Math.round(apogee)} m, flight ${flightDuration.toFixed(1)} s.`);
+  ui.toast(
+    leftThePad
+      ? `${outcome}. Apogee ${Math.round(apogee)} m, flight ${flightDuration.toFixed(1)} s.`
+      : 'The rocket never left the pad: not enough thrust for its weight.',
+  );
 
   // Evaluate engineering challenges on flight completion.
   const prevDone = loadCompletedChallenges();
@@ -811,7 +923,7 @@ function onFlightDone(): void {
 
 function advanceSim(simDt: number): void {
   if (!sim || !inFlight() || replayT !== null) return;
-  sim.step(simDt);
+  sim.step(simDt, manualFlight.active ? manualFlight.controls() : undefined);
   if (sim.done && !finishHandled) onFlightDone();
 }
 
@@ -839,22 +951,26 @@ function startStress(): void {
   if (stressAbort) return;
   lastStress = null;
   ui.setStress('running');
-  // The flights run on our server while the user waits; if it cannot be reached they run
-  // here instead, in slices that keep the page responsive.
+  // On the website the flights run on our server while the user waits; on a phone, or if the
+  // server cannot be used, they run here, in slices that keep the page responsive.
   const ac = new AbortController();
   stressAbort = ac;
   const config = ui.getConfig();
-  const request = { kind: 'stress' as const, design: fromRocketModel(rocket), motors: motorSpec(motor), config };
+  const forRocket = rocket;
+  const forMotor = motor;
   void cloudReady
     .then(async (cloud) => {
-      const r = await runSimJobRemote(request, { accessToken: await cloud.accessToken(), signal: ac.signal });
+      const accessToken = await cloud.accessToken();
+      const r = await runStressTest(forRocket, forMotor, config, { accessToken, signal: ac.signal });
       if (stressAbort !== ac) return;
       stressAbort = null;
       lastStress = r.result;
       ui.setStress(r.result);
-      ui.toast(r.ranOn === 'server' ? 'Stress test complete (ran on our server)' : 'Stress test complete (ran on this device)');
+      const why = r.fallbackReason ? `: ${r.fallbackReason}` : '';
+      ui.toast(r.ranOn === 'server' ? 'Stress test complete (ran on our server)' : `Stress test complete (ran on this device${why})`);
       if (cloud.mayCollect()) {
-        void cloud.store.logSimRun({ kind: 'stress', config, summary: r.result, durationMs: r.durationMs, ranOn: r.ranOn });
+        const ranOn = r.ranOn === 'server' ? 'server' : 'browser';
+        void cloud.store.logSimRun({ kind: 'stress', config, summary: r.result, durationMs: r.durationMs, ranOn });
       }
     })
     .catch((e: unknown) => {
@@ -869,7 +985,7 @@ function startStress(): void {
 
 function maxWarpFor(s: Sim | null): number {
   if (!s || s.done) return Infinity;
-  return s.state.altitude < WARP_CAP_ALTITUDE || s.state.thrust > 0 ? WARP_CAP_ATMOSPHERE : Infinity;
+  return s.state.altitude < WARP_CAP_ALTITUDE || s.state.thrust > 0 ? WARP_CAP_ATMOSPHERE : WARP_CAP_COAST;
 }
 
 function originFor(m: CameraMode, state: SimState | null): Vec3 {
@@ -896,17 +1012,19 @@ function updateSmokeAndTrail(state: SimState | null, origin: Vec3, simDt: number
   const live = replayT === null && launched && !!rocket && !!state;
   if (live && state && rocket && simDt > 0) {
     if (state.thrust > 0 && state.altitude < SMOKE_ALT_LIMIT) {
-      emitAcc += simDt * SMOKE_PUFFS_PER_SIM_S;
+      const puff = smokeForThrust(state.thrust, rocket.maxRadius);
+      emitAcc += simDt * puff.rate;
       while (emitAcc >= 1) {
         emitAcc -= 1;
-        smoke.emit(nozzlePhysical(state, rocket), rocket.maxRadius * 3);
+        smoke.emit(nozzlePhysical(state, rocket), puff.size);
       }
     }
   }
   if (toggles.trail && sim && launched) {
     trail.setFromLog(sim.log, replayT ?? undefined);
   }
-  smoke.update(realDt, origin);
+  // In slow motion the smoke slows with the flight.
+  smoke.update(simDt > 0 ? Math.min(realDt, simDt) : realDt, origin);
   trail.update(origin);
 }
 
@@ -1084,20 +1202,35 @@ function updateHud(state: SimState | null): void {
     lastEventCount = sim.events.length;
     ui.setEvents(sim.events);
   }
-  if (state) ui.setTelemetry(state, clock.warp, clock.paused);
+  if (!state) return;
+  // Show the rate time is really running at, slow motion included.
+  const factor = inFlight() && replayT === null ? realisticTimeFactor(sim, clock.warp) : 1;
+  ui.setTelemetry(state, Math.round(clock.warp * factor * 100) / 100, clock.paused);
 }
 
+// Schedule the next frame first so one exception (a bad sample, a NaN) cannot freeze the app.
+let frameErrorLogged = false;
 function frame(now: number): void {
+  requestAnimationFrame(frame);
+  try {
+    frameBody(now);
+  } catch (e) {
+    if (!frameErrorLogged) {
+      frameErrorLogged = true;
+      console.error('Frame failed; continuing.', e);
+    }
+  }
+}
+
+function frameBody(now: number): void {
   if (document.hidden) {
     lastNow = now;
-    requestAnimationFrame(frame);
     return;
   }
   importFix.setVisible(appMode === 'builder' && !heroActive);
   // Under the title overlay the flight scene only needs ~10 fps. lastNow is left alone so the
   // skipped time is still simulated by the next processed frame.
   if (heroActive && appMode === 'flight' && now - lastHeroRenderMs < HERO_FRAME_MS && now >= renderWakeUntil) {
-    requestAnimationFrame(frame);
     return;
   }
   const realDt = Math.max(0, (now - lastNow) / 1000);
@@ -1107,7 +1240,6 @@ function frame(now: number): void {
   if (appMode === 'builder') {
     // controls.update() (damping) runs inside render(), so it only needs to run while awake.
     if (awake || builderView.isAnimating?.()) builderView.render(renderer);
-    requestAnimationFrame(frame);
     return;
   }
 
@@ -1142,13 +1274,16 @@ function frame(now: number): void {
       missionView.render(renderer);
       missionUi.setViewScale(missionView.viewDistance());
     }
-    requestAnimationFrame(frame);
     return;
   }
 
-  const simDt = clock.tick(realDt * realisticTimeFactor(sim, clock.warp));
+  // Hand flying keeps its own time: its own warp steps, and no automatic slow motion.
+  const simDt = manualFlight.active
+    ? manualFlight.tick(realDt)
+    : clock.tick(realDt * realisticTimeFactor(sim, clock.warp));
   clock.setMaxWarp(maxWarpFor(sim));
   advanceSim(simDt);
+  manualFlight.update();
 
   const state = displayState();
   const origin = originFor(cameraRig.mode, state);
@@ -1158,7 +1293,6 @@ function frame(now: number): void {
 
   renderer.render(scene, camera);
   if (heroActive) lastHeroRenderMs = now;
-  requestAnimationFrame(frame);
 }
 
 // ---------- UI wiring ----------
@@ -1172,13 +1306,19 @@ const ui: UI = createUI(app, {
   },
   onLoadSample: loadSample,
   onLaunch: launch,
-  onReset: resetSim,
+  onReset: () => {
+    // While hand flying the control deck has its own reset button.
+    if (!manualFlight.active) resetSim();
+  },
+  onManual: () => startManualFlight(),
   onWarp: (delta) => {
-    if (delta > 0) clock.warpUp();
+    if (manualFlight.active) manualFlight.warpBy(delta > 0 ? 1 : -1);
+    else if (delta > 0) clock.warpUp();
     else clock.warpDown();
   },
   onPause: () => {
-    clock.paused = !clock.paused;
+    if (manualFlight.active) manualFlight.togglePause();
+    else clock.paused = !clock.paused;
   },
   onCamera: (m) => {
     cameraRig.setMode(m, rocket ? rocket.length : 1);
@@ -1208,6 +1348,47 @@ const ui: UI = createUI(app, {
   onBuild: () => enterBuilder(),
   onMission: () => enterMission(),
 });
+
+// ---------- Hand flying the main flight ----------
+
+const MANUAL_CAMERAS = ['pad', 'chase', 'onboard', 'map'] as const;
+/** The camera chosen in the panels, restored when hand flying ends. */
+let cameraBeforeManual: (typeof MANUAL_CAMERAS)[number] = 'pad';
+
+const manualFlight = createManualFlight(app, {
+  sim: () => sim,
+  launched: () => launched,
+  stageCount: () => activeConfig.stageMotors?.length ?? 1,
+  noseAxis: () => {
+    const axis = new THREE.Vector3(0, 1, 0);
+    return rocketRoot ? axis.applyQuaternion(rocketRoot.quaternion) : axis;
+  },
+  cameraQuaternion: () => camera.quaternion,
+  launch: () => {
+    launch();
+    return launched;
+  },
+  reset: resetSim,
+  cycleCamera: () => {
+    const next = MANUAL_CAMERAS[(MANUAL_CAMERAS.indexOf(cameraRig.mode) + 1) % MANUAL_CAMERAS.length];
+    cameraRig.setMode(next, rocket ? rocket.length : 1);
+  },
+  onExit: () => {
+    ui.setManual?.(false);
+    cameraRig.setMode(cameraBeforeManual, rocket ? rocket.length : 1);
+    resetSim();
+  },
+});
+
+function startManualFlight(): void {
+  if (!rocket || !motor) {
+    ui.toast(rocket ? 'Pick a motor first' : 'Load a rocket first');
+    return;
+  }
+  cameraBeforeManual = cameraRig.mode;
+  ui.setManual?.(true);
+  manualFlight.start();
+}
 
 // ---------- Build mode glue ----------
 
@@ -1259,8 +1440,8 @@ function computeBuilderStats(model: RocketModel): { stats: BuilderStats; cgX: nu
   const mp = massProps(model, m, 0);
   const ap = aeroProps(model, 0.1, mp.cgX);
   const stabilityCal = (ap.cpX - mp.cgX) / (2 * model.maxRadius);
-  const twr = m && mp.mass > 0 ? peakThrust(m) / (mp.mass * G0) : null;
-  const preFlaws = preflightFlaws(model, m, mp.mass, stabilityCal).map((s) => s.flaw);
+  const lift = m && mp.mass > 0 ? takeoffFigures(model, m) : null;
+  const preFlaws = preflightFlaws(model, m, stabilityCal).map((s) => s.flaw);
   const flightIds = new Set(lastFlightFlaws.map((f) => f.id));
   const mergedFlaws = [
     ...lastFlightFlaws,
@@ -1270,9 +1451,9 @@ function computeBuilderStats(model: RocketModel): { stats: BuilderStats; cgX: nu
   return {
     stats: {
       length: model.length,
-      mass: mp.mass,
+      mass: lift ? lift.mass : mp.mass,
       stabilityCal,
-      twr,
+      twr: lift ? lift.twr : null,
       motorLabel: m ? motorKey(m) : null,
       flaws: mergedFlaws,
     },
@@ -1538,9 +1719,10 @@ const builderUi = createBuilderUI(app, {
     reloadBuilderStorage();
     ui.toast(`Saved "${d.name}"`);
     refreshBuilder(false, false);
-    void cloudReady.then((cloud) => pushDesign(cloud, d, thumb, importFix.sourceSha()));
+    void cloudReady.then((cloud) => pushDesign(cloud, d, thumb, importFix.sourceSha())).catch((e) => console.warn('Cloud save skipped:', e));
   },
   onLoadSavedDesign: (design) => {
+    importSeq++;
     importFix.clear();
     builderHistory = createHistory(design);
     builderSelectedId = null;
@@ -1550,7 +1732,7 @@ const builderUi = createBuilderUI(app, {
     ui.toast(`Loaded "${design.name}"`);
   },
   onDeleteSavedDesign: (id) => {
-    void cloudReady.then((cloud) => removeDesign(cloud, id));
+    void cloudReady.then((cloud) => removeDesign(cloud, id)).catch((e) => console.warn('Cloud delete skipped:', e));
     deleteSavedDesign(id);
     reloadBuilderStorage();
     refreshBuilder(false, false);
@@ -1618,6 +1800,7 @@ async function handleCopyShareLink(): Promise<void> {
 }
 
 function enterBuilder(): void {
+  if (manualFlight.active) manualFlight.exit();
   if (!builderHistory) {
     const initial = rocket ? fromRocketModel(rocket) : createEmptyDesign();
     builderHistory = createHistory(initial);
@@ -1639,6 +1822,8 @@ function exitBuilderToPad(): void {
     return;
   }
   const model = toRocketModel(d);
+  // The builder's rocket is going to the pad: an import still loading must not replace it.
+  importSeq++;
   appMode = 'flight';
   requestRender();
   clearPlacement();
@@ -2011,6 +2196,24 @@ function cacheMissionRecord(key: string, rec: FlightRecord): void {
 // The in-flight flight computation; aborted (worker terminated) when a newer load starts.
 let missionLoadAbort: AbortController | null = null;
 
+const MISSION_NOTE_MS = 8000;
+let missionNoteTimer = 0;
+/**
+ * Mission mode hides the toasts and its error banner is for failures, so a short notice borrows
+ * the header line that describes the chosen case, then gives it back.
+ */
+function showMissionNote(text: string): void {
+  const line = document.querySelector<HTMLElement>('.msn-case-note');
+  if (!line) return;
+  const before = line.textContent;
+  window.clearTimeout(missionNoteTimer);
+  line.textContent = text;
+  missionNoteTimer = window.setTimeout(() => {
+    // Another case or mission may have written its own description since.
+    if (line.textContent === text) line.textContent = before;
+  }, MISSION_NOTE_MS);
+}
+
 async function loadMissionCase(caseId: string): Promise<void> {
   const def = missionDef;
   const seq = ++missionLoadSeq;
@@ -2035,10 +2238,12 @@ async function loadMissionCase(caseId: string): Promise<void> {
   const controller = new AbortController();
   missionLoadAbort = controller;
   try {
-    const rec = await runMission(def.id, opts, controller.signal);
+    const { record: rec, fallbackReason } = await runMissionFlight(def.id, opts, { signal: controller.signal });
     cacheMissionRecord(key, rec);
     if (seq === missionLoadSeq && appMode === 'mission') {
       applyMissionRecord(rec);
+      // A replay from the cache does not come through here, so each computed flight says it once.
+      if (fallbackReason) showMissionNote(`Computed on this device: ${fallbackReason}.`);
     }
   } catch (e) {
     if (isAbortError(e)) return;
@@ -2051,10 +2256,20 @@ async function loadMissionCase(caseId: string): Promise<void> {
   }
 }
 
+/** Throws away a live flight: it belongs to the mission or the screen being left. */
+function dropPilot(): void {
+  if (!pilotFlight) return;
+  pilotFlight = null;
+  pilotControls.setFlight(null);
+  // Its unfinished record is no replay; entering mission mode again loads a fresh flight.
+  missionRecord = null;
+}
+
 /** Switches to another mission and loads its nominal flight. Unknown ids are ignored. */
 function selectMission(id: string): void {
   const def = getMission(id);
   if (!def) return;
+  dropPilot();
   requestRender();
   missionDef = def;
   missionRecord = null;
@@ -2103,6 +2318,8 @@ const pilotControls = createPilotControls(app.querySelector<HTMLElement>('.msn-r
 });
 
 function enterMission(id?: string): void {
+  if (manualFlight.active) manualFlight.exit();
+  logUsage('mission');
   appMode = 'mission';
   heroActive = false;
   requestRender();
@@ -2120,6 +2337,11 @@ function enterMission(id?: string): void {
 }
 
 function exitMission(): void {
+  // Nothing should keep computing a flight nobody is looking at.
+  missionLoadAbort?.abort();
+  missionLoadAbort = null;
+  missionUi.setBusy(null);
+  dropPilot();
   appMode = 'flight';
   requestRender();
   missionView.setEnabled(false);
@@ -2154,7 +2376,10 @@ async function tryLoadSharedRocket(): Promise<void> {
   if (!hash.includes(`${SHARE_HASH_KEY}=`)) return;
   try {
     const design = await decodeDesignFromHash(hash);
-    if (!design) return;
+    if (!design) {
+      ui.toast('That shared rocket link is not valid, so it was not loaded.');
+      return;
+    }
     const model = toRocketModel(design);
     loadImportedDesign(design, model);
     ui.toast('Loaded shared rocket');
@@ -2174,7 +2399,8 @@ void cloudReady
     reloadBuilderStorage();
     if (appMode === 'builder') refreshBuilder(false, false);
     ui.toast(`${added} rocket${added === 1 ? '' : 's'} from your account added to Save / Open`);
-  });
+  })
+  .catch((e) => console.warn('Cloud sync skipped:', e));
 requestAnimationFrame(frame);
 
 // Someone who picked a flyable mission on the landing page goes straight to mission mode;
@@ -2239,8 +2465,10 @@ function takeEnterBuildFlag(): boolean {
 interface MissionDebugHook {
   astraRunMission?: (id?: string) => Promise<unknown>;
 }
-(window as Window & MissionDebugHook).astraRunMission = (id = 'lvm3-m4') =>
-  runMission(id);
+if ((import.meta.env as { DEV?: boolean }).DEV) {
+  (window as Window & MissionDebugHook).astraRunMission = (id = 'lvm3-m4') =>
+    runMission(id);
+}
 
 // Dev-only hook for inspecting the mission view from the console:
 // __astraMission.cam('solar'), __astraMission.seek(120), __astraMission.capture() -> JPEG data URL.

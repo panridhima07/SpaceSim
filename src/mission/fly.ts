@@ -1,6 +1,14 @@
 // Fly a mission definition and record the whole flight as plain data.
 
-import { eciToApp, toMarkers, toSample } from './adapter';
+import {
+  COUNTDOWN_SAMPLE_S,
+  PAD_SAMPLE_S,
+  eciToApp,
+  padSampleAt,
+  padStartTime,
+  toMarkers,
+  toSample,
+} from './adapter';
 import {
   AscentAutopilot,
   FailureInjector,
@@ -84,8 +92,32 @@ export function flyMission(def: MissionDef, opts: FlyOptions = {}): FlightRecord
     return sample;
   };
 
+  // On the pad: the unlit vehicle, then ignition and thrust building against the clamps. It is
+  // stepped one physics step at a time so a sample lands right on release.
+  const padStep = def.config.dt ?? 0.02;
+  const padEvery = Math.max(1, Math.round(PAD_SAMPLE_S / padStep));
+  takeSample();
+  for (let n = 1; sim.held && !sim.ended && autopilot.phase !== 'aborted' && sim.t < def.tMax; n++) {
+    sim.step(padStep);
+    if (!sim.held || n % padEvery === 0) takeSample();
+  }
+  if (sim.held) {
+    // It never left the pad: there is no liftoff to count from, so there is no flight to show.
+    samples.length = 0;
+  } else {
+    // Mission time was unknown until release: count the held samples back from it.
+    for (let i = 0; i < samples.length - 1; i++) samples[i].t -= sim.liftoffTime;
+    const ignition = samples[0];
+    const countdown: FlightSample[] = [];
+    for (let t = padStartTime(sim.liftoffTime); t < ignition.t - 0.05; t += COUNTDOWN_SAMPLE_S) {
+      countdown.push(padSampleAt(ignition, t, OMEGA_EARTH));
+    }
+    samples.unshift(...countdown);
+  }
+
   while (!sim.ended && autopilot.phase !== 'done' && autopilot.phase !== 'aborted' && sim.t < def.tMax) {
-    sim.step(sampleInterval);
+    // Sample on whole multiples of the interval, wherever between them the clamps let go.
+    sim.step((Math.floor(sim.t / sampleInterval + 1e-6) + 1) * sampleInterval - sim.t);
 
     // A part that was attached before this step and is gone now separated inside it.
     sim.rt.stages.forEach((st, i) => {
@@ -155,7 +187,7 @@ export function flyMission(def: MissionDef, opts: FlyOptions = {}): FlightRecord
   const liftedOff = Number.isFinite(sim.liftoffTime);
   const liftoffTime = liftedOff ? sim.liftoffTime : 0;
   const el = sim.elements();
-  const markers = toMarkers(sim.events, liftoffTime, def.reference);
+  const markers = toMarkers(sim.events, liftoffTime, def.reference, samples);
 
   if (pay && payloadSeparation !== null) {
     markers.push({

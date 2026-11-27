@@ -27,6 +27,25 @@ export interface Cloud {
 
 const NO_STORE = createCloudStore(null, null);
 
+/** Who gave the consent answer stored in this browser: a user id, or 'guest'. */
+const CONSENT_OWNER_KEY = 'sfb.consent.owner.v1';
+
+function readConsentOwner(): string | null {
+  try {
+    return window.localStorage.getItem(CONSENT_OWNER_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeConsentOwner(owner: string): void {
+  try {
+    window.localStorage.setItem(CONSENT_OWNER_KEY, owner);
+  } catch {
+    // Storage refused: the answer then lasts for this page only.
+  }
+}
+
 /**
  * Work out who is signed in and what they agreed to. Never throws: with no network, no
  * sign-in or no tables the result is a guest-like cloud that stores nothing remotely.
@@ -38,13 +57,45 @@ export async function initCloud(): Promise<Cloud> {
   const signedIn = userId !== null;
   const store = signedIn ? createCloudStore(supabase, userId) : NO_STORE;
 
+  // The answer saved in this browser belongs to whoever gave it: another account (or a guest)
+  // on the same browser must be asked themselves, not inherit it.
+  const owner = userId ?? 'guest';
+  const savedOwner = readConsentOwner();
   let consent = readLocalConsent();
+  // Answers saved before owners were recorded are kept for guests only.
+  if (consent && (savedOwner === null ? signedIn : savedOwner !== owner)) consent = null;
+  const keepLocal = (c: ConsentState): void => {
+    writeLocalConsent(c);
+    writeConsentOwner(owner);
+  };
   if (signedIn) {
     // The account's answer follows the person across devices; the newer one wins.
-    const remote = await store.getConsent().catch(() => null);
+    // undefined = the read failed: then nothing is overwritten either way.
+    const remote = await store.getConsent().catch(() => undefined);
     if (remote && (!consent || remote.decidedAt > consent.decidedAt)) {
       consent = remote;
-      writeLocalConsent(remote);
+      keepLocal(remote);
+    } else if (consent && remote !== undefined && (remote === null || consent.decidedAt > remote.decidedAt)) {
+      // This device holds a newer answer than the account (an earlier save failed, for
+      // example offline): send it again, withdrawal included.
+      void pushConsent(consent);
+    }
+  }
+
+  async function pushConsent(decision: ConsentState): Promise<void> {
+    await store.setConsent(decision).catch(() => false);
+    // "It stops from then on": nothing already stored stays marked for training. Cheap and
+    // idempotent, so it is repeated whenever the answer is "no".
+    if (!decision.research && supabase && userId) {
+      await supabase
+        .from('import_corrections')
+        .update({ share_for_training: false })
+        .eq('user_id', userId)
+        .eq('share_for_training', true)
+        .then(
+          () => {},
+          () => {},
+        );
     }
   }
 
@@ -53,19 +104,9 @@ export async function initCloud(): Promise<Cloud> {
     if (asking) return asking;
     asking = showConsentDialog({ current: consent, signedIn })
       .then(async (decision) => {
-        const withdrew = consent?.research === true && !decision.research;
         consent = decision;
-        writeLocalConsent(decision);
-        if (signedIn) {
-          await store.setConsent(decision).catch(() => {});
-          // "It stops from then on": nothing already stored stays marked for training.
-          if (withdrew && supabase) {
-            await supabase.from('import_corrections').update({ share_for_training: false }).eq('user_id', userId).then(
-              () => {},
-              () => {},
-            );
-          }
-        }
+        keepLocal(decision);
+        if (signedIn) await pushConsent(decision);
         return decision;
       })
       .finally(() => {
@@ -75,7 +116,9 @@ export async function initCloud(): Promise<Cloud> {
   };
 
   window.addEventListener(OPEN_CONSENT_EVENT, () => void askConsent());
-  if (needsConsent(consent)) {
+  // Guests have nothing to opt into (research needs an account) and their data stays in the
+  // browser, so they are not interrupted; the account menu still opens the popup.
+  if (signedIn && needsConsent(consent)) {
     // After the first paint, so the popup opens over a drawn app rather than a blank page.
     window.setTimeout(() => void askConsent(), 600);
   }

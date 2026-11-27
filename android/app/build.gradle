@@ -14,6 +14,11 @@ def keystoreProps = new Properties()
 if (keystorePropsFile.exists()) {
     keystorePropsFile.withInputStream { keystoreProps.load(it) }
 }
+// keytool makes a PKCS12 keystore, where the key has the same password as the file, so
+// keyPassword may be left out, or left as the placeholder from the example file.
+def ownKeyPassword = keystoreProps['keyPassword']
+def signingKeyPassword = (!ownKeyPassword || ownKeyPassword == 'YOUR-KEYSTORE-PASSWORD')
+        ? keystoreProps['storePassword'] : ownKeyPassword
 
 android {
     namespace = "com.astra.spaceflightbuilder"
@@ -33,11 +38,21 @@ android {
     }
     signingConfigs {
         release {
-            if (keystorePropsFile.exists()) {
+            // Only set the signing fields when every key is present; otherwise warn and leave them unset.
+            def requiredSigningValues = [
+                storeFile    : keystoreProps['storeFile'],
+                storePassword: keystoreProps['storePassword'],
+                keyAlias     : keystoreProps['keyAlias'],
+                keyPassword  : signingKeyPassword
+            ]
+            def missingSigningKeys = requiredSigningValues.findAll { k, v -> !v }.keySet().toList()
+            if (keystorePropsFile.exists() && missingSigningKeys.isEmpty()) {
                 storeFile rootProject.file(keystoreProps['storeFile'])
                 storePassword keystoreProps['storePassword']
                 keyAlias keystoreProps['keyAlias']
-                keyPassword keystoreProps['keyPassword']
+                keyPassword signingKeyPassword
+            } else if (keystorePropsFile.exists()) {
+                logger.warn("keystore.properties is missing: ${missingSigningKeys.join(', ')}")
             }
         }
     }
@@ -48,6 +63,12 @@ android {
             }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+        // Google Play: the release build plus src/play/AndroidManifest.xml, which removes the
+        // permission to install APKs and marks the app as a Play build.
+        play {
+            initWith release
+            matchingFallbacks = ['release']
         }
     }
 }
@@ -74,7 +95,7 @@ apply from: 'capacitor.build.gradle'
 
 // An unsigned release APK cannot be installed, so fail early with the fix.
 gradle.taskGraph.whenReady { graph ->
-    if (!keystorePropsFile.exists() && graph.allTasks.any { it.project == project && it.name ==~ /(assemble|bundle|package)Release/ }) {
+    if (!keystorePropsFile.exists() && graph.allTasks.any { it.project == project && it.name ==~ /(assemble|bundle|package)(Release|Play)/ }) {
         throw new GradleException('Release builds need android/keystore.properties. See docs/MOBILE-RELEASE.md, "Signing key".')
     }
 }

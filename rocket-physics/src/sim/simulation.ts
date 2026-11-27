@@ -384,6 +384,9 @@ export class Simulation {
     }
   }
 
+  /** Throttle each spooling stage reaches at the end of the step in progress (NaN: none). */
+  private throttleEnd: number[] = [];
+
   private substep(remaining: number): void {
     let hint = Infinity;
     if (this.flightComputer) {
@@ -403,6 +406,7 @@ export class Simulation {
         s.tanks.forEach((tk, k) => (this.prop[this.offs[i] + k] = Math.max(0, this.prop[this.offs[i] + k] - rate * tk.flowFraction * h)));
       });
       this.t += h;
+      this.settleThrottles();
       this.applyPadState();
     } else {
       let burning = false;
@@ -415,6 +419,7 @@ export class Simulation {
         this.control(h);
         this.rk4(h);
         this.t += h;
+        this.settleThrottles();
       }
     }
     this.refresh();
@@ -524,10 +529,18 @@ export class Simulation {
     });
   }
 
+  /**
+   * Set each burning stage's throttle for a step of length h. A liquid engine spools toward the
+   * commanded throttle along an exponential, but the step is flown at one throttle value, so that
+   * value is the mean of the exponential over the step: it burns exactly the propellant the spool
+   * would. settleThrottles then leaves the stage at the value it reaches at the end of the step.
+   */
   private updateThrottles(h: number): void {
     const stages = this.rt.stages;
+    if (this.throttleEnd.length !== stages.length) this.throttleEnd = stages.map(() => NaN);
     for (let i = 0; i < stages.length; i++) {
       const st = stages[i];
+      this.throttleEnd[i] = NaN;
       if (!st.attached || !st.engineOn) continue;
       const e = this.vehicle.stages[i].engine;
       if (e.thrustCurve) {
@@ -536,7 +549,23 @@ export class Simulation {
       }
       const target = clamp(this.cmd.throttle, e.minThrottle ?? 1, 1);
       const tau = (e.spoolTime ?? 1) / 3;
-      st.throttle += (target - st.throttle) * (1 - Math.exp(-h / tau));
+      const x = h / tau;
+      const k = -Math.expm1(-x); // 1 - exp(-x)
+      const from = st.throttle;
+      this.throttleEnd[i] = from + (target - from) * k;
+      st.throttle = target + (from - target) * (x > 1e-9 ? k / x : 1);
+    }
+  }
+
+  /** After a step: leave each spooling stage at the throttle it has reached. */
+  private settleThrottles(): void {
+    const stages = this.rt.stages;
+    for (let i = 0; i < stages.length; i++) {
+      const end = this.throttleEnd[i];
+      if (end !== end) continue; // NaN: not spooling this step
+      const st = stages[i];
+      if (st.attached && st.engineOn) st.throttle = end;
+      this.throttleEnd[i] = NaN;
     }
   }
 

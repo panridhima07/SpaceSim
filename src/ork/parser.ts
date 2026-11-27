@@ -77,11 +77,37 @@ const INTERNAL_TAGS = new Set([
 const SIDE_BODY_TAGS = new Set(['parallelstage', 'podset', 'tubefinset', 'booster']);
 /** Where side bodies found during a parse are collected. */
 let sideSink: SideBody[] | null = null;
+/** Config id of the default motor configuration of the file being parsed. */
+let defaultMotorId: string | null = null;
+/** Most <motor> elements seen in one mount during this parse. */
+let maxMotorConfigs = 0;
+/** Warnings of the parse in progress (for helpers that have no warnings argument). */
+let warnSink: string[] | null = null;
+/** End station of the previous placed sibling, for axial offset method "after". */
+let afterX = 0;
 
 // ---------- Public API ----------
 
+/** Clears the module-level parse state so a finished or thrown parse cannot leak into the next one. */
+function resetParseState(): void {
+  sideSink = null;
+  warnSink = null;
+  defaultMotorId = null;
+  maxMotorConfigs = 0;
+  afterX = 0;
+}
+
 /** Parse OpenRocket XML text into a RocketModel. Throws only if the text is not an OpenRocket design. */
 export function parseOrkXml(xml: string): RocketModel {
+  resetParseState();
+  try {
+    return parseOrkXmlBody(xml);
+  } finally {
+    resetParseState();
+  }
+}
+
+function parseOrkXmlBody(xml: string): RocketModel {
   assertSafeXmlText(xml);
   const warnings: string[] = [];
   const sideBodies: SideBody[] = [];
@@ -106,6 +132,19 @@ export function parseOrkXml(xml: string): RocketModel {
   }
 
   const name = textOf(child(rocketEl, 'name')) || 'Rocket';
+
+  warnSink = warnings;
+  maxMotorConfigs = 0;
+  defaultMotorId = null;
+  const findDefault = (el: XNode): string | null => {
+    for (const k of kids(el)) {
+      if (tagOf(k) === 'motorconfiguration' && k.getAttribute('default') === 'true') return k.getAttribute('configid');
+      const r = findDefault(k);
+      if (r !== null) return r;
+    }
+    return null;
+  };
+  defaultMotorId = findDefault(rocketEl);
 
   // Stages: <rocket><subcomponents><stage>...; if there are no stage elements, the rocket's own subcomponents are the stage.
   const topSubs = child(rocketEl, 'subcomponents');
@@ -192,6 +231,9 @@ export function parseOrkXml(xml: string): RocketModel {
   const stages: StageBoundary[] = stageContainers.map((container, sIdx) => {
     const mOver = massOf(container, 'overridemass');
     const subOver = textOf(child(container, 'overridesubcomponentsmass')) === 'true';
+    if (child(container, 'overridecg') && !warnings.includes('Stage CG override ignored.')) {
+      warnings.push('Stage CG override ignored.');
+    }
     return {
       name: nameOf(container) || `Stage ${sIdx + 1}`,
       startComponent: stageStarts[sIdx] === -1 ? components.length : stageStarts[sIdx],
@@ -217,6 +259,8 @@ export function parseOrkXml(xml: string): RocketModel {
   }
 
   sideSink = null;
+  warnSink = null;
+  if (maxMotorConfigs > 1) warnings.push(`${maxMotorConfigs} motor configurations found; using the default one.`);
   sideBodies.forEach((sb, k) => {
     sb.id = `s${k}`;
     sb.components.forEach((c, i) => { c.id = `s${k}_${i}`; });
@@ -459,6 +503,13 @@ function overrides(el: XNode, x: number): { massOverride?: number; cgOverride?: 
   const o: { massOverride?: number; cgOverride?: number } = {};
   const m = massOf(el, 'overridemass');
   if (m !== undefined && m > 0) o.massOverride = m;
+  if (
+    m !== undefined && warnSink &&
+    (flag(el, 'overridesubcomponents') || flag(el, 'overridesubcomponentsmass'))
+  ) {
+    const msg = `Mass override on ${nameOf(el)} also covers its parts; the parts are counted separately here, so mass may be too high.`;
+    if (!warnSink.includes(msg)) warnSink.push(msg);
+  }
   const cg = num(el, 'overridecg');
   if (cg !== undefined) o.cgOverride = clampOffset(x + clampOffset(cg));
   return o;
@@ -497,6 +548,7 @@ function placeAt(el: XNode, parent: Frame, childLength: number, defaultMethod: s
     case 'bottom': return parent.x + parent.length - childLength + value;
     case 'middle': return parent.x + (parent.length - childLength) / 2 + value;
     case 'absolute': return value;
+    case 'after': return afterX + value;
     default: return parent.x + value;
   }
 }
@@ -699,8 +751,10 @@ function makeFins(el: XNode, tag: string, parent: Frame, warnings: string[]): Fi
 }
 
 function readMotor(mountEl: XNode): MotorRef | undefined {
-  const m = child(mountEl, 'motor');
-  if (!m) return undefined;
+  const motors = kids(mountEl).filter((k) => tagOf(k) === 'motor');
+  if (motors.length === 0) return undefined;
+  maxMotorConfigs = Math.max(maxMotorConfigs, motors.length);
+  const m = (defaultMotorId !== null ? motors.find((k) => k.getAttribute('configid') === defaultMotorId) : undefined) ?? motors[0];
   return {
     manufacturer: str(m, 'manufacturer') ?? '',
     designation: str(m, 'designation') ?? '',
@@ -754,7 +808,7 @@ function makeInnerTube(el: XNode, x: number, length: number, parent: Frame, warn
     (num(el, 'clusterrotation') ?? 0) * DEG,
   );
   if (cluster) {
-    warnings.push(`"${nameOf(el)}" is a cluster of ${cluster.length} tubes. All are drawn, but mass and thrust count one tube and one motor.`);
+    warnings.push(`"${nameOf(el)}" is a cluster of ${cluster.length} tubes. All are drawn and counted, each tube carrying the same motor.`);
   }
   return {
     ...base(el, x, length, bulkDensity(el)),
@@ -1019,13 +1073,16 @@ function buildChildren(container: XNode, frame: Frame, out: Component[], warning
     warnings.push(`"${nameOf(container)}" has ${siblings.length} sub-components; only the first ${MAX_CHILDREN} were read.`);
     siblings = siblings.slice(0, MAX_CHILDREN);
   }
-  const tubes: SiblingTube[] = siblings
-    .filter((e) => tagOf(e) === 'innertube')
-    .map((e) => {
-      const len = lengthOf(e, 'length');
-      const x0 = placeAt(e, frame, len, 'top');
-      return { x0, x1: x0 + len, outer: radiusOf(e, 'outerradius') ?? frame.inner };
-    });
+  // Pre-pass for sibling tubes; "after" needs the running end of the previous sibling.
+  const tubes: SiblingTube[] = [];
+  afterX = frame.x;
+  for (const e of siblings) {
+    const len = lengthOf(e, 'length');
+    const x0 = placeAt(e, frame, len, 'top');
+    afterX = x0 + len;
+    if (tagOf(e) === 'innertube') tubes.push({ x0, x1: x0 + len, outer: radiusOf(e, 'outerradius') ?? frame.inner });
+  }
+  let prevEnd = frame.x;
   for (const el of siblings) {
     if (out.length >= MAX_TOTAL_PARTS) {
       warnings.push(`Stopped reading at ${MAX_TOTAL_PARTS} parts.`);
@@ -1042,8 +1099,10 @@ function buildChildren(container: XNode, frame: Frame, out: Component[], warning
       else if (sb) warnings.push(`Only the first ${MAX_SIDE_BODIES} side bodies were read.`);
       continue;
     }
+    afterX = prevEnd;
     const comp = buildInternal(el, tag, frame, warnings, tubes);
     if (!comp) continue;
+    prevEnd = comp.x + (comp.length ?? 0);
     out.push(comp);
     buildChildren(el, frameOf(comp), out, warnings, depth + 1);
   }

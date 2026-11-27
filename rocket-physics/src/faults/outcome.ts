@@ -65,6 +65,12 @@ export function classifyOutcome(sim: Simulation, autopilot: AscentAutopilot): Ou
   }
 
   const endMt = lifted ? sim.t - sim.liftoffTime : sim.t;
+  // A flight that ended on the ground already knows where it came down: the last state.
+  const endLatDeg = (sim.diag.lat * 180) / Math.PI;
+  const endLonDeg = (sim.diag.lon * 180) / Math.PI;
+  if (outcome === 'impact') {
+    impact = { latDeg: endLatDeg, lonDeg: endLonDeg, t: endMt };
+  }
   let summary: string;
   switch (outcome) {
     case 'pad-abort':
@@ -74,7 +80,7 @@ export function classifyOutcome(sim: Simulation, autopilot: AscentAutopilot): Ou
       summary = `Vehicle breakup at T+${endMt.toFixed(1)} s: ${breakupEvent?.message ?? 'structural failure'}.`;
       break;
     case 'impact':
-      summary = `Ground impact at T+${endMt.toFixed(1)} s (${sim.diag.lat.toFixed(2)} rad, ${sim.diag.lon.toFixed(2)} rad).`;
+      summary = `Ground impact at T+${endMt.toFixed(1)} s (${endLatDeg.toFixed(2)} deg N, ${endLonDeg.toFixed(2)} deg E).`;
       break;
     case 'nominal':
       summary = `Nominal orbit insertion at T+${endMt.toFixed(1)} s: ${fmtKm(perigeeAltitude)} x ${fmtKm(apogeeAltitude)}.`;

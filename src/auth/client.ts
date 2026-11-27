@@ -82,8 +82,15 @@ export async function listenForNativeCallback(onError: (message: string) => void
     const { code, error } = parseAuthCallback(opened);
     if (error) return onError(error);
     if (!code) return;
-    const res = await client().auth.exchangeCodeForSession(code);
-    if (res.error) onError(res.error.message);
+    // A thrown network error or a Supabase error ("invalid flow state") both mean the sign-in
+    // did not finish; say that plainly instead of showing raw text or nothing.
+    const failed = 'Sign-in did not finish. Try again.';
+    try {
+      const res = await client().auth.exchangeCodeForSession(code);
+      if (res.error) onError(failed);
+    } catch {
+      onError(failed);
+    }
   });
 }
 

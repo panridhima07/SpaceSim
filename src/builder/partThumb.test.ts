@@ -147,3 +147,39 @@ describe('partThumbSvg', () => {
     }
   });
 });
+
+describe('partThumbSvg shading', () => {
+  it('uses no defs, ids, styles, scripts or external references', () => {
+    for (const p of PART_PRESETS) {
+      expect(partThumbSvg(p)).not.toMatch(/<defs|<style|<script|<use|<image|\sid=|url\(|href=|Gradient|filter/i);
+    }
+  });
+
+  it('keeps every thumb under 9 drawn elements and 1500 characters', () => {
+    for (const p of PART_PRESETS) {
+      const svg = partThumbSvg(p);
+      const elements = (svg.match(/<(path|text|circle|rect|line|ellipse|polygon)\b/g) ?? []).length;
+      expect(elements).toBeLessThanOrEqual(8);
+      expect(svg.length).toBeLessThanOrEqual(1500);
+    }
+  });
+
+  it('shades round bodies with a highlight and a shadow overlay', () => {
+    for (const id of ['tube-bt50-140', 'trans-bt20-bt50', 'nose-conical-bt50']) {
+      const svg = partThumbSvg(presetOf(id));
+      expect(svg).toContain('fill="#fff"');
+      expect(svg).toContain('fill="#000"');
+    }
+  });
+
+  it('gives a tube joint lines and a decoupler a dashed seam with bolts', () => {
+    expect(partThumbSvg(presetOf('tube-bt50-140'))).toContain('stroke-opacity="0.7"');
+    const dec = partThumbSvg(presetOf('decoupler-bt50'));
+    expect(dec).toContain('stroke-dasharray');
+    expect(dec).toContain('fill="currentColor" stroke="none"');
+  });
+
+  it('draws a bulkhead differently from a centering ring', () => {
+    expect(partThumbSvg(presetOf('ring-bulkhead-bt50'))).not.toBe(partThumbSvg(presetOf('ring-centering-bt50-18')));
+  });
+});

@@ -145,6 +145,28 @@ describe('parseRockSimXml', () => {
     expect(rebuilt.components.length).toBeGreaterThanOrEqual(7);
   });
 
+  it('warns about multiple stages and unimported motor configurations', () => {
+    const twoStage = `<RockSimDocument><RocketDesign><Name>Two Stage</Name>
+      <Stage3Parts>
+        <NoseCone><Name>Nose</Name><Len>100</Len><BaseDia>25</BaseDia></NoseCone>
+        <BodyTube><Name>Upper</Name><Len>200</Len><OD>25</OD><ID>23</ID>
+          <AttachedParts>
+            <BodyTube><Name>Mount</Name><Len>70</Len><OD>18.7</OD><ID>18</ID><IsMotorMount>1</IsMotorMount><LocationMode>2</LocationMode></BodyTube>
+          </AttachedParts>
+        </BodyTube>
+      </Stage3Parts>
+      <Stage2Parts>
+        <BodyTube><Name>Lower</Name><Len>200</Len><OD>25</OD><ID>23</ID></BodyTube>
+      </Stage2Parts>
+    </RocketDesign></RockSimDocument>`;
+    const model = parseRockSimXml(twoStage);
+    expect(model.stageCount).toBe(2);
+    expect(model.warnings).toContain(
+      'Rocket has 2 stages. Stages separate only when stage motors are supplied; otherwise all stages fly as one stacked rocket.',
+    );
+    expect(model.warnings).toContain('RockSim motor configurations are not imported; pick a motor manually.');
+  });
+
   it('throws friendly errors for empty or non-RockSim XML', () => {
     expect(() => parseRockSimXml('')).toThrow(/empty/i);
     expect(() => parseRockSimXml('<openrocket/>')).toThrow(/RockSimDocument/i);

@@ -195,6 +195,12 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   nameInput.value = 'New Rocket';
   nameInput.setAttribute('aria-label', 'Rocket name');
   nameInput.addEventListener('change', () => cb.onRename(nameInput.value.trim() || 'New Rocket'));
+  // Phones hide the top bar's name box; this one sits in the Edit drawer.
+  const mNameInput = h('input', 'sfb-input sfb-b-mobile-only sfb-b-mobile-name');
+  mNameInput.type = 'text';
+  mNameInput.value = nameInput.value;
+  mNameInput.setAttribute('aria-label', 'Rocket name');
+  mNameInput.addEventListener('change', () => cb.onRename(mNameInput.value.trim() || 'New Rocket'));
 
   const statsEl = h('div', 'sfb-b-stats');
   const makeStat = (label: string): { el: HTMLElement; val: HTMLElement } => {
@@ -226,14 +232,19 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   redoBtn.title = 'Redo (Ctrl+Y)';
   redoBtn.addEventListener('click', () => cb.onRedo());
 
+  /** A two-state button: its look and what a screen reader is told. */
+  const setPressed = (btn: HTMLButtonElement, on: boolean): void => {
+    btn.classList.toggle('is-active', on);
+    btn.setAttribute('aria-pressed', String(on));
+  };
+
   let cutawayOn = false;
   const cutawayBtn = h('button', 'sfb-btn', 'See inside');
   cutawayBtn.type = 'button';
   cutawayBtn.title = 'Cut the rocket open to see and pick the parts inside';
+  setPressed(cutawayBtn, false);
   cutawayBtn.addEventListener('click', () => {
-    cutawayOn = !cutawayOn;
-    cutawayBtn.classList.toggle('is-active', cutawayOn);
-    mCutawayBtn.classList.toggle('is-active', cutawayOn);
+    showCutaway(!cutawayOn);
     cb.onToggleCutaway(cutawayOn);
   });
 
@@ -253,7 +264,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
 
   const chalBtn = h('button', 'sfb-btn', 'Challenges');
   chalBtn.type = 'button';
-  chalBtn.addEventListener('click', () => chalModal.classList.toggle('sfb-hidden'));
+  chalBtn.addEventListener('click', () => toggleModal(chalModal));
 
   const msnBtn = h('button', 'sfb-btn', 'Moon mission');
   msnBtn.type = 'button';
@@ -285,9 +296,10 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   mirrorBtn.type = 'button';
   mirrorBtn.title =
     'Mirror (M): side parts like fins go on as a matching left-and-right pair. Also mirrors the selected fins.';
+  setPressed(mirrorBtn, false);
   mirrorBtn.addEventListener('click', () => {
     mirrorOn = !mirrorOn;
-    mirrorBtn.classList.toggle('is-active', mirrorOn);
+    setPressed(mirrorBtn, mirrorOn);
     cb.onToggleMirror?.(mirrorOn);
   });
 
@@ -591,7 +603,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   // The top bar's Challenges button is hidden on phones; this one sits in the Edit drawer.
   const mChalBtn = h('button', 'sfb-btn sfb-b-mini-btn sfb-b-mobile-only', 'Challenges');
   mChalBtn.type = 'button';
-  mChalBtn.addEventListener('click', () => chalModal.classList.toggle('sfb-hidden'));
+  mChalBtn.addEventListener('click', () => toggleModal(chalModal));
   const clearBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Start over');
   clearBtn.type = 'button';
   clearBtn.title = 'Remove every part (Undo brings them back)';
@@ -607,7 +619,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
 
   const flawsWrap = h('div', 'sfb-b-flaws sfb-hidden');
 
-  rightPanel.append(stackHead, stackHint, stackEmpty, stackList, inspectorWrap, flawsWrap);
+  rightPanel.append(stackHead, mNameInput, stackHint, stackEmpty, stackList, inspectorWrap, flawsWrap);
 
   // ===== Mobile bottom bar =====
   const mobileBar = h('div', 'sfb-panel sfb-b-mobile-bar');
@@ -625,6 +637,12 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   mRedoBtn.setAttribute('aria-label', 'Redo');
   const mCutawayBtn = h('button', 'sfb-btn', 'Inside');
   mCutawayBtn.type = 'button';
+  setPressed(mCutawayBtn, false);
+  function showCutaway(on: boolean): void {
+    cutawayOn = on;
+    setPressed(cutawayBtn, on);
+    setPressed(mCutawayBtn, on);
+  }
   const mPadBtn = h('button', 'sfb-btn sfb-btn-primary', 'Launch');
   mPadBtn.type = 'button';
 
@@ -641,9 +659,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   mUndoBtn.addEventListener('click', () => cb.onUndo());
   mRedoBtn.addEventListener('click', () => cb.onRedo());
   mCutawayBtn.addEventListener('click', () => {
-    cutawayOn = !cutawayOn;
-    cutawayBtn.classList.toggle('is-active', cutawayOn);
-    mCutawayBtn.classList.toggle('is-active', cutawayOn);
+    showCutaway(!cutawayOn);
     cb.onToggleCutaway(cutawayOn);
   });
   mPadBtn.addEventListener('click', () => cb.onGoToPad());
@@ -657,7 +673,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   filesHead.append(h('h2', 'sfb-section-title', 'Save / open a rocket'));
   const filesClose = h('button', 'sfb-btn sfb-b-mini-btn', 'Close');
   filesClose.type = 'button';
-  filesClose.addEventListener('click', () => filesModal.classList.add('sfb-hidden'));
+  filesClose.addEventListener('click', () => closeModal(filesModal));
   filesHead.append(filesClose);
 
   const importInput = h('input', 'sfb-hidden');
@@ -667,7 +683,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
     const file = importInput.files?.[0];
     importInput.value = '';
     if (file) {
-      filesModal.classList.add('sfb-hidden');
+      closeModal(filesModal);
       cb.onImportFile(file);
     }
   });
@@ -714,25 +730,49 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   filesCard.append(filesHead, fileActions, exportSection, savedEmpty, savedGrid);
   filesModal.append(filesCard);
   filesModal.addEventListener('click', (e) => {
-    if (e.target === filesModal) filesModal.classList.add('sfb-hidden');
+    if (e.target === filesModal) closeModal(filesModal);
   });
 
   function openFilesModal(scrollToExport = false): void {
-    filesModal.classList.remove('sfb-hidden');
+    openModal(filesModal);
     if (scrollToExport) {
       exportSection.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
     }
   }
 
   function toggleFilesModal(): void {
-    filesModal.classList.toggle('sfb-hidden');
+    toggleModal(filesModal);
+  }
+
+  let savedList: SavedDesign[] = [];
+  /** The saved rocket whose card is asking "Delete?". Deleting also removes the cloud copy. */
+  let pendingDeleteId: string | null = null;
+
+  /** Show or drop the question on card `id`, and focus one of that card's buttons. */
+  function askDelete(id: string, asking: boolean): void {
+    pendingDeleteId = asking ? id : null;
+    renderSavedDesigns(savedList);
+    focusSavedButton(id, asking ? 'no' : 'delete');
+  }
+
+  function focusSavedButton(id: string, action: string): void {
+    const card = Array.from(savedGrid.querySelectorAll<HTMLElement>('.sfb-b-saved-card'))
+      .find((c) => c.dataset.designId === id);
+    card?.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)?.focus();
   }
 
   function renderSavedDesigns(list: SavedDesign[]): void {
+    savedList = list;
+    // A redraw while a card button has focus must not drop the keyboard back to the page.
+    const focused = document.activeElement;
+    const held = focused instanceof HTMLElement && savedGrid.contains(focused) ? focused : null;
+    const heldId = held?.closest<HTMLElement>('.sfb-b-saved-card')?.dataset.designId;
+    const heldAction = held?.dataset.action;
     savedGrid.textContent = '';
     savedEmpty.classList.toggle('sfb-hidden', list.length > 0);
     for (const item of list) {
       const card = h('div', 'sfb-b-saved-card');
+      card.dataset.designId = item.id;
       if (item.thumbnail) {
         const img = h('img', 'sfb-b-saved-thumb');
         img.src = item.thumbnail;
@@ -749,17 +789,40 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
       const row = h('div', 'sfb-b-saved-btns');
       const openBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'Open');
       openBtn.type = 'button';
+      openBtn.dataset.action = 'open';
       openBtn.addEventListener('click', () => {
-        filesModal.classList.add('sfb-hidden');
+        closeModal(filesModal);
         cb.onLoadSavedDesign(item.design);
       });
       const delBtn = h('button', 'sfb-btn sfb-b-mini-btn sfb-b-warn-btn', 'Delete');
       delBtn.type = 'button';
-      delBtn.addEventListener('click', () => cb.onDeleteSavedDesign(item.id));
-      row.append(openBtn, delBtn);
+      delBtn.dataset.action = 'delete';
+      delBtn.addEventListener('click', () => askDelete(item.id, true));
+      if (pendingDeleteId === item.id) {
+        const yesBtn = h('button', 'sfb-btn sfb-b-mini-btn sfb-b-warn-btn', 'Yes');
+        yesBtn.type = 'button';
+        yesBtn.dataset.action = 'yes';
+        yesBtn.setAttribute('aria-label', `Yes, delete ${item.name}`);
+        yesBtn.addEventListener('click', () => {
+          pendingDeleteId = null;
+          cb.onDeleteSavedDesign(item.id);
+          // The app usually redraws the list; if it did not, drop the question here.
+          if (yesBtn.isConnected) renderSavedDesigns(savedList);
+          filesClose.focus();
+        });
+        const noBtn = h('button', 'sfb-btn sfb-b-mini-btn', 'No');
+        noBtn.type = 'button';
+        noBtn.dataset.action = 'no';
+        noBtn.setAttribute('aria-label', `No, keep ${item.name}`);
+        noBtn.addEventListener('click', () => askDelete(item.id, false));
+        row.append(h('span', 'sfb-b-saved-ask', 'Delete?'), yesBtn, noBtn);
+      } else {
+        row.append(openBtn, delBtn);
+      }
       card.append(meta, row);
       savedGrid.append(card);
     }
+    if (heldId && heldAction) focusSavedButton(heldId, heldAction);
   }
 
   // ===== Challenges modal =====
@@ -769,14 +832,58 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   chalHead.append(h('h2', 'sfb-section-title', 'Challenges'));
   const chalClose = h('button', 'sfb-btn sfb-b-mini-btn', 'Close');
   chalClose.type = 'button';
-  chalClose.addEventListener('click', () => chalModal.classList.add('sfb-hidden'));
+  chalClose.addEventListener('click', () => closeModal(chalModal));
   chalHead.append(chalClose);
   const chalList = h('ul', 'sfb-b-chal-list');
   chalCard.append(chalHead, chalList);
   chalModal.append(chalCard);
   chalModal.addEventListener('click', (e) => {
-    if (e.target === chalModal) chalModal.classList.add('sfb-hidden');
+    if (e.target === chalModal) closeModal(chalModal);
   });
+
+  // ===== Modal state: dialog semantics, focus in and back out =====
+  const dialogs = [
+    { backdrop: filesModal, card: filesCard, head: filesHead, close: filesClose, titleId: 'sfb-b-files-title' },
+    { backdrop: chalModal, card: chalCard, head: chalHead, close: chalClose, titleId: 'sfb-b-chal-title' },
+  ];
+  for (const d of dialogs) {
+    d.card.setAttribute('role', 'dialog');
+    d.card.setAttribute('aria-modal', 'true');
+    const heading = d.head.querySelector('h2');
+    if (heading) {
+      heading.id = d.titleId;
+      d.card.setAttribute('aria-labelledby', d.titleId);
+    }
+  }
+  /** What had focus when the modal opened. */
+  let modalReturnFocus: HTMLElement | null = null;
+
+  function openedModal(): HTMLElement | null {
+    return dialogs.find((d) => !d.backdrop.classList.contains('sfb-hidden'))?.backdrop ?? null;
+  }
+
+  function openModal(backdrop: HTMLElement): void {
+    if (!backdrop.classList.contains('sfb-hidden')) return;
+    modalReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    backdrop.classList.remove('sfb-hidden');
+    dialogs.find((d) => d.backdrop === backdrop)?.close.focus();
+  }
+
+  function closeModal(backdrop: HTMLElement, restoreFocus = true): void {
+    if (backdrop.classList.contains('sfb-hidden')) return;
+    backdrop.classList.add('sfb-hidden');
+    if (backdrop === filesModal && pendingDeleteId !== null) {
+      pendingDeleteId = null;
+      renderSavedDesigns(savedList);
+    }
+    if (restoreFocus && modalReturnFocus?.isConnected) modalReturnFocus.focus();
+    modalReturnFocus = null;
+  }
+
+  function toggleModal(backdrop: HTMLElement): void {
+    if (backdrop.classList.contains('sfb-hidden')) openModal(backdrop);
+    else closeModal(backdrop);
+  }
 
   function renderChallenges(completed: Set<string>): void {
     chalList.textContent = '';
@@ -869,6 +976,15 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
   let lastSelectedId: string | null = null;
   window.addEventListener('keydown', (e) => {
     if (root.classList.contains('sfb-hidden')) return;
+    // An open modal owns the keyboard: Escape closes it, nothing reaches the rocket behind it.
+    const modal = openedModal();
+    if (modal) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeModal(modal);
+      }
+      return;
+    }
     const target = e.target as HTMLElement | null;
     if (
       target &&
@@ -980,8 +1096,13 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
 
     num.addEventListener('change', () => {
       const v = parseFloat(num.value);
-      if (!Number.isFinite(v)) return;
-      const clamped = Math.max(opts.min, v);
+      if (!Number.isFinite(v)) {
+        num.value = parseFloat(range.value).toFixed(digits);
+        return;
+      }
+      // Typing may pass the slider's end, but not by an absurd amount.
+      const clamped = Math.min(Math.max(opts.min, v), Math.max(opts.max * 10, opts.value));
+      if (clamped !== v) num.value = clamped.toFixed(digits);
       range.max = String(Math.max(parseFloat(range.max), clamped));
       range.value = String(clamped);
       opts.onChange(clamped, true);
@@ -1632,6 +1753,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
     const { design, selectedId, stats } = state;
     lastSelectedId = selectedId;
 
+    if (document.activeElement !== mNameInput) mNameInput.value = design.name;
     if (document.activeElement !== nameInput) {
       nameInput.value = design.name;
     }
@@ -1651,7 +1773,7 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
       sStab.val.className = 'sfb-b-stat-v';
     }
     if (stats.twr !== null && Number.isFinite(stats.twr)) {
-      sTwr.val.textContent = `${stats.twr < 5 ? 'Too weak' : 'Good'} · ${stats.twr.toFixed(0)}× weight`;
+      sTwr.val.textContent = `${stats.twr < 5 ? 'Too weak' : 'Good'} · ${stats.twr.toFixed(stats.twr < 10 ? 1 : 0)}× weight`;
       sTwr.val.className = `sfb-b-stat-v ${stats.twr < 5 ? 'sfb-stab-critical' : 'sfb-stab-good'}`;
     } else {
       sTwr.val.textContent = stats.length > 0 ? 'No engine' : '—';
@@ -1933,19 +2055,18 @@ export function createBuilderUI(container: HTMLElement, cb: BuilderUICallbacks):
         fileDragDepth = 0;
         root.classList.remove('is-dragging');
         setMobileDrawer('none');
+        for (const d of dialogs) closeModal(d.backdrop, false);
       }
     },
     render,
     setPlacing,
     setTransitionPrompt,
     setCutaway(on: boolean) {
-      cutawayOn = on;
-      cutawayBtn.classList.toggle('is-active', on);
-      mCutawayBtn.classList.toggle('is-active', on);
+      showCutaway(on);
     },
     setMirror(on: boolean) {
       mirrorOn = on;
-      mirrorBtn.classList.toggle('is-active', on);
+      setPressed(mirrorBtn, on);
     },
     setDragGhost,
   };

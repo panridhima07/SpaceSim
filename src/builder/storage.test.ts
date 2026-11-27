@@ -96,4 +96,25 @@ describe('builder/storage hostile data', () => {
     expect(() => saveDesign(d, undefined, store)).toThrow('Storage is full. Delete a saved rocket and try again.');
     expect(calls).toHaveLength(2);
   });
+
+  it('saveDesign refuses a 41st design but still re-saves one of the existing 40', () => {
+    const store = memoryStorage();
+    const designs = Array.from({ length: 40 }, (_, i) => {
+      const base = { ...createEmptyDesign(`R${i}`), id: `d${i}` };
+      return addExternalPart(base, findPreset('tube-bt50-240')!.create() as BodyTube).design;
+    });
+    for (const d of designs) saveDesign(d, undefined, store);
+    expect(listSavedDesigns(store)).toHaveLength(40);
+
+    const extra = { ...createEmptyDesign('Extra'), id: 'd_extra' };
+    expect(() => saveDesign(extra, undefined, store)).toThrow(
+      'You have 40 saved rockets. Delete one in Save / Open to save another.',
+    );
+    expect(listSavedDesigns(store)).toHaveLength(40);
+
+    expect(() => saveDesign({ ...designs[5], name: 'R5 edited' }, undefined, store)).not.toThrow();
+    const after = listSavedDesigns(store);
+    expect(after).toHaveLength(40);
+    expect(after.find((e) => e.id === 'd5')?.name).toBe('R5 edited');
+  });
 });

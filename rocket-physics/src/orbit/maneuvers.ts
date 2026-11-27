@@ -130,7 +130,7 @@ export function launchAzimuth(
 ): { inertial: number; rotating: number } {
   const ratio = Math.cos(inclination) / Math.cos(latitude);
   if (!(Math.abs(ratio) <= 1)) {
-    throw new Error('launchAzimuth: inclination is below the site latitude; no launch azimuth exists');
+    throw new Error('launchAzimuth: inclination must lie between the site latitude and 180 deg minus it; no launch azimuth exists');
   }
   const sinB = ratio;
   const cosB = (southward ? -1 : 1) * Math.sqrt(1 - sinB * sinB);

@@ -19,6 +19,7 @@ const FIXTURE = fileURLToPath(
   new URL('../../fixtures/external/A_simple_model_rocket.ork', import.meta.url),
 );
 const haveFixture = fs.existsSync(FIXTURE);
+if (!haveFixture) console.warn('[validate] OpenRocket fixtures missing: run node scripts/fetch-data.mjs; accuracy tests are skipped.');
 
 const SIM_INDEX = 2; // "Simulation 3", Estes C6
 const SAMPLES = 10;
@@ -94,6 +95,8 @@ describe.skipIf(!haveFixture)('aero and mass vs OpenRocket series (A simple mode
       picks.push(candidates[Math.floor((k * (candidates.length - 1)) / Math.max(1, SAMPLES - 1))]);
     }
 
+    // Per-row Cd error for the bound below: { t, err% }.
+    const cdChecks: { t: number; err: number; ref: number }[] = [];
     const rows = picks.map((i) => {
       const mach = series.mach_number[i];
       const tb = t[i];
@@ -101,6 +104,7 @@ describe.skipIf(!haveFixture)('aero and mass vs OpenRocket series (A simple mode
       const ours = aeroProps(rocket, mach, cgOurs);
       const db = dragBreakdown(rocket, mach);
       const mpOurs = massProps(rocket, motor, tb);
+      cdChecks.push({ t: tb, err: pct(ours.cd, series.drag_coeff[i]), ref: series.drag_coeff[i] });
       return {
         't (s)': r(tb, 3),
         Mach: r(mach, 3),
@@ -128,5 +132,13 @@ describe.skipIf(!haveFixture)('aero and mass vs OpenRocket series (A simple mode
     console.table(rows);
 
     expect(rows.length).toBeGreaterThan(0);
+    // Bound: 1.5 x the worst valid-row Cd error (1.7%), floored at 5.
+    // Excluded: the sample at t=5.05 s, where OpenRocket reports Cd 115.2 with Cf and Cb at zero
+    // (a degenerate reference value, not a model error). Only sane reference Cd values are checked.
+    const checked = cdChecks.filter((c) => c.ref > 0 && c.ref < 2);
+    expect(checked.length).toBeGreaterThan(0);
+    for (const c of checked) {
+      expect(Math.abs(c.err), `Cd error at t=${c.t}`).toBeLessThan(5);
+    }
   });
 });

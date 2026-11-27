@@ -22,12 +22,11 @@
 
 import { Dopri5, RE, accelAt, flyAscent, julianDate, moonPosition, moonVelocity } from '../mission/engine';
 import { getMission } from '../mission/vehicles';
-import { G0, R_MOON, add, cross, dot, norm, scale, sub, unit, type LanderSpec, type V3 } from './core';
+import { G0, MU_M as MU_L, R_MOON, add, cross, dot, norm, scale, sub, unit, type LanderSpec, type V3 } from './core';
 import { createMoonEphemeris } from './moonEphemeris';
 import { llToMF } from './terrain';
 
 const MU_E = 3.986004418e14; // as used by the force model
-const MU_L = 4.9028e12;
 const DEG = Math.PI / 180;
 const DAY = 86400;
 

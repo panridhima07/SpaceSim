@@ -102,7 +102,7 @@ export class LanderSim {
   plan: DescentPlan | null;
   hda: boolean; landing: LandingResult | null; reason: string | null;
   /** Height of the feet plane above the ground under the craft (m). */ agl: number; hFoot: number;
-  tPhase: number; dvUsed: number; landed: boolean; silent: boolean;
+  tPhase: number; dvUsed: number; pendingDt: number; landed: boolean; silent: boolean;
   F: { x: number[]; y: number[]; z: number[] }; W: number[];
   constructor(eph, s, spec) {
     this.eph = eph; this.spec = spec; this.dt = LD.DT;
@@ -115,7 +115,7 @@ export class LanderSim {
     this.engine = false; this.thr = 0; this.cmdThr = 0; this.level = 0; this.dCmd = null; this.slewing = false;
     this.phase = 'SEP'; this.mode = 'AUTO'; this.input = { pitch: 0, roll: 0, thr: 0 }; this.hold = null; this.rateCmd = false;
     this.events = []; this.site = null; this.terrain = null; this.map = null; this.targets = null; this.tgt = [0, 0]; this.plan = null;
-    this.hda = false; this.dryTold = false; this.warnedLow = false; this.landing = null; this.reason = null; this.agl = 1e9; this.hFoot = 1e9; this.tPhase = this.t; this.dvUsed = 0; this.landed = false; this.pose = null; this.silent = false;
+    this.hda = false; this.dryTold = false; this.warnedLow = false; this.landing = null; this.reason = null; this.agl = 1e9; this.hFoot = 1e9; this.tPhase = this.t; this.dvUsed = 0; this.pendingDt = 0; this.landed = false; this.pose = null; this.silent = false;
     this.frame();
   }
 
@@ -343,7 +343,7 @@ export class LanderSim {
   cutEngine() { if (this.mode === 'MANUAL') this.level = 0; }
 
   // ------------------------------------------------------------------ integration
-  fine() { return this.engine || this.thr > 0 || this.phase === 'SEP' || this.phase === 'DOI' || this.phase === 'BRAKE' || this.phase === 'APPROACH' || this.phase === 'TERMINAL' || this.slewing || (this.plan && this.mode === 'AUTO' && this.plan.tPDI - this.t < 90) || (this.mode === 'MANUAL' && this.rateCmd); }
+  fine() { return this.engine || this.thr > 0 || this.phase === 'SEP' || this.phase === 'DOI' || this.phase === 'BRAKE' || this.phase === 'APPROACH' || this.phase === 'TERMINAL' || this.slewing || (this.plan && this.mode === 'AUTO' && this.plan.tPDI - this.t < 90) || (this.mode === 'MANUAL' && (this.rateCmd || this.level > 0 || this.input.thr > 0)); }
   stepSize(rem) {
     let h;
     if (this.fine() || this.alt() < 30e3) h = this.dt; else h = clamp((0.012 * norm(this.r)) / Math.max(norm(this.v), 1), 1, 12);
@@ -351,21 +351,24 @@ export class LanderSim {
     return Math.min(h, rem);
   }
   advance(simDt) {
-    let rem = simDt, guard = 0;
+    let rem = simDt + (this.pendingDt || 0), guard = 0; this.pendingDt = 0;
     while (rem > 1e-9 && guard++ < 20000) {
-      if (this.landed || this.phase === 'CRASHED') { this.t += rem; this.frame(); this.rest(); break; }
+      if (this.landed || this.phase === 'CRASHED') { this.t += rem; this.frame(); this.rest(); rem = 0; break; }
       const h = this.stepSize(rem); this.stepOnce(h); rem -= h;
     }
+    this.pendingDt = rem > 1e-9 ? Math.min(rem, 5) : 0;                  // step budget ran out: carry the rest into the next call instead of dropping it
   }
   stepOnce(h) {
     this.frame(); this.guidance(h);
     // engine: ignition at minimum throttle, first-order throttle response, flame-out when the tank is empty
     if (this.cmdThr > 0 && this.prop > 0) { if (!this.engine) { this.engine = true; this.thr = this.E.minThrottle; } this.thr += (this.cmdThr - this.thr) * (1 - Math.exp(-h / LD.TAU)); this.thr = clamp(this.thr, this.E.minThrottle, 1); }
     else { if (this.engine && this.prop <= 0 && !this.dryTold) { this.dryTold = true; this.say('PROPELLANT DEPLETED', 'bad'); } this.engine = false; this.thr = 0; }
-    const thrust = this.thr * this.E.tMax, by = qrot(this.q, [0, 1, 0]), aT = scale(by, thrust / this.mass), up0 = unit(this.r);
+    let thrust = this.thr * this.E.tMax;
+    if (thrust > 0) { const dm0 = (thrust / (this.E.isp * G0)) * h; if (dm0 > this.prop) thrust *= this.prop / dm0; }   // tank runs dry mid-step: thrust only for the propellant left
+    const by = qrot(this.q, [0, 1, 0]), aT = scale(by, thrust / this.mass), up0 = unit(this.r);
     [this.r, this.v] = rk4(this.r, this.v, aT, h);
     if (this.mode === 'MANUAL' && !this.rateCmd && !this.dCmd) this.followVertical(up0);
-    if (thrust > 0) { const dm = (thrust / (this.E.isp * G0)) * h; this.prop = Math.max(0, this.prop - dm); this.mass = this.dry + this.prop; this.dvUsed += (thrust / this.mass) * h; if (!this.warnedLow && this.prop < 0.1 * this.prop0) { this.warnedLow = true; this.say('LOW PROPELLANT', 'bad'); } }
+    if (thrust > 0) { const dm = (thrust / (this.E.isp * G0)) * h; const m0 = this.mass; this.prop = Math.max(0, this.prop - dm); this.mass = this.dry + this.prop; this.dvUsed += this.E.isp * G0 * Math.log(m0 / this.mass); if (!this.warnedLow && this.prop < 0.1 * this.prop0) { this.warnedLow = true; this.say('LOW PROPELLANT', 'bad'); } }
     this.attitude(h); this.t += h;
     if (this.alt() < 6000) this.contact();
   }
