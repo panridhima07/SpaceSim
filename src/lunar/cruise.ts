@@ -53,7 +53,11 @@ export function vikramSpec(used = 0): LanderSpec {
     hasRover: true,
     engine: { ...CH3.landerEngine },
     geom: { cgh: 1.25, foot: 2.1, inertiaPerKg: 0.9 },
-    brakeFrac: 0.86,
+    // Share of full thrust the braking burn is planned on. The burn starts where this much would
+    // just stop the lander at the site; holding height takes thrust too, so at 0.86 the burn ran
+    // flat out all the way and any lost second put the site out of reach. 0.78 flies it at 95 %
+    // or less, at the cost of about 28 kg more propellant.
+    brakeFrac: 0.78,
     doiPeri: 25e3,
   };
 }
@@ -599,7 +603,7 @@ export function eclToEq(p: V3, epochJD: number): V3 {
 // flyCruise depends on nothing but fixed constants, so its record can be stored (IndexedDB, or
 // a file made at build time) and read back instead of flown again. Bump CRUISE_PHYSICS_REV when
 // the flight changes in a way CH3 does not show (force model, integrator, mission design, LVM3).
-const CRUISE_PHYSICS_REV = 2;
+const CRUISE_PHYSICS_REV = 3;
 const CRUISE_MAGIC = 0x43483343; // "CH3C"
 
 /** Changes whenever a stored record may no longer match what flyCruise would fly. */

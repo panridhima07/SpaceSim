@@ -59,8 +59,19 @@ describe('autopilot after hand flying', () => {
     expect(Math.abs(L.prop - untouched.prop)).toBeLessThan(3);
   });
 
+  it('still reaches the site when the braking burn starts 20 s late', () => {
+    // The burn is planned on 78 % of full thrust (vikramSpec), so there is thrust in hand to catch up.
+    const L = fly((l, t) => l.t >= t - 10, 30, () => {});
+    soft(L);
+    expect(L.engaged!.choice).toBe('RESUME');
+    expect(L.divert).toBe(false);
+    expect(L.landing!.miss!).toBeLessThan(6);
+    expect(off(L)).toBeLessThan(500);
+    expect(L.t - base.plan!.tPDI).toBeLessThan(1200);
+  });
+
   it('goes round for another pass when the ignition point went by under manual control', () => {
-    const L = fly((l, t) => l.t >= t - 10, 30, () => {}); // 20 s late: the planned braking burn no longer fits
+    const L = fly((l, t) => l.t >= t - 10, 160, () => {}); // 150 s late: the planned braking burn no longer fits
     soft(L);
     expect(L.engaged!.choice).toBe('COAST');
     expect(L.engaged!.tried.map((f) => f.choice)).toContain('RESUME'); // which was flown ahead and found to crash
@@ -69,8 +80,16 @@ describe('autopilot after hand flying', () => {
     expect(L.t - base.plan!.tPDI).toBeGreaterThan(3600);
   });
 
-  it('relights a cut engine in the braking burn and lands on safe ground beyond the site', () => {
+  it('relights an engine cut for 20 s in the braking burn and still lands on the site', () => {
     const L = fly((l, t) => l.t >= t + 200, 20, (l) => l.cutEngine());
+    soft(L);
+    expect(L.engaged!.choice).toBe('RESUME');
+    expect(off(L)).toBeLessThan(500);
+    expect(L.prop).toBeGreaterThan(0);
+  });
+
+  it('lands on safe ground beyond the site when the engine was cut for too long to make it up', () => {
+    const L = fly((l, t) => l.t >= t + 200, 90, (l) => l.cutEngine());
     soft(L);
     expect(L.engaged!.choice).toBe('DIVERT');
     expect(L.divert).toBe(true);
@@ -87,7 +106,9 @@ describe('autopilot after hand flying', () => {
   });
 
   it('recovers from a tilt in the terminal descent', () => {
-    const L = fly((l) => l.phase === 'TERMINAL' && l.t - l.tPhase >= 15, 10, (l) => l.setInput({ pitch: 1 }));
+    // 6 s of full pitch at 80 m up leaves it tipped about 65 degrees at 55 m. (10 s is past saving at that height,
+    // on any plan: it hands back at 30 m, falling at 10 m/s on its side.)
+    const L = fly((l) => l.phase === 'TERMINAL' && l.t - l.tPhase >= 15, 6, (l) => l.setInput({ pitch: 1 }));
     soft(L);
     expect(L.landing!.tilt!).toBeLessThan(12);
     expect(off(L)).toBeLessThan(500);
