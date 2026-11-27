@@ -133,7 +133,13 @@ Known gaps:
 - CG sits 4 to 9 mm forward of OpenRocket's on the two single-stage designs (0.16 to 0.18 calibre), which is most of the remaining margin difference.
 - Error limits are asserted on one design only, the Dual parachute deployment. The simple model rocket is printed, not asserted. The two- and three-stage examples are not in the validation test.
 - Dry mass is 3.4 % high on the reference design.
-- Transonic and supersonic wave drag (`transonicWaveCd`) is an uncalibrated placeholder.
+- Fixed 27 Nov 2026, checked against the stored data of OpenRocket's J570W "Dual parachute deployment" flight up to Mach 1.13 (`src/validate/aeroOpenRocket.test.ts`):
+  - Fin CNα used a Prandtl-Glauert 1/β multiplier, 49 % too high at Mach 0.8. It now uses the Diederich slope with compressibility inside the root up to Mach 0.9, supersonic linear theory from Mach 1.5 and a cubic in between, as OpenRocket does. CNα is now within 1.1 % at every Mach, and CP within 0.06 calibre.
+  - Fin CP moves from the quarter MAC towards mid-chord above Mach 0.5.
+  - The fixed 0.30 transonic bump is replaced by nose and shoulder wave drag that depends on nose shape and fineness (Hoerner's cone, times a shape factor), plus the supersonic fin leading edge and stagnation pressure formulas. The pressure-drag rise through Mach 1 is within 0.02 of OpenRocket's.
+  - Only the ogive factor (1.6 times the cone) is fitted. The Haack, parabolic, power and ellipsoid factors are estimates from the published ranking of nose shapes, with no reference data here.
+  - Skin friction is rescaled to the Reynolds number at altitude (`cdAtReynolds`). It matters below the roughness limit, roughly under Mach 0.3 for a painted model rocket.
+- Subsonic pressure drag on "Dual parachute deployment" is 0.05 above OpenRocket's (6 % of total CD), at every Mach. It is mostly the square fin leading edge. Not resolved.
 
 ## Risks and open questions
 - **Engine: decided.** One TypeScript codebase, two builds. The website is the Vite build (installable, works offline through a service worker). The mobile game is the same build inside a Capacitor Android app (`android/`), with a phone HUD: top telemetry strip, round Launch button, and a slide-up sheet for everything else. Godot is not used, so the physics is written and validated once.

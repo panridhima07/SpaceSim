@@ -1,10 +1,13 @@
-// Chandrayaan-3 from the end of the launch to the lunar surface, in two views on one page
-// (landing.html), separate from the rocket builder.
+// Chandrayaan-3 from the launch pad to the lunar surface as one flight on one page
+// (landing.html), separate from the rocket builder. One clock, one log and one result run from
+// liftoff to touchdown; only the picture changes scale on the way.
 //
-// 1. Journey: a playback of src/lunar/cruise.ts, the trajectory integrated from the launcher's
-//    cutoff to a few minutes before powered descent. Earth, Moon and path are to scale, in
-//    kilometres, Earth-centred equatorial axes turned so north is +Y.
-// 2. Descent: src/lunar/lander.ts flown live from the state the journey ends in, drawn in the
+// 1. Journey: a playback of src/lunar/cruise.ts, the trajectory from the pad to a few minutes
+//    before powered descent. Earth, Moon and path are to scale, in kilometres, Earth-centred
+//    equatorial axes turned so north is +Y.
+// 2. Descent: src/lunar/lander.ts flown live from the exact state the journey ends in. The
+//    lander and its landing site are made ready beforehand (prepareDescent), so the journey runs
+//    straight into the descent with nothing to wait for or click. Drawn in the
 //    landing site's frame: +X east, +Y up, +Z south, metres. Each frame the whole world is
 //    rotated so the lander's local vertical is +Y and shifted so the lander sits at the origin
 //    (floating origin), which keeps the picture upright and avoids float jitter.
@@ -32,6 +35,7 @@ const SPHERE_SINK = 150; // the globe sits this far under the terrain patches
 const WARPS = [1, 2, 5, 10];
 const CRUISE_WARPS: [number, string][] = [[600, '10 min/s'], [3600, '1 h/s'], [21600, '6 h/s'], [86400, '1 day/s']];
 const BURN_WARP = 240; // playback slows to this while an engine is firing
+const LAUNCH_WARP = 30; // and to this while the launcher climbs to orbit
 const SOI = 66e6; // inside this range of the Moon the path is drawn around the Moon
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -256,8 +260,10 @@ function placeCruise(dt: number): void {
   const orbit = orbitAbout(r, vRel, body);
   cruiseNow = { body, alt: norm(r) - (body === 'moon' ? R_MOON : RE), speed: norm(vRel), orbit, mass: st.mass, burning: st.burning, moonRange };
 
-  // Camera: follow the body being orbited and, until the user takes over, keep the whole orbit in view.
-  if (focusAuto && focus !== 'craft' && focus !== body) setFocus(body, true);
+  // Camera: stay with the rocket while it climbs, then follow the body being orbited and, until
+  // the user takes over, keep the whole orbit in view.
+  const autoFocus: CruiseBody | 'craft' = cruiseT < rec.injectT ? 'craft' : body;
+  if (focusAuto && focus !== autoFocus) setFocus(autoFocus, true);
   if (focus === 'earth') cFocus.set(0, 0, 0); else if (focus === 'moon') cFocus.copy(cMoon); else cFocus.copy(cPos);
   cCamera.position.add(cTmp.copy(cFocus).sub(cControls.target));
   cControls.target.copy(cFocus);
@@ -276,6 +282,7 @@ function placeCruise(dt: number): void {
 }
 const CAM_EASE = 2.45; // per second; 1 - exp(-2.45 / 60) ≈ 0.04
 const CAM_DIR = new THREE.Vector3(0.25, 0.55, 0.8).normalize();
+const ORIGIN = new THREE.Vector3();
 
 function setFocus(f: CruiseBody | 'craft', auto: boolean): void {
   focus = f; focusAuto = auto; userZoomed = false;
@@ -285,7 +292,11 @@ function setFocus(f: CruiseBody | 'craft', auto: boolean): void {
     // Look along the orbit normal, tipped a little, so the polar orbit is seen open.
     eqAxisToScene(cruiseNow.orbit.normal, off).multiplyScalar(-1).add(new THREE.Vector3(0.2, 0.25, 0.1));
   }
-  const d = f === 'earth' ? 120000 : f === 'moon' ? 40000 : 6000;
+  if (f === 'craft') {
+    // Stand outside the body being orbited, looking back at it, so it never hides the craft.
+    off.copy(cPos).sub(cruiseNow?.body === 'moon' ? cMoon : ORIGIN).normalize().addScaledVector(CAM_DIR, 0.45);
+  }
+  const d = f === 'earth' ? 120000 : f === 'moon' ? 40000 : cruiseT < rec.injectT ? 3500 : 6000;
   const target = f === 'earth' ? new THREE.Vector3() : f === 'moon' ? cMoon.clone() : cPos.clone();
   cControls.target.copy(target);
   cCamera.position.copy(target).addScaledVector(off.normalize(), d);
@@ -295,16 +306,42 @@ function cruiseDate(t: number): string {
   return new Date((rec.epochJD + t / DAY - 2440587.5) * 86400000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
 }
 
+/** A wait in the unit that suits its length. */
+const span = (sec: number): string => (sec < 90 ? `${fmt(sec)} s` : sec < 5400 ? `${fmt(sec / 60)} min` : `${fmt(sec / 3600, 1)} h`);
+
+/** The stage of the flight each journey event opens, for the chip beside the title. */
+const CRUISE_STAGE: Record<string, string> = {
+  liftoff: 'Launch', inject: 'Earth orbit', tli: 'Coast to the Moon', loi: 'Lunar orbit', sep: 'Vikram in lunar orbit',
+};
+
+/** Writes the journey's events up to now into the log; returns the index of the latest. */
+function logCruise(): number {
+  const ev = rec.events;
+  let last = -1;
+  for (let i = 0; i < ev.length && ev[i].t <= cruiseT; i++) last = i;
+  // Rebuild the log when time jumps backward; otherwise append what has just happened.
+  if (shownCruiseEvents > last + 1) { shownCruiseEvents = Math.max(0, last - 5); logEl.textContent = ''; }
+  for (; shownCruiseEvents <= last; shownCruiseEvents++) {
+    const e = ev[shownCruiseEvents];
+    logLine(`${e.label.toUpperCase()} · ${e.detail}${e.real ? ` Real flight: ${e.real}.` : ''}`, e.dv ? 'am' : 'ok');
+  }
+  return last;
+}
+
 function updateCruiseHud(): void {
   const n = cruiseNow;
   if (!n) return;
   const ev = rec.events;
-  let last = -1;
-  for (let i = 0; i < ev.length && ev[i].t <= cruiseT; i++) last = i;
+  const last = logCruise();
   const next = ev[last + 1];
-  const title = n.burning && next ? next.label : last >= ev.length - 1 ? 'Ready for descent' : 'Coasting';
-  const orbitText = Number.isFinite(n.orbit.apo) ? `${fmt(n.orbit.peri / 1000)} × ${fmt(n.orbit.apo / 1000)} km` : 'Flyby path';
-  const pmLeft = n.mass > CH3.landerMass + 1 ? CH3.pmProp - (CH3.stackMass - n.mass) : null;
+  const launching = cruiseT < rec.injectT;
+  const title = launching ? (last < 0 ? 'On the pad' : n.burning ? 'LVM3 climbing' : 'LVM3 coasting') : n.burning && next ? next.label : 'Coasting';
+  const orbitText = launching && n.orbit.peri < 0 ? 'Not in orbit yet'
+    : Number.isFinite(n.orbit.apo) ? `${fmt(n.orbit.peri / 1000)} × ${fmt(n.orbit.apo / 1000)} km` : 'Flyby path';
+  const pmLeft = !launching && n.mass > CH3.landerMass + 1 ? CH3.pmProp - (CH3.stackMass - n.mass) : null;
+  let stage = 'On the pad';
+  for (let i = 0; i <= last; i++) stage = CRUISE_STAGE[ev[i].id] ?? stage;
+  setText(chip, stage);
   const h = cruiseHud ??= buildCruiseHud();
   showHud('cruise', h.nodes);
   setText(h.phase, title);
@@ -316,21 +353,14 @@ function updateCruiseHud(): void {
   setText(h.moonRange.value, dist(n.moonRange));
   setText(h.mass.value, `${fmt(n.mass)} kg`);
   setText(h.module.label, pmLeft !== null ? 'Module propellant' : 'Flying');
-  setText(h.module.value, pmLeft !== null ? `${fmt(pmLeft)} kg` : 'Vikram alone');
+  setText(h.module.value, pmLeft !== null ? `${fmt(pmLeft)} kg` : launching ? 'LVM3 and spacecraft' : 'Vikram alone');
   setText(h.engine.value, n.burning ? 'Firing' : 'Off');
   setClass(h.engine.value, n.burning ? 'am' : '');
   if (next) {
-    setText(h.next.value, `${next.label} in ${fmt(Math.max(0, next.t - (next.burn ?? 0) - cruiseT) / 3600, 1)} h`);
+    setText(h.next.value, `${next.label} in ${span(Math.max(0, next.t - (next.burn ?? 0) - cruiseT))}`);
     if (h.next.tr.parentNode !== h.table) h.table.insertBefore(h.next.tr, h.playback.tr);
   } else if (h.next.tr.parentNode) h.next.tr.remove();
-  setText(h.playback.value, cruisePlaying ? (n.burning ? `×${BURN_WARP} (burn)` : CRUISE_WARPS.find((w) => w[0] === cruiseWarp)?.[1] ?? '') : 'Paused');
-
-  // Rebuild the log when time jumps backward; otherwise append what has just happened.
-  if (shownCruiseEvents > last + 1) { shownCruiseEvents = Math.max(0, last - 5); logEl.textContent = ''; }
-  for (; shownCruiseEvents <= last; shownCruiseEvents++) {
-    const e = ev[shownCruiseEvents];
-    logLine(`${e.label.toUpperCase()} · ${e.detail}${e.real ? ` Real flight: ${e.real}.` : ''}`, e.dv ? 'am' : 'ok');
-  }
+  setText(h.playback.value, !cruisePlaying ? 'Paused' : launching ? `×${LAUNCH_WARP} (launch)` : n.burning ? `×${BURN_WARP} (burn)` : CRUISE_WARPS.find((w) => w[0] === cruiseWarp)?.[1] ?? '');
   const scrub = scrubEl;
   if (scrub && document.activeElement !== scrub) {
     const v = String(Math.round((1000 * (cruiseT - rec.t[0])) / (rec.handoff.t - rec.t[0])));
@@ -363,9 +393,10 @@ function buildCruiseHud(): CruiseHud {
   return h;
 }
 
-function startCruise(): void {
+/** The flight from the top: on the pad, with the descent already made ready for its end. */
+function startMission(): void {
   mode = 'cruise';
-  chip.textContent = 'Journey to the Moon';
+  started = true;
   cruiseT = rec.t[0]; cruisePlaying = true; shownCruiseEvents = 0; resultShown = false;
   logEl.textContent = '';
   resultEl.style.display = 'none';
@@ -487,15 +518,15 @@ function sitePoint(x: number, y: number, h: number, out: THREE.Vector3): THREE.V
 }
 
 /** Square height-field patch of half-width `half`, skipping cells inside `hole` (a finer patch covers those). */
-function buildPatch(terrain: Terrain, map: HazardMap, half: number, n: number, hole: number, rocks: boolean, skirt: boolean): THREE.Mesh {
+function buildPatch(terrain: Terrain, map: HazardMap, half: number, n: number, hole: number, rocks: boolean, skirt: boolean, cx = 0, cy = 0): THREE.Mesh {
   const pos = new Float32Array((n + 1) * (n + 1) * 3), col = new Float32Array((n + 1) * (n + 1) * 3);
   const p = new THREE.Vector3();
   for (let j = 0; j <= n; j++) {
     for (let i = 0; i <= n; i++) {
-      const x = -half + (2 * half * i) / n, y = -half + (2 * half * j) / n;
+      const x = cx - half + (2 * half * i) / n, y = cy - half + (2 * half * j) / n;
       let h = rocks ? terrain.ground(x, y) : terrain.height(x, y);
       if (skirt) {
-        const e = Math.max(Math.abs(x), Math.abs(y)) / half;
+        const e = Math.max(Math.abs(x - cx), Math.abs(y - cy)) / half;
         h -= SPHERE_SINK * 1.5 * Math.min(1, Math.max(0, (e - 0.93) / 0.07)); // tuck the edge under the globe
       }
       const o = (j * (n + 1) + i) * 3;
@@ -528,6 +559,28 @@ function buildPatch(terrain: Terrain, map: HazardMap, half: number, n: number, h
 }
 
 let terrainGroup: THREE.Group | null = null;
+
+// A landing away from the mapped site: the autopilot's contingency descent can come down tens of
+// kilometres off, where the site patches end and the globe is drawn sunk. A patch of the same
+// terrain model is kept under the lander there, so it lands on ground it can be seen to stand on.
+const FAR_HALF = 6000;
+let farGround: THREE.Mesh | null = null;
+let farAt: [number, number] = [0, 0];
+function placeFarGround(): void {
+  const t = sim.terrain!;
+  const l: { x: number; y: number; h: number } | null = sim.nearSite() ? sim.local(sim.r) : null;
+  // Only once it is low and slow enough to be coming down here: the patch is rebuilt as it moves.
+  const need = !!l && l.h < 12000 && norm(sim.vrel()) < 300 && Math.max(Math.abs(l.x), Math.abs(l.y)) > 0.75 * t.half;
+  if (farGround) farGround.visible = need;
+  if (!l || !need || (farGround && Math.hypot(l.x - farAt[0], l.y - farAt[1]) < 0.4 * FAR_HALF)) return;
+  if (farGround) { terrainGroup!.remove(farGround); farGround.geometry.dispose(); (farGround.material as THREE.Material).dispose(); }
+  farAt = [l.x, l.y];
+  farGround = buildPatch(t, sim.map!, FAR_HALF, 96, 0, false, true, l.x, l.y);
+  // Same heights as the site patches where they overlap, other triangles: draw this one in front.
+  const mat = farGround.material as THREE.MeshStandardMaterial;
+  mat.polygonOffset = true; mat.polygonOffsetFactor = -2; mat.polygonOffsetUnits = -2;
+  terrainGroup!.add(farGround);
+}
 const targetRing = new THREE.Mesh(
   new THREE.RingGeometry(4, 4.7, 48).rotateX(-Math.PI / 2),
   new THREE.MeshBasicMaterial({ color: 0x66ffa6, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide }),
@@ -545,6 +598,7 @@ function buildWorld(L: LanderSim): void {
       }
     });
   }
+  farGround = null; // went with the old terrain group
   const g = new THREE.Group();
   const t = L.terrain!, m = L.map!, S = L.site!;
   g.add(buildPatch(t, m, 240, 200, 0, true, false));
@@ -590,28 +644,73 @@ let shownEvents = 0;
 let resultShown = false;
 let roverClock = 0;
 
-function startDescent(): void {
-  // Nothing held over the old flight carries into the new one.
-  deck.release();
+/** True while `sim` is a lander made ready at the journey's last state and not yet flown. */
+let descentReady = false;
+/** False until the first flight has been set going. */
+let started = false;
+
+/**
+ * Build the lander at the state the journey ends in, plan its descent and generate the landing
+ * site. This is the slow part, done ahead of time (page load, restart) so the hand-off is instant.
+ */
+function prepareDescent(): void {
+  descentReady = false;
   const h = rec.handoff, rm = eph.moonAt(h.t), vm = eph.moonVelAt(h.t);
-  sim = new LanderSim(eph, { t: h.t, r: h.r.map((x, i) => x + rm[i]), v: h.v.map((x, i) => x + vm[i]), a: h.v.map((x) => -x) }, h.spec);
-  if (!sim.beginDescentTo(CH3.site.latDeg * DEG, CH3.site.lonDeg * DEG, CH3.site.name)) throw new Error('The orbit does not pass the landing site');
+  const next = new LanderSim(eph, { t: h.t, r: h.r.map((x, i) => x + rm[i]), v: h.v.map((x, i) => x + vm[i]), a: h.v.map((x) => -x) }, h.spec);
+  if (!next.beginDescentTo(CH3.site.latDeg * DEG, CH3.site.lonDeg * DEG, CH3.site.name)) throw new Error('The orbit does not pass the landing site');
+  sim = next;
   buildWorld(sim);
   if (lander) { scene.remove(lander.group); disposeGroup(lander.group); }
   lander = buildVikram(sim.G.cgh, sim.G.foot);
   scene.add(lander.group);
+  descentReady = true;
+}
+
+/** The journey's last state is the lander's first: carry on flying it live. Same clock, same log. */
+function engageDescent(): void {
+  // Nothing held on the controls before now carries into the descent.
+  deck.release();
+  descentReady = false;
+  started = true;
   mode = 'descent';
-  chip.textContent = 'Powered descent';
+  cruiseT = rec.handoff.t;
+  logCruise();
+  cruisePlaying = true;
   warp = 5; autoWarp = true; shownEvents = 0; resultShown = false; roverClock = 0;
   deckWanted = true; // a new descent brings back controls that were closed
-  logEl.textContent = '';
   resultEl.style.display = 'none';
   cControls.enabled = false; dControls.enabled = true;
   dControls.target.set(0, 0, 0);
   camera.position.set(13, 5, 13);
   lastPhase = '';
+  fadeIn();
   refreshDock();
   syncDeck();
+}
+
+/** A short fade up from black for the change of scene. */
+function fadeIn(): void {
+  view.style.transition = 'none';
+  view.style.opacity = '0';
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    view.style.transition = 'opacity 0.8s ease-out';
+    view.style.opacity = '1';
+  }));
+}
+
+/** Fly the whole mission again from the pad. */
+function restartMission(): void {
+  if (descentReady) startMission();
+  else withBusy('Preparing the flight…', () => { prepareDescent(); startMission(); });
+}
+
+/** Back to the start of the powered descent, the last minutes of the flight. */
+function retryLanding(): void {
+  withBusy('Preparing the landing…', () => {
+    prepareDescent();
+    logLine('BACK TO THE START OF THE POWERED DESCENT', 'am');
+    engageDescent();
+  });
 }
 
 // ---------------------------------------------------------------- per-frame placement
@@ -627,6 +726,7 @@ function toSite(v: number[], out: THREE.Vector3): THREE.Vector3 {
 
 function place(dt: number): void {
   const L = lander!;
+  placeFarGround();
   toSite(sim.r, vPos); // from the Moon's centre
   vUp.copy(vPos).normalize();
   vPos.y -= R_MOON; // from the site origin
@@ -699,12 +799,14 @@ function updateHud(): void {
   setText(h.mass.value, `${fmt(t.mass)} kg`);
   setText(h.dv.value, `${fmt(t.dv)} m/s`);
   setText(h.sun.value, sunNote);
+  setText(h.clock.value, `${fmt(sim.t / DAY, 1)} · ${cruiseDate(sim.t).slice(5)}`);
+  setText(chip, t.phase === 'LANDED' ? 'On the Moon' : t.phase === 'CRASHED' ? 'Lander lost' : 'Powered descent');
   setText(h.prop.value, `${fmt(t.prop)} kg`);
   setWidth(h.propBar, `${t.propPct * 100}%`);
   setText(h.thr.value, `${fmt(t.thr * 100)} %`);
   setWidth(h.thrBar, `${t.thr * 100}%`);
   setText(h.control.value, t.mode === 'AUTO' ? 'Autopilot' : t.hold ? `Manual · hold ${t.hold.toLowerCase()}` : 'Manual');
-  setText(h.warp.value, `×${effectiveWarp()}`);
+  setText(h.warp.value, cruisePlaying ? `×${effectiveWarp()}` : 'Paused');
 
   for (; shownEvents < sim.events.length; shownEvents++) logLine(sim.events[shownEvents].text, sim.events[shownEvents].level);
 
@@ -717,8 +819,13 @@ function updateHud(): void {
       // The sim opens its reason with a headline in capitals; put that in sentence case.
       detail = sim.reason?.replace(/^[A-Z][A-Z ]+(?= — )/, (s) => s[0] + s.slice(1).toLowerCase()) ?? 'The lander was lost.';
     } else if (g) {
+      // The autopilot may have had to set down on other ground than the planned site.
+      const off = g.x != null && g.y != null ? Math.hypot(g.x, g.y) : null;
+      const where = off !== null && off < 300 ? `${fmt(g.miss ?? 0, 1)} m from the aim point at ${CH3.site.name}`
+        : `${off === null ? 'a long way' : dist(off)} from the planned site at ${CH3.site.name}`;
       detail = `Touchdown ${cruiseDate(sim.t)} at ${fmt(g.vv, 2)} m/s down and ${fmt(g.vh, 2)} m/s sideways, tilted ${fmt(g.tilt ?? 0, 1)}°, ` +
-        `${fmt(g.miss ?? 0, 1)} m from the aim point at ${CH3.site.name}. ${fmt(g.propLeft ?? 0)} kg of propellant left after ${fmt(g.dvUsed ?? 0)} m/s of descent.`;
+        `${where}. ${fmt(g.propLeft ?? 0)} kg of propellant left after ${fmt(g.dvUsed ?? 0)} m/s of descent.`;
+      detail += ` Launch to touchdown took ${fmt((sim.t - (rec.events.find((e) => e.id === 'liftoff')?.t ?? 0)) / DAY, 1)} days.`;
       if (!g.hard) detail += ' The real Vikram touched down on 23 August 2023 at 12:33 UTC, inside its 2 m/s limit.';
     } else {
       detail = `Vikram is on the surface at ${CH3.site.name}.`;
@@ -730,14 +837,19 @@ function updateHud(): void {
     resultEl.replaceChildren(h, p);
     const again = document.createElement('button');
     again.className = 'sfb-btn sfb-btn-primary';
-    again.textContent = 'Fly the descent again';
-    again.onclick = () => withBusy('Generating the landing site…', startDescent);
+    again.textContent = 'Fly the mission again';
+    again.onclick = () => restartMission();
+    const retry = document.createElement('button');
+    retry.className = 'sfb-btn';
+    retry.textContent = 'Retry the landing';
+    retry.style.marginLeft = '6px';
+    retry.onclick = () => retryLanding();
     const look = document.createElement('button');
     look.className = 'sfb-btn';
     look.textContent = 'Look around';
     look.style.marginLeft = '6px';
     look.onclick = () => { resultEl.style.display = 'none'; };
-    resultEl.append(again, look);
+    resultEl.append(again, retry, look);
     resultEl.style.display = 'block';
     refreshDock();
   }
@@ -746,7 +858,7 @@ function updateHud(): void {
 interface DescentHud {
   nodes: Node[]; phase: HTMLElement; site: HTMLElement;
   alt: HudRow; rate: HudRow; ground: HudRow; aim: HudRow; tilt: HudRow; twr: HudRow; hazard: HudRow;
-  mass: HudRow; dv: HudRow; sun: HudRow; prop: HudRow; propBar: HTMLElement; thr: HudRow; thrBar: HTMLElement;
+  mass: HudRow; dv: HudRow; sun: HudRow; clock: HudRow; prop: HudRow; propBar: HTMLElement; thr: HudRow; thrBar: HTMLElement;
   control: HudRow; warp: HudRow;
 }
 let descentHud: DescentHud | null = null;
@@ -758,11 +870,12 @@ function buildDescentHud(): DescentHud {
   const aim = hudRow(main, 'Ignition in'); // or 'Range to target' once the engine has lit
   const tilt = hudRow(main, 'Tilt'), twr = hudRow(main, 'Thrust / weight'), hazard = hudRow(main, 'Ground below');
   const mass = hudRow(main, 'Mass'), dv = hudRow(main, 'Delta-v left'), sun = hudRow(main, 'Sun elevation');
+  const clock = hudRow(main, 'Mission day'); // the journey's clock, still running
   const prop = hudRow(table(), 'Propellant'), propBar = hudBar(nodes);
   const thr = hudRow(table(), 'Throttle'), thrBar = hudBar(nodes);
   const ctl = table();
   const control = hudRow(ctl, 'Control'), warpRow = hudRow(ctl, 'Time warp');
-  return { nodes, phase, site, alt, rate, ground, aim, tilt, twr, hazard, mass, dv, sun, prop, propBar, thr, thrBar, control, warp: warpRow };
+  return { nodes, phase, site, alt, rate, ground, aim, tilt, twr, hazard, mass, dv, sun, clock, prop, propBar, thr, thrBar, control, warp: warpRow };
 }
 
 // ---------------------------------------------------------------- controls
@@ -791,6 +904,13 @@ function button(label: string, on: boolean, fn: () => void, title = '', disabled
 function togglePanels(): void {
   document.body.classList.toggle('hud-off');
 }
+/**
+ * Hands the lander back to the autopilot, which re-plans from wherever it now is (LanderSim.replan).
+ * If its plan is to coast, to this pass's ignition point or round the Moon to the next, fast-forward that.
+ */
+function engageAuto(): void {
+  if (sim.setMode('AUTO') && sim.phase === 'COAST') autoWarp = true;
+}
 /** Steering takes over from the autopilot the moment the pilot touches a control. */
 function takeManual(): void {
   if (sim && sim.mode === 'AUTO') sim.setMode('MANUAL');
@@ -815,12 +935,12 @@ function refreshDock(): void {
       const e = rec.events.find((x) => x.burn && x.t - x.burn - 90 > cruiseT + 1);
       cruiseT = e ? e.t - e.burn! - 90 : rec.handoff.t - 60;
       cruisePlaying = true;
-    }, 'Jump to just before the next engine burn');
+    }, 'Jump to just before the next engine burn; after the last one, to the powered descent');
     button('Earth', focus === 'earth' && !focusAuto, () => setFocus('earth', false), 'Centre the view on Earth');
     button('Moon', focus === 'moon' && !focusAuto, () => setFocus('moon', false), 'Centre the view on the Moon');
-    button('Spacecraft', focus === 'craft', () => setFocus('craft', false), 'Follow the spacecraft');
-    button('Auto view', focusAuto, () => { focusAuto = true; userZoomed = false; }, 'Follow whichever body is being orbited');
-    button('Go to descent', false, () => enterDescent(), 'Skip to the powered descent');
+    button('Spacecraft', focus === 'craft' && !focusAuto, () => setFocus('craft', false), 'Follow the spacecraft');
+    button('Auto view', focusAuto, () => { focusAuto = true; userZoomed = false; }, 'Follow the rocket up, then whichever body is being orbited');
+    button('Restart', false, () => restartMission(), 'Start the flight again from the launch pad');
     button(document.body.classList.contains('hud-off') ? 'Show panels' : 'Hide panels', false, () => togglePanels(), 'H');
     const scrub = document.createElement('input');
     scrub.type = 'range'; scrub.id = 'scrub'; scrub.min = '0'; scrub.max = '1000';
@@ -829,18 +949,19 @@ function refreshDock(): void {
     scrub.oninput = () => { cruiseT = rec.t[0] + (Number(scrub.value) / 1000) * (rec.handoff.t - rec.t[0]); };
     dock.appendChild(scrub);
     scrubEl = scrub;
-    help.textContent = `${coarse ? 'Drag to look, pinch to zoom.' : 'Drag to look, scroll to zoom.'} Orange marks engine burns. Every position comes from integrating gravity and thrust, from the launcher's cutoff onward.`;
+    help.textContent = `${coarse ? 'Drag to look, pinch to zoom.' : 'Drag to look, scroll to zoom.'} Orange marks engine burns. One flight from the launch pad to the surface: every position comes from integrating gravity and thrust, and the lander is flown live from where this path ends.`;
     dock.appendChild(help);
     return;
   }
 
   const over = sim.phase === 'LANDED' || sim.phase === 'CRASHED';
+  button(cruisePlaying ? 'Pause' : 'Play', false, () => { cruisePlaying = !cruisePlaying; }, '', over);
   button('Skip to ignition', autoWarp && sim.phase === 'COAST', () => { autoWarp = !autoWarp; }, 'Fast-forward the coast to powered descent', sim.phase !== 'COAST' || sim.mode !== 'AUTO');
-  button('Autopilot', sim.mode === 'AUTO', () => sim.setMode('AUTO'), 'T', over);
+  button('Autopilot', sim.mode === 'AUTO', () => engageAuto(), 'T: the autopilot takes over from wherever the lander is', over);
   button('Controls', deckWanted && !over, () => setDeckWanted(!deckWanted), 'Show or close the flight controls (closing hands back to the autopilot)', over);
   for (const w of WARPS) button(`×${w}`, warp === w && !(autoWarp && sim.phase === 'COAST'), () => { warp = w; autoWarp = false; }, 'Time warp (limited near the ground)', over);
-  button('Restart descent', false, () => withBusy('Generating the landing site…', startDescent));
-  button('Replay journey', false, () => startCruise(), 'Back to the flight from Earth');
+  button('Retry landing', false, () => retryLanding(), 'Back to the start of the powered descent');
+  button('Restart', false, () => restartMission(), 'Start the flight again from the launch pad');
   button(document.body.classList.contains('hud-off') ? 'Show panels' : 'Hide panels', false, () => togglePanels(), 'H');
   help.textContent = coarse
     ? 'Drag to look, pinch to zoom. Hold Pitch forward/back or Roll left/right (as seen along the approach track) to steer and drag the throttle lever; touching a control takes over from the autopilot.'
@@ -871,7 +992,7 @@ const FLIGHT_KEYS = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowl
 /** Closing the deck hands the lander back to the autopilot. */
 function setDeckWanted(on: boolean): void {
   deckWanted = on;
-  if (!on && flying()) sim.setMode('AUTO');
+  if (!on && flying()) engageAuto();
   syncDeck();
 }
 
@@ -933,7 +1054,9 @@ const deck = createFlightDeck({
     else sim.setThrottle(MIN_LIT);
   },
   onMode() {
-    if (flying()) sim.setMode(sim.mode === 'AUTO' ? 'MANUAL' : 'AUTO');
+    if (!flying()) return;
+    if (sim.mode === 'AUTO') sim.setMode('MANUAL');
+    else engageAuto();
   },
   onExit() {
     setDeckWanted(false);
@@ -1008,7 +1131,7 @@ function withBusy(text: string, work: () => void): void {
   setTimeout(() => {
     try { work(); busy.style.display = 'none'; } catch (err) {
       // Back to the journey: a half-built descent has nothing to show and no way out.
-      if (mode === 'descent') startCruise();
+      if (mode === 'descent') startMission();
       busy.textContent = `Could not continue: ${err instanceof Error ? err.message : String(err)}`;
       busy.style.display = 'block';
       setTimeout(() => { busy.style.display = 'none'; }, 6000);
@@ -1016,14 +1139,17 @@ function withBusy(text: string, work: () => void): void {
     setTimeout(() => { working = false; }, BUSY_SETTLE);
   }, 30);
 }
-function enterDescent(): void {
+/** The journey has reached its last state: the lander takes over from there. */
+function beginDescent(): void {
   if (mode === 'descent' || working) return; // never leave the journey for work that would be ignored
+  if (descentReady) { engageDescent(); return; }
+  // The lander could not be made ready ahead of time: build it now.
   mode = 'descent'; // stops the journey clock while the terrain is generated
   sim = undefined as unknown as LanderSim;
   dock.textContent = ''; // no stale cruise buttons while the terrain is generated
   scrubEl = null;
   syncDeck();
-  withBusy('Generating the landing site…', startDescent);
+  withBusy('Generating the landing site…', () => { prepareDescent(); engageDescent(); });
 }
 
 let last = performance.now();
@@ -1034,11 +1160,11 @@ function frame(now: number): void {
   requestAnimationFrame(frame);
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
-  if (!rec) return;
+  if (!started) return;
   const hudDue = now - lastHud > 90;
   if (mode === 'cruise') {
-    if (cruisePlaying) cruiseT += dt * (cruiseNow?.burning ? Math.min(cruiseWarp, BURN_WARP) : cruiseWarp);
-    if (cruiseT >= rec.handoff.t) { cruiseT = rec.handoff.t; placeCruise(dt); enterDescent(); return; }
+    if (cruisePlaying) cruiseT += dt * Math.min(cruiseWarp, cruiseT < rec.injectT ? LAUNCH_WARP : cruiseNow?.burning ? BURN_WARP : Infinity);
+    if (cruiseT >= rec.handoff.t) { cruiseT = rec.handoff.t; placeCruise(dt); beginDescent(); return; }
     placeCruise(dt);
     cControls.update();
     cCamera.near = Math.max(20, cCamera.position.distanceTo(cControls.target) * 0.01);
@@ -1048,7 +1174,7 @@ function frame(now: number): void {
     return;
   }
   if (!sim) return;
-  sim.advance(dt * effectiveWarp());
+  if (cruisePlaying) sim.advance(dt * effectiveWarp());
   if (sim.phase !== lastPhase || sim.mode !== lastMode) {
     if (sim.phase !== lastPhase && sim.phase !== 'COAST') autoWarp = false;
     lastPhase = sim.phase;
@@ -1066,7 +1192,7 @@ function frame(now: number): void {
   renderer.render(scene, camera);
 }
 
-const CRUISE_BUSY = 'Flying Chandrayaan-3 from Earth orbit to the Moon…';
+const CRUISE_BUSY = 'Flying Chandrayaan-3 from the launch pad to the Moon…';
 busy.textContent = CRUISE_BUSY;
 busy.style.display = 'block';
 runCruise((text) => { busy.textContent = text; })
@@ -1074,8 +1200,16 @@ runCruise((text) => { busy.textContent = text; })
     rec = r;
     eph = createMoonEphemeris(rec.epochJD);
     buildCruiseScene();
-    if (new URLSearchParams(window.location.search).get('stage') === 'descent') startDescent();
-    else startCruise();
+    busy.textContent = 'Preparing the landing site…';
+    // Let the note paint before the landing site is generated.
+    return new Promise<void>((done) => setTimeout(done, 30));
+  })
+  .then(() => {
+    // A lander that cannot be made ready is reported at the hand-off; the journey still flies.
+    try { prepareDescent(); } catch { /* beginDescent tries again and shows why */ }
+    // ?stage=descent starts at the hand-off, for checking the descent on its own.
+    if (descentReady && new URLSearchParams(window.location.search).get('stage') === 'descent') { placeCruise(0); engageDescent(); }
+    else startMission();
     busy.style.display = 'none';
   })
   .catch((err) => { busy.textContent = `Could not continue: ${err instanceof Error ? err.message : String(err)}`; });
@@ -1088,5 +1222,5 @@ if (import.meta.env.DEV) (window as unknown as { astraLanding: unknown }).astraL
   cruise: () => rec,
   mode: () => mode,
   cruiseTime: (t?: number) => { if (t !== undefined) cruiseT = t; return cruiseT; },
-  descend: () => enterDescent(),
+  descend: () => { cruiseT = rec.handoff.t; },
 };

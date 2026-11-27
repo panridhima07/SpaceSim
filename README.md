@@ -45,7 +45,8 @@ Status as of 26 Nov 2026. Only the deploy item is ticked: each other item bundle
 - App wiring through `src/mission/`: engine re-exports, frame and attitude adapter, `flyMission` sampling to a shared `FlightRecord`, a worker plus in-thread fallback, mission snapshots and prediction.
 - Missions (`src/mission/vehicles.ts`, `src/mission/missions/`): LVM3-M4 / Chandrayaan-3, PSLV-C61 / EOS-09 and Falcon 9 / Starlink, with failure injection, mission health and outcomes.
 - Piloted mission flight: fly the mission by hand (`src/mission/pilot.ts`, `src/app/pilotControls.ts`).
-- Lunar module: cruise, navigation, terrain and a lander (`src/lunar/`, `landing.html`).
+- Lunar module: one continuous flight on the Moon page (`landing.html`, `src/lunar/`): the LVM3 launch from the pad at Sriharikota, Earth orbit, the coast to the Moon, lunar orbit, then the powered descent and landing. The lander and landing-site terrain are built ahead of time, so the hand-off from the journey to the live lander has no pause, and the mission clock keeps running. One Restart replays the whole flight from the pad; Retry landing goes back to the start of the powered descent. `?stage=descent` starts at the hand-off, for development.
+- Hand-flown model-rocket flight: the parachute is manual only. Once the pilot has sent throttle or steering, the ejection charge and the automatic deploy settings are skipped and the pilot opens the chute with the stage control (Space, button "Chute"). Automatic runs (Launch, flaw report, sweeps, server stress test) still deploy by the rocket's deploy settings.
 - Model-rocket sim: multi-stage `.ork` flight with stage separation and delayed upper-stage ignition (`src/ork/stageMotors.ts`; `src/ork/rh200.ts` is the RH-200 two-stage sample). Transonic and supersonic wave drag (`transonicWaveCd` in `src/physics/aero.ts`) is an uncalibrated placeholder.
 - Launch weather for the launch-date picker, from Open-Meteo (`src/weather/launchWeather.ts`).
 

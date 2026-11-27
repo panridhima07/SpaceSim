@@ -1388,6 +1388,8 @@ function startManualFlight(): void {
   cameraBeforeManual = cameraRig.mode;
   ui.setManual?.(true);
   manualFlight.start();
+  // Follow the rocket: seen from the pad it shrinks to a dot and the arrows seem to do nothing.
+  cameraRig.setMode('chase', rocket.length);
 }
 
 // ---------- Build mode glue ----------

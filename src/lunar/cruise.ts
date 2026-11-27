@@ -1,10 +1,12 @@
-// Chandrayaan-3 after the launcher lets go: Earth-bound orbit raising, trans-lunar injection,
-// lunar orbit insertion, orbit lowering, lander separation and the two deboost burns, ending a
-// few minutes before powered descent. src/lunar/lander.ts flies the descent from that state.
+// Chandrayaan-3 from the pad to lunar orbit: the LVM3 launch, Earth-bound orbit raising,
+// trans-lunar injection, lunar orbit insertion, orbit lowering, lander separation and the two
+// deboost burns, ending a few minutes before powered descent. src/lunar/lander.ts flies the
+// descent from that state, so launch to touchdown is one trajectory with no gap.
 //
 // What is simulated
-//   - The start state is the end of the LVM3 ascent flown by rocket-physics (same mission
-//     definition as Mission mode), so the whole chain is one continuous trajectory.
+//   - The launch is the LVM3 ascent flown by rocket-physics (same mission definition as
+//     Mission mode), sampled into the record from the pad; the spacecraft's own flight starts
+//     from the exact state the launcher ends in.
 //   - Gravity is rocket-physics' force model: oblate Earth (J2 to J4), Moon and Sun as point
 //     masses, integrated in the Earth-centred equatorial frame with adaptive Dormand-Prince.
 //   - Every burn is a finite burn: constant thrust along or against the velocity relative to the
@@ -20,7 +22,7 @@
 //     trajectory corrections; this one needs none because the model has no navigation error.
 //   - Dates follow from the physics, so they land near, not on, the real ones.
 
-import { Dopri5, RE, accelAt, flyAscent, julianDate, moonPosition, moonVelocity } from '../mission/engine';
+import { AscentAutopilot, Dopri5, RE, Simulation, accelAt, julianDate, moonPosition, moonVelocity } from '../mission/engine';
 import { getMission } from '../mission/vehicles';
 import { G0, MU_M as MU_L, R_MOON, add, cross, dot, norm, scale, sub, unit, type LanderSpec, type V3 } from './core';
 import { createMoonEphemeris } from './moonEphemeris';
@@ -78,7 +80,11 @@ export interface CruiseEvent {
 export interface CruiseRecord {
   /** Julian date of t = 0 (the launch epoch). */
   epochJD: number;
-  /** Samples at the integrator's own steps. r and v are Earth-centred equatorial, m and m/s. */
+  /**
+   * Samples from the pad onward: the launch about once a second, then the integrator's own
+   * steps. r and v are Earth-centred equatorial, m and m/s. Mass is the whole launch vehicle
+   * until `injectT`, the spacecraft after it.
+   */
   n: number;
   t: Float64Array;
   r: Float64Array;
@@ -87,6 +93,8 @@ export interface CruiseRecord {
   /** 1 while an engine is firing. */
   burning: Uint8Array;
   events: CruiseEvent[];
+  /** When the launcher lets the spacecraft go: the launch ends and the cruise begins. */
+  injectT: number;
   /** First sample after lunar orbit insertion begins. */
   loiIndex: number;
   /** State handed to the lander: Moon-centred, ecliptic axes (the lander's frame). */
@@ -107,13 +115,32 @@ class Track {
   }
 }
 
+/** Seconds between samples of the launch. */
+const LAUNCH_SAMPLE = 1;
+
 export interface CruiseOptions { /** Which lunar pole the approach passes over; by default whichever needs the smaller correction. */ poleSide?: 1 | -1; onProgress?: (text: string) => void }
 
 export function flyCruise(opts: CruiseOptions = {}): CruiseRecord {
   const def = getMission('lvm3-m4')!;
-  const asc = flyAscent(def.vehicle(), def.config, def.ascent, def.tMax);
-  if (!asc.reachedTarget) throw new Error('The launcher did not reach the transfer orbit');
-  const sim = asc.sim;
+  // The flight flyAscent makes, step for step; the stop test also reads off the samples.
+  const autopilot = new AscentAutopilot(def.ascent);
+  const sim = new Simulation(def.vehicle(), def.config, autopilot);
+  const launch = new Track();
+  let liftoffMass = 0, nextSample = 0;
+  const sampleLaunch = (): void => {
+    const d = sim.telemetry();
+    if (sim.held) liftoffMass = d.mass;
+    launch.push(sim.t, [sim.r[0], sim.r[1], sim.r[2], sim.v[0], sim.v[1], sim.v[2], d.mass], d.thrust > 0);
+    nextSample = sim.t + LAUNCH_SAMPLE;
+  };
+  sampleLaunch();
+  sim.run(def.tMax, () => {
+    if (sim.t >= nextSample) sampleLaunch();
+    return autopilot.phase === 'done' || autopilot.phase === 'aborted';
+  });
+  if (!autopilot.reachedTarget) throw new Error('The launcher did not reach the transfer orbit');
+  const ascEl = sim.elements();
+  const asc = { perigeeAltitude: ascEl.rp - RE, apogeeAltitude: ascEl.ra - RE, inclinationDeg: (ascEl.i * 180) / Math.PI };
   const epochJD = sim.epochJD;
   const fm = { epochJD };
   const say = opts.onProgress ?? (() => {});
@@ -282,6 +309,15 @@ export function flyCruise(opts: CruiseOptions = {}): CruiseRecord {
 
   // ------------------------------------------------------------------ Earth-bound orbit raising
   let s: S = { t: sim.t, y: [sim.r[0], sim.r[1], sim.r[2], sim.v[0], sim.v[1], sim.v[2], CH3.stackMass] };
+  for (let i = 0; i < launch.t.length && launch.t[i] < s.t; i++) {
+    rec.t.push(launch.t[i]); rec.r.push(...launch.r.slice(3 * i, 3 * i + 3)); rec.v.push(...launch.v.slice(3 * i, 3 * i + 3));
+    rec.m.push(launch.m[i]); rec.b.push(launch.b[i]);
+  }
+  events.push({
+    t: sim.liftoffTime, id: 'liftoff', label: 'Liftoff', mass: liftoffMass, real: '14 July 2023, 09:05 UTC',
+    detail: `LVM3-M4 leaves Sriharikota weighing ${(liftoffMass / 1000).toFixed(0)} t, with the ${CH3.stackMass} kg spacecraft on top.`,
+  });
+  const injectT = s.t;
   rec.push(s.t, s.y, false);
   const inj = apsides(s, 'earth');
   note(s, 'inject', 'Injected by LVM3', `Transfer orbit ${orbitText(inj)}, inclination ${asc.inclinationDeg.toFixed(1)}°.`, { orbit: { body: 'earth', ...inj }, real: '170 × 36 500 km' });
@@ -507,7 +543,7 @@ export function flyCruise(opts: CruiseOptions = {}): CruiseRecord {
   return {
     epochJD, n,
     t: Float64Array.from(rec.t), r: Float64Array.from(rec.r), v: Float64Array.from(rec.v), mass: Float64Array.from(rec.m), burning: Uint8Array.from(rec.b),
-    events, loiIndex,
+    events, injectT, loiIndex,
     handoff: { t: s.t, r: toEcl(q.r), v: toEcl(q.v), spec: vikramSpec(used), perilune: apsides(s, 'moon').peri, crossTrack: best.cross * R_MOON },
     site: { ...CH3.site },
     pmPropLeft,
@@ -563,7 +599,7 @@ export function eclToEq(p: V3, epochJD: number): V3 {
 // flyCruise depends on nothing but fixed constants, so its record can be stored (IndexedDB, or
 // a file made at build time) and read back instead of flown again. Bump CRUISE_PHYSICS_REV when
 // the flight changes in a way CH3 does not show (force model, integrator, mission design, LVM3).
-const CRUISE_PHYSICS_REV = 1;
+const CRUISE_PHYSICS_REV = 2;
 const CRUISE_MAGIC = 0x43483343; // "CH3C"
 
 /** Changes whenever a stored record may no longer match what flyCruise would fly. */

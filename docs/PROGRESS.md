@@ -62,3 +62,10 @@ index-BaiA4cDd.js  857972
 index-DsDxnDuL.css 15978
 worker-_eyFj4rI.js 45520
 ```
+
+## 2026-11-27
+
+- Hand-flown flight (`src/physics/sim.ts`): once the pilot has sent throttle or steering, the ejection charge and all automatic parachute triggers are skipped. The pilot opens the parachute with the stage control (Space, "Chute", `sim.deployChutes()`). Unpiloted runs (Launch, flaw report, sweeps, server stress test) are unchanged.
+- Moon page (`landing.html`, `src/landing/main.ts`, `src/lunar/cruise.ts`) is now one flight from the pad to touchdown. `flyCruise()` samples the LVM3 launch (about one sample a second) into the `CruiseRecord`; new field `injectT` and first event `liftoff`; `CRUISE_PHYSICS_REV` is 2.
+- The lander and landing-site terrain are built ahead of time (`prepareDescent()` at load and on restart) and the live `LanderSim` takes over at the hand-off (`engageDescent()`) with no pause, the log kept and the mission clock running. Dock now has Restart (whole flight), Pause/Play (also in the descent) and Retry landing. The launch plays at x30 with the camera following the rocket. `?stage=descent` still starts at the hand-off.
+- Lunar autopilot hand-back (`src/lunar/lander.ts`): `setMode('AUTO')` now re-plans from the lander's actual state (`replan()`). It flies each option ahead on a copy and takes the first that lands softly: coast to a re-computed ignition point (this pass or the next), resume the planned approach, or a contingency descent to the nearest safe ground (`divertGuide`). Swept over 252 hand-back cases from the real hand-off: 117 soft landings before, 208 after; the untouched descent is unchanged. The page fast-forwards a coast the autopilot chooses and draws ground under a landing away from the site patches. Open: the planned braking burn has no thrust margin, so a disturbance mid-burn ends in a landing past the site rather than on it.

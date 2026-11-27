@@ -93,11 +93,11 @@ describe('manual flight controller', () => {
     expect(sim.state.phase).toBe('pad');
   });
 
-  it('launches from the stage button and flies at half speed by default', () => {
+  it('launches from the stage button and flies at quarter speed by default', () => {
     key('keydown', ' ');
     expect(host.launch).toHaveBeenCalledTimes(1);
     expect(manual.controls().throttle).toBe(1);
-    expect(manual.tick(0.1)).toBeCloseTo(0.05);
+    expect(manual.tick(0.1)).toBeCloseTo(0.025);
   });
 
   it('cuts the engine, and fires the parachute from the stage button', () => {
@@ -109,7 +109,50 @@ describe('manual flight controller', () => {
     expect(sim.state.chuteDeployed).toBe(true);
   });
 
+  describe('chute prompt', () => {
+    const mode = (): string => document.querySelector('.fdk-mode')!.textContent!;
+    // Fly (engine cut after burnout so it coasts) until the sim logs apogee, or give up after 600 s of sim time.
+    const flyPastApogee = (): void => {
+      for (let i = 0; i < 12000 && !sim.events.some((e) => e.type === 'apogee') && !sim.done; i++) {
+        sim.step(0.05, manual.controls());
+        manual.update();
+      }
+    };
+
+    it('says Manual before apogee', () => {
+      key('keydown', ' ');
+      run(1);
+      expect(mode()).toBe('Manual');
+    });
+
+    it('prompts for the chute after apogee without opening it', () => {
+      key('keydown', ' ');
+      flyPastApogee();
+      expect(sim.events.some((e) => e.type === 'apogee')).toBe(true);
+      expect(sim.state.chuteDeployed).toBe(false);
+      expect(mode()).toBe('Falling · open the chute');
+    });
+
+    it('drops the prompt once Space opens the chute', () => {
+      key('keydown', ' ');
+      flyPastApogee();
+      key('keydown', ' ');
+      expect(sim.state.chuteDeployed).toBe(true);
+      expect(mode()).not.toBe('Falling · open the chute');
+    });
+  });
+
+  it('offers steering only once the rocket is off the rail', () => {
+    const arrow = (): boolean => document.querySelector<HTMLButtonElement>('.fdk-rotate button')!.disabled;
+    expect(arrow()).toBe(true);
+    key('keydown', ' ');
+    run(2);
+    expect(arrow()).toBe(false);
+  });
+
   it('holds attitude by default and lets go when SAS is off', () => {
+    key('keydown', ' ');
+    run(2);
     expect(manual.controls().rate).toEqual([0, 0, 0]);
     key('keydown', 'f');
     expect(manual.controls().rate).toBeUndefined();
@@ -177,6 +220,8 @@ describe('manual flight controller', () => {
   });
 
   it('lets go of held arrows when the window loses focus', () => {
+    key('keydown', ' ');
+    run(2);
     key('keydown', 'd');
     key('keydown', 'w');
     expect(Math.hypot(...manual.controls().rate!)).toBeGreaterThan(0.5);
@@ -203,7 +248,7 @@ describe('manual flight controller', () => {
     expect(manual.tick(0.1)).toBe(0);
     pause.click();
     expect(pause.getAttribute('aria-label')).toBe('Pause');
-    expect(manual.tick(0.1)).toBeCloseTo(0.05);
+    expect(manual.tick(0.1)).toBeCloseTo(0.025);
   });
 
   it('takes no keys, pauses or warps while inactive', () => {
@@ -217,6 +262,6 @@ describe('manual flight controller', () => {
     expect(host.cycleCamera).not.toHaveBeenCalled();
     manual.togglePause();
     manual.warpBy(1);
-    expect(manual.tick(0.1)).toBeCloseTo(0.05);
+    expect(manual.tick(0.1)).toBeCloseTo(0.025);
   });
 });

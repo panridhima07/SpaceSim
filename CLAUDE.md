@@ -42,5 +42,5 @@ Rocket builder + 6-DOF spaceflight simulator: build or import (`.ork`, RockSim) 
 ## Gotchas
 - `npm run deploy` goes straight to `--prod`; there is no preview step.
 - `run-android.cmd` emulator runs `-no-window` (windowed mode hangs on this PC) and keeps running after the script; kill emulator/adb/gradle daemons afterward.
-- Transonic wave drag (`src/physics/aero.ts`) is an uncalibrated placeholder; CG/mass still differ from OpenRocket (see docs/PLAN.md).
+- Transonic aero (`src/physics/aero.ts`) is fitted to one OpenRocket flight to Mach 1.13 (ogive nose); other nose shapes' wave-drag factors are estimates. CG/mass still differ from OpenRocket (see docs/PLAN.md).
 - Known not done: `/r/<id>` DB share links, "My rockets" page, compare-flights view (share links use URL hash).

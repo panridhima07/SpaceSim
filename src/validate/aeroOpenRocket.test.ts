@@ -4,7 +4,7 @@ import { extractSimulations, readOrkZip } from '../ork/orkExtras';
 import { embeddedMotors } from '../ork/rse';
 import { findMotor } from '../ork/motors';
 import { massProps } from '../physics/massprops';
-import { aeroProps } from '../physics/aero';
+import { aeroProps, dragBreakdown } from '../physics/aero';
 import type { InnerTube } from '../types';
 
 // Round 5: our static aerodynamics against the values OpenRocket stored, row by row, in the
@@ -90,6 +90,58 @@ describe('aerodynamics vs OpenRocket stored flight data', () => {
       expect(w.marginCal).toBeLessThan(d.margin);
     });
   }
+
+  // The J570W flight of "Dual parachute deployment" reaches Mach 1.13 on the way up. Every ascending
+  // row below 3 degrees angle of attack is compared: CNα and CP across the transonic range, and how
+  // much the pressure drag rises above its low-Mach value (the absolute level differs by a constant
+  // 0.05, mostly the square fin leading edge, which is the same at every Mach).
+  const dual = 'Dual_parachute_deployment';
+  it.skipIf(!fs.existsSync(fixture(dual)))(`${dual}: CNα, CP and pressure-drag rise to Mach 1.13`, async () => {
+    const bytes = fs.readFileSync(fixture(dual));
+    const { xml, files } = await readOrkZip(bytes);
+    const sims = extractSimulations(xml);
+    const rocket = await parseOrkFile(bytes);
+    const mount = rocket.components.find((c): c is InnerTube => c.kind === 'innertube' && c.isMotorMount)!;
+    const k = sims.findIndex((s) => s.motor?.designation === 'J570W');
+    expect(k).toBeGreaterThanOrEqual(0);
+    const motor = findMotor({ manufacturer: sims[k].motor!.manufacturer, designation: sims[k].motor!.designation }, embeddedMotors(files))!;
+    mount.motor = { manufacturer: motor.manufacturer, designation: motor.designation, diameter: motor.diameter, length: motor.length, delay: 0 };
+    const branch = xml.split('<simulation').slice(1).filter((s) => /<databranch[^>]*types="/.test(s))[k];
+    const cols = /<databranch[^>]*types="([^"]*)"/.exec(branch)![1].split(',');
+    const at = (row: number[], col: string): number => row[cols.indexOf(col)];
+    const rows: { M: number; cna: number; cnaOR: number; cp: number; cpOR: number; pr: number; prOR: number }[] = [];
+    let maxM = 0;
+    for (const m of branch.matchAll(/<datapoint>([^<]*)<\/datapoint>/g)) {
+      const row = m[1].split(',').map(Number);
+      const M = at(row, 'mach_number');
+      const aoa = at(row, 'aoa');
+      if (!(M > 0.05 && aoa < (3 * Math.PI) / 180 && at(row, 'velocity_z') > 0 && Number.isFinite(at(row, 'cna')))) continue;
+      const ap = aeroProps(rocket, M, massProps(rocket, motor, at(row, 'time')).cgX);
+      const body = (ap.bodyLift ?? 0) * Math.sin(aoa);
+      const cna = ap.cnAlpha + body;
+      rows.push({
+        M,
+        cna,
+        cnaOR: at(row, 'cna'),
+        cp: (ap.cnAlpha * ap.cpX + body * (ap.bodyLiftX ?? ap.cpX)) / cna,
+        cpOR: at(row, 'cp_location'),
+        pr: dragBreakdown(rocket, M).pressure,
+        prOR: at(row, 'pressure_drag_coeff'),
+      });
+      maxM = Math.max(maxM, M);
+    }
+    expect(maxM).toBeGreaterThan(1.1);
+    const low = rows.filter((r) => r.M < 0.3);
+    const offset = low.reduce((a, r) => a + r.pr - r.prOR, 0) / low.length;
+    const d = 2 * rocket.maxRadius;
+    for (const r of rows) {
+      const tag = `Mach ${r.M.toFixed(3)}`;
+      // Measured worst: CNα 1.1 %, CP 0.06 calibre, pressure-drag rise 0.02 (Mach 0.9 to 1).
+      expect(Math.abs(r.cna / r.cnaOR - 1), tag).toBeLessThan(0.02);
+      expect(Math.abs(r.cp - r.cpOR) / d, tag).toBeLessThan(0.1);
+      expect(Math.abs(r.pr - r.prOR - offset), tag).toBeLessThan(0.035);
+    }
+  });
 
   // Two fin sets on a 4 in body. Only the first second is compared: our test puts the motor
   // in the first mount only, so the CG (and the margin) is not comparable, but CNα and CP are.

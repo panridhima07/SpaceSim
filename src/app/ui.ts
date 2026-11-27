@@ -958,7 +958,7 @@ export function createUI(container: HTMLElement, cb: UICallbacks, opts: CreateUI
     fill(pageOf('view'), [cameraGroup, toggleGroup]);
     // Bottom bar: Reset and Pause left of the round Launch button, warp on the right.
     fill(dockLeft, [resetBtn, pauseBtn]);
-    fill(dock, [dockLeft, launchBtn, warpGroup]);
+    fill(dock, [manualBtn, dockLeft, launchBtn, warpGroup]);
     fill(left, []);
     fill(right, []);
   }

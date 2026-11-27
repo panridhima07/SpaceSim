@@ -7,8 +7,8 @@ import { G0, type Controls, type Sim, type Vec3 } from '../types';
 import { createFlightDeck, type DeckInput } from './flightDeck';
 
 export const MANUAL_WARPS = [0.25, 0.5, 1, 2, 5];
-/** Model-rocket motors burn for a second or two, so hand flying starts at half speed. */
-const DEFAULT_WARP = 0.5;
+/** Model-rocket motors burn for a second or two, so hand flying starts at quarter speed. */
+const DEFAULT_WARP = 0.25;
 /** rad/s the nose turns while an arrow is held. */
 export const TURN_RATE = (45 * Math.PI) / 180;
 /** Longest real frame taken as flight time, s: a stalled tab must not skip the burn. */
@@ -166,9 +166,14 @@ export function createManualFlight(root: HTMLElement, host: ManualHost): ManualF
       engineDisabled: sim.done || out || s.chuteDeployed,
       stageLabel: !launched ? 'Launch' : stagesLeft() > 0 ? 'Stage' : 'Chute',
       stageDisabled: sim.done || (launched && stagesLeft() <= 0 && s.chuteDeployed),
-      steerDisabled: sim.done || s.chuteDeployed,
+      // On the pad and the rail the rocket cannot turn: show the arrows as unavailable.
+      steerDisabled: sim.done || s.chuteDeployed || !launched || s.phase === 'pad' || s.phase === 'rail',
       activeToggles: hold ? ['sas'] : [],
-      modeText: sim.done ? (s.phase === 'crashed' ? 'Crashed' : 'Landed') : 'Manual',
+      // Nothing opens the chute for a hand-flown rocket, so tell the pilot once it is falling with it still packed.
+      modeText: sim.done ? (s.phase === 'crashed' ? 'Crashed' : 'Landed')
+        : !launched ? 'Ready'
+        : !s.chuteDeployed && stagesLeft() <= 0 && sim.events.some((e) => e.type === 'apogee') ? 'Falling · open the chute'
+        : 'Manual',
       manual: true,
       warpText: `×${warp}`,
       paused,

@@ -33,7 +33,7 @@ const NO_INPUT: DeckInput = { rotate: 0, tilt: 0, throttle: 0 };
 /** A control newly pushed in a direction. Letting go, or Shift changing the rate, is not one. */
 const pushed = (now: number, before: number): boolean => now !== 0 && Math.sign(now) !== Math.sign(before);
 
-function deckState(s: PilotState): DeckState {
+function deckState(s: PilotState, onPad: boolean): DeckState {
   const prograde = s.manual && s.hold === 'prograde';
   // The nose as it is; the arrow shows where it is still heading while it catches the command up.
   const nose = s.noseTiltDeg.toFixed(0), want = s.tiltDeg.toFixed(0);
@@ -47,7 +47,9 @@ function deckState(s: PilotState): DeckState {
     engineText: 'Auto',
     engineDisabled: true,
     activeToggles: prograde ? ['airflow'] : [],
-    modeText: !s.manual ? 'Autopilot' : prograde ? 'Manual · airflow' : 'Manual',
+    modeText: onPad ? 'On pad' : !s.manual ? 'Autopilot' : prograde ? 'Manual · airflow' : 'Manual',
+    // Clamped to the pad, steering does nothing until release.
+    steerDisabled: onPad,
     manual: s.manual,
     readouts: [
       { label: 'Nose from vertical', value: s.manual && want !== nose ? `${nose}° → ${want}°` : `${nose}°` },
@@ -126,7 +128,9 @@ export function createPilotControls(missionRoot: HTMLElement, cb: PilotControlCa
       startBtn.textContent = next ? 'Restart flight' : 'Fly it yourself';
     },
     update(): void {
-      if (flight) deck.update(deckState(flight.state()));
+      if (!flight) return;
+      const newest = flight.record.samples?.[flight.record.samples.length - 1];
+      deck.update(deckState(flight.state(), newest !== undefined && newest.t < 0));
     },
   };
 }

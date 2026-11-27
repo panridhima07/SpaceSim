@@ -77,6 +77,15 @@ export interface DescentPlan {
   /** Time of powered-descent initiation (perilune). */ tPDI: number; hPDI: number; vPDI: number;
   range: number; /** Site offset from the ground track at ignition, m (planTo only). */ cross?: number; site: LandingSite; pred: (LandingResult & { ok: boolean; reason?: string; dvMargin?: number }) | null;
 }
+/** Outcome of a flight the autopilot predicted before committing to it. */
+export interface AutopilotForecast {
+  /** 3 soft landing on the chosen spot with propellant to spare, 2 soft landing short of that, 1 hard landing, 0 destroyed. */ grade: number;
+  phase: LanderPhase; /** Touchdown speeds, m/s. */ vv: number; vh: number;
+  /** m from the aim point flown to, and from the planned site; null where the site map does not reach. */ miss: number | null; off: number | null;
+  /** kg */ propLeft: number; /** Seconds of flight to touchdown. */ time: number;
+}
+/** COAST: wait for the (re-planned) ignition point. RESUME: fly the planned approach from here. DIVERT: brake at once and land on the nearest safe ground. */
+export interface AutopilotDecision extends AutopilotForecast { choice: 'COAST' | 'RESUME' | 'DIVERT'; /** Every option that was flown ahead, in the order tried. */ tried: ({ choice: 'COAST' | 'RESUME' | 'DIVERT' } & AutopilotForecast)[] }
 export interface LanderTelemetry {
   phase: LanderPhase; mode: LanderMode; alt: number; agl: number | null; vv: number; vh: number; speed: number;
   prop: number; propPct: number; mass: number; thr: number; level: number; tiltF: number; tiltR: number; twr: number;
@@ -104,6 +113,10 @@ export class LanderSim {
   /** Height of the feet plane above the ground under the craft (m). */ agl: number; hFoot: number;
   tPhase: number; dvUsed: number; pendingDt: number; landed: boolean; silent: boolean;
   F: { x: number[]; y: number[]; z: number[] }; W: number[];
+  /** True while the autopilot is flying a contingency descent to the nearest safe ground instead of the planned approach. */
+  divert: boolean;
+  /** What the autopilot decided when it was last engaged, and the flight it predicted for that choice. */
+  engaged: AutopilotDecision | null;
   constructor(eph, s, spec) {
     this.eph = eph; this.spec = spec; this.dt = LD.DT;
     this.E = spec.engine ?? LE; this.G = { cgh: spec.geom?.cgh ?? LD.CGH, foot: spec.geom?.foot ?? LD.FOOT, ik: spec.geom?.inertiaPerKg ?? LD.I_K };
@@ -116,6 +129,7 @@ export class LanderSim {
     this.phase = 'SEP'; this.mode = 'AUTO'; this.input = { pitch: 0, roll: 0, thr: 0 }; this.hold = null; this.rateCmd = false;
     this.events = []; this.site = null; this.terrain = null; this.map = null; this.targets = null; this.tgt = [0, 0]; this.plan = null;
     this.hda = false; this.dryTold = false; this.warnedLow = false; this.landing = null; this.reason = null; this.agl = 1e9; this.hFoot = 1e9; this.tPhase = this.t; this.dvUsed = 0; this.pendingDt = 0; this.landed = false; this.pose = null; this.silent = false;
+    this.divert = false; this.dvSpot = false; this.dvAimed = false; this.dvTop = null; this.engaged = null;
     this.frame();
   }
 
@@ -243,6 +257,8 @@ export class LanderSim {
   setThrustCmd(aT) {                                                     // thrust acceleration → throttle + pointing
     const need = norm(aT) * this.mass; this.dCmd = need > 1e-6 ? unit(aT) : this.dCmd;
     this.cmdThr = need <= 1 ? this.E.minThrottle : clamp(need / this.E.tMax, this.E.minThrottle, 1);
+    // Thrust is only useful along the commanded direction: while the craft is still turning towards it (after hand flying), hold the engine back.
+    const off = this.pointErr(); if (off > 90 * DEG) this.cmdThr = 0; else if (off > 50 * DEG) this.cmdThr = this.E.minThrottle;
   }
   retarget() {                                                            // hazard detection & avoidance: nearest footprint that is flat and boulder-free
     this.hda = true; const [tx, ty] = this.tgt, k = this.map.idx(tx, ty);
@@ -253,6 +269,7 @@ export class LanderSim {
     this.tgt = sp; this.say(`HAZARD AVOIDANCE · RETARGET ${d.toFixed(0)} m ${c}`, 'am');
   }
   autoGuide(h) {
+    if (this.divert) { this.divertGuide(); return; }
     const alt = this.alt(), l = this.local(this.r), ground = this.terrain.ground(l.x, l.y); this.agl = l.h - ground - this.G.cgh;
     if (this.phase === 'BRAKE') {
       const { d, T } = this.timeToGo(LD.HG);
@@ -270,7 +287,7 @@ export class LanderSim {
       const B = this.basis(), vr = this.vrel(), vE = dot(vr, B.E), vN = dot(vr, B.N), vU = dot(vr, B.U), ex = this.tgt[0] - l.x, ey = this.tgt[1] - l.y, e = Math.hypot(ex, ey);
       const hv = clamp(0.2 * e, 0, 6) * (0.15 + 0.85 * clamp(this.agl / 50, 0, 1)), cE = e > 0.05 ? (ex / e) * hv : 0, cN = e > 0.05 ? (ey / e) * hv : 0;
       const vzc = -clamp(0.5 + 0.034 * this.agl, 0.5, 5.0), g = MU_M / (norm(this.r) ** 2);
-      let aE = 0.7 * (cE - vE), aN = 0.7 * (cN - vN), aU = g + 1.1 * (vzc - vU);
+      let aE = 0.7 * (cE - vE), aN = 0.7 * (cN - vN), aU = Math.max(g + 1.1 * (vzc - vU), 0.1);   // never thrust downwards to lose height: gravity does that
       const lim = Math.tan(24 * DEG) * Math.max(aU, 0.3), ah = Math.hypot(aE, aN); if (ah > lim) { aE *= lim / ah; aN *= lim / ah; }
       this.setThrustCmd(add(add(scale(B.E, aE), scale(B.N, aN)), scale(B.U, aU)));
     }
@@ -314,6 +331,191 @@ export class LanderSim {
       const a = this.agl; if (this.phase === 'BRAKE' && a < 2000 && this.alt() < 5000) this.phase = 'APPROACH'; if (a < 135 && this.phase !== 'TERMINAL') this.phase = 'TERMINAL';
     }
   }
+  // ------------------------------------------------------------------ autopilot re-engagement
+  // The planned descent only works from the state it was planned for: the braking burn runs the engine at its limit, so a
+  // few seconds of hand flying (a late ignition, a cut engine, a tilt) leave the original gates out of reach. Whenever the
+  // autopilot is engaged it therefore re-plans from where the lander actually is. It flies each option ahead on a copy of
+  // itself (same physics, same guidance code) and commits to the first one that lands softly:
+  //   COAST   engine off until the ignition point for the site, re-computed for the present orbit (this pass or a later one)
+  //   RESUME  the planned approach, picked up in the phase that fits the present height and speed
+  //   DIVERT  brake at once, then set down on the nearest safe ground (divertGuide)
+  // When nothing lands softly it takes the gentlest outcome; the crash is still reported as one.
+  nearSite(r = this.r) { return !!this.site && dot(unit(this.toMF(r)), this.site.U) > 0.9; }   // within reach of the site's map projection (~780 km)
+  // Next point on the present orbit where the ground distance still to go equals the braking distance (the rule planTo uses).
+  findIgnition(contingency = false, reach = 60e3, horizon = 4 * 3600) {
+    const S = this.site, E = this.E;
+    const look = (r, v, t) => {
+      const F = this.eph.moonFrame(t), sd = this.fromMF(S.U, F), vr = sub(v, cross(this.eph.moonSpin(t), r)), vp = norm(vr);
+      const mEnd = this.mass * Math.exp(-(vp + 350) / (E.isp * G0)), aD = (this.brakeFrac * E.tMax) / (0.5 * (this.mass + mEnd));
+      const dist = contingency ? this.brakeRun(vp).s / 0.9 : (vp * vp) / (2 * aD);          // the contingency descent starts with a tenth of its braking in hand
+      const ang = Math.acos(clamp(dot(unit(r), sd), -1, 1));
+      return { gap: ang * R_MOON - dist, dist, vp, sd, closing: dot(vr, sd) > 0 && ang < 1.2 };
+    };
+    let r = this.r.slice(), v = this.v.slice(), t = this.t, prev = look(r, v, t); const thisPass = prev.closing && prev.gap > 0;
+    for (let i = 0; i * 5 < horizon; i++) {
+      const [r1, v1] = rk4(r, v, [0, 0, 0], 5), now = look(r1, v1, t + 5);
+      if (norm(r1) - R_MOON < 6000) return null;                          // the coast would reach the ground first
+      if (prev.closing && now.closing && prev.gap > 0 && now.gap <= 0) {
+        let lo = 0, hi = 5, a = [r1, v1];
+        for (let k = 0; k < 24; k++) { const mid = (lo + hi) / 2, [rm, vm] = rk4(r, v, [0, 0, 0], mid); if (look(rm, vm, t + mid).gap > 0) lo = mid; else { hi = mid; a = [rm, vm]; } }
+        const L = look(a[0], a[1], t + hi), cr = Math.asin(clamp(dot(L.sd, unit(cross(a[0], a[1]))), -1, 1)) * R_MOON;
+        if (Math.abs(cr) <= reach) return { t: t + hi, r: a[0], v: a[1], vp: L.vp, dist: L.dist, cross: cr, thisPass };
+      }
+      r = r1; v = v1; t += 5; prev = now;
+    }
+    return null;
+  }
+  coastTo(ign) {                                                          // engine off until the re-planned ignition point
+    const S = this.site, rh = this.toMF(unit(ign.r), this.eph.moonFrame(ign.t)), tm = unit(sub(scale(S.U, dot(rh, S.U)), rh)), ap = [dot(tm, S.E), dot(tm, S.N)], an = Math.hypot(ap[0], ap[1]) || 1;
+    this.site = { ...S, appr: [ap[0] / an, ap[1] / an] };
+    this.plan = { ...this.plan, tPDI: ign.t, hPDI: norm(ign.r) - R_MOON, vPDI: ign.vp, range: ign.dist, cross: ign.cross, site: this.site, pred: null };
+    this.phase = 'COAST'; this.tPhase = this.t; this.cmdThr = 0; this.hda = false; this.dCmd = scale(unit(this.v), -1);
+  }
+  resumePowered() {                                                       // the planned approach, in the phase that fits the present state
+    if (!this.nearSite()) return false;
+    const l = this.local(this.r), agl = l.h - this.terrain.ground(l.x, l.y) - this.G.cgh, vr = this.vrel(), up = unit(this.r), vh = norm(sub(vr, scale(up, dot(vr, up))));
+    const d = Math.hypot(this.tgt[0] - l.x, this.tgt[1] - l.y), ph = agl < 135 ? 'TERMINAL' : d < 9000 && vh < 230 && l.h < 6000 ? 'APPROACH' : 'BRAKE';
+    if (ph !== 'TERMINAL' || this.phase !== 'TERMINAL') this.hda = false;
+    this.agl = agl; if (ph !== this.phase) { this.phase = ph; this.tPhase = this.t; }
+    return true;
+  }
+  startDivert(flatOut = false) {                                          // contingency descent; flatOut: brake at once without aiming for the site
+    const ign = flatOut ? null : this.findIgnition(true); this.dvSpot = false; this.dvAimed = false; this.dvTop = null; this.dvFloor = null; this.dvFlat = flatOut; this.hda = false;
+    if (ign && ign.thisPass && ign.t - this.t > 20) this.coastTo(ign); else if (this.phase === 'COAST') { this.phase = 'BRAKE'; this.tPhase = this.t; }
+    this.divert = true;
+  }
+  // Fly a copy of the lander to touchdown under the autopilot and grade the result. Long coasts are integrated in 5 s steps.
+  foresee(c) {
+    c.silent = true; c.mode = 'AUTO'; c.hold = null; const t0 = c.t; let n = 0, tPow = 0;
+    while (c.phase !== 'LANDED' && c.phase !== 'CRASHED' && n++ < 400000 && tPow < 3600) {
+      if (c.phase === 'COAST' && !c.engine && c.plan.tPDI - c.t > 130) {
+        const h = Math.min(5, c.plan.tPDI - c.t - 120); [c.r, c.v] = rk4(c.r, c.v, [0, 0, 0], h); c.t += h; c.q = qFromY(scale(unit(c.v), -1), unit(c.v)); c.w = [0, 0, 0];
+        if (norm(c.r) - R_MOON < 3000) { c.frame(); c.crash('Impact while coasting'); }
+        continue;
+      }
+      c.advance(1); if (c.phase !== 'COAST') tPow += 1;
+    }
+    const g = c.landing, ok = c.phase === 'LANDED', soft = ok && !g.hard, onSpot = soft && c.prop >= 2 && (g.miss == null || g.miss <= 12);   // on the vetted footprint, not merely somewhere on the way to it
+    return {
+      grade: onSpot ? 3 : soft ? 2 : ok ? 1 : 0, phase: c.phase, vv: g ? g.vv : -dot(c.vrel(), unit(c.r)), vh: g ? g.vh : 0,
+      miss: g && g.miss != null ? g.miss : null, off: g && g.x != null ? Math.hypot(g.x, g.y) : null, propLeft: c.prop, time: c.t - t0,
+    };
+  }
+  replan() {
+    this.divert = false; this.dvSpot = false; this.dvAimed = false; this.dvTop = null; this.dvFloor = null; this.dvFlat = false; this.hold = null; this.engaged = null;
+    if (!this.site || !this.plan || !this.terrain || this.landed || this.phase === 'CRASHED' || this.phase === 'SEP' || this.phase === 'DOI') return null;
+    const ign = this.findIgnition(), tried = [];
+    const set = { COAST: (c) => c.coastTo(ign), RESUME: (c) => c.resumePowered(), DIVERT: (c) => c.startDivert(), FLATOUT: (c) => c.startDivert(true) };
+    const attempt = (how) => { const c = this.clone(); if (set[how](c) === false) return null; const f = { choice: how === 'FLATOUT' ? 'DIVERT' : how, how, ...this.foresee(c) }; tried.push(f); return f; };
+    const good = (f) => !!f && f.grade === 3, impact = (f) => Math.hypot(f.vv, f.vh);
+    let pick = null;
+    if (ign && ign.thisPass && (ign.t - this.t > 20 || (this.phase === 'COAST' && !this.engine))) pick = attempt('COAST');   // the site is still ahead: nothing to do until the ignition point
+    if (!good(pick)) pick = attempt('RESUME');
+    if (!good(pick)) {
+      let dv = attempt('DIVERT'); if (!good(dv)) dv = attempt('FLATOUT');
+      // Setting down more than 20 km from the site leaves the mapped terrain; when the orbit is still good, going round for another pass is the better landing.
+      const round = ign && !ign.thisPass && (!good(dv) || dv.off === null || dv.off > 20e3) ? attempt('COAST') : null;
+      pick = good(round) ? round : good(dv) ? dv : null;
+    }
+    if (!pick) pick = tried.slice().sort((a, b) => b.grade - a.grade || impact(a) - impact(b))[0];   // nothing lands softly: take the gentlest end
+    set[pick.how](this);
+    for (const f of tried) delete f.how;
+    this.engaged = { ...pick, tried };
+    if (pick.choice === 'COAST') { const left = this.plan.tPDI - this.t; this.say(`AUTOPILOT · ${ign.thisPass ? 'COASTING TO IGNITION' : 'IGNITION POINT PASSED · GOING ROUND'} · IGNITION IN ${left >= 600 ? (left / 60).toFixed(0) + ' min' : left.toFixed(0) + ' s'}`, ign.thisPass ? 'info' : 'am'); }
+    else if (pick.choice === 'DIVERT') this.say(pick.off !== null && pick.off < 500 ? 'AUTOPILOT · PLANNED APPROACH OUT OF REACH · CONTINGENCY DESCENT TO THE SITE' : `AUTOPILOT · SITE OUT OF REACH · LANDING ON THE NEAREST SAFE GROUND${pick.off !== null && pick.grade > 0 ? ` · ${(pick.off / 1000).toFixed(1)} km AWAY` : ''}`, 'am');
+    if (pick.grade === 0) this.say('AUTOPILOT · NO SAFE LANDING FROM HERE · BRAKING AS HARD AS IT CAN', 'bad');
+    return this.engaged;
+  }
+  // Nearest ground a lander can stand on. Inside the hazard map that is its vetted footprint search; beyond it the terrain model is tested directly.
+  safeGround(x, y, reach = 900) {
+    if (this.map.inside(x, y)) { const s = this.map.safeSpot(x, y, Math.min(200, reach)); if (s) return s; }
+    const T = this.terrain; if (Math.max(Math.abs(x), Math.abs(y)) > T.half) return [x, y];   // past the modelled patch the Moon is a smooth sphere
+    const f = this.G.foot + 1, worst = (px, py) => {                       // steepest slope under the footprint, deg; 99 with a boulder under it
+      let w = T.slopeDeg(px, py, 4); if (T.rockH(px, py) > 0) return 99;
+      for (let k = 0; k < 8; k++) { const a = (k * Math.PI) / 4, qx = px + Math.cos(a) * f, qy = py + Math.sin(a) * f; if (T.rockH(qx, qy) > 0.2) return 99; w = Math.max(w, 0.7 * T.slopeDeg(qx, qy, 2)); }
+      return w;
+    };
+    let best = null, bw = 14;                                              // nothing level in reach: the least steep ground under 14 deg
+    for (let R = 0; R <= reach; R += 12) {
+      const n = Math.max(1, Math.round((2 * Math.PI * R) / 12));
+      for (let k = 0; k < n; k++) { const a = (2 * Math.PI * k) / n, px = x + R * Math.cos(a), py = y + R * Math.sin(a), w = worst(px, py); if (w <= 7) return [px, py]; if (w < bw) { bw = w; best = [px, py]; } }
+    }
+    return best;
+  }
+  // Time and ground distance to shed a ground speed v with the engine at full thrust, a share eta of it horizontal (rocket equation, closed form).
+  brakeRun(v, eta = 0.93) {
+    const ve = this.E.isp * G0, md = this.E.tMax / ve, m0 = this.mass, m1 = m0 * Math.exp(-v / (eta * ve));
+    return { t: (m0 - m1) / md, s: (v * (m0 - m1)) / md - ((eta * ve) / md) * (m0 - m1 - m1 * Math.log(m0 / m1)) };
+  }
+  // Contingency descent. Braking: thrust against the ground speed, throttled so that the lander stops over the aim point when
+  // that is still ahead and within reach, flat out when it is not (it then stops as soon as it can, beyond the aim point);
+  // meanwhile the height follows a cubic that ends ~150 m above the highest ground on the way. Once the ground speed is nearly
+  // gone it picks a safe spot under the stopping point (the aim point itself when that is within 250 m) and comes down on it,
+  // falling freely while it is high and braking at a rate the remaining propellant can pay for.
+  divertGuide() {
+    const E = this.E, up = unit(this.r), rn = norm(this.r), vr = this.vrel(), vv = dot(vr, up), vhV = sub(vr, scale(up, vv)), vh = norm(vhV);
+    const g = MU_M / (rn * rn), aMax = E.tMax / this.mass, ve = E.isp * G0, vi = sub(this.v, scale(up, dot(this.v, up))), gEff = g - dot(vi, vi) / rn;   // weight less the centrifugal relief of the speed over the ground
+    const near = this.nearSite(), l = near ? this.local(this.r) : null, ground = near ? this.terrain.ground(l.x, l.y) : 0, agl = rn - R_MOON - ground - this.G.cgh; this.agl = agl;
+    const e0 = this.fromMF(this.site.E), eL = unit(sub(e0, scale(up, dot(e0, up)))), nL = cross(up, eL);                 // local east and north
+    const pT = unit(this.inertialAt(this.tgt[0], this.tgt[1], 0)), cT = dot(pT, up), wT = sub(pT, scale(up, cT)), nw = norm(wT);
+    const D = nw > 1e-12 ? scale(wT, (Math.acos(clamp(cT, -1, 1)) * R_MOON) / nw) : [0, 0, 0];                            // ground offset of the aim point from the craft
+    const setPhase = (p) => { if (p !== this.phase) { this.phase = p; this.tPhase = this.t; } };
+    if (!this.dvSpot && vh > (this.dvAimed ? 10 : 25)) {
+      const tH = scale(vhV, 1 / vh), along = dot(D, tH) - 40, run = this.brakeRun(vh); let eta = 1, vl = null; this.dvAimed = false;
+      if (along > 0 && cT > 0.2 && !this.dvFlat) {                         // aim point ahead: brake no harder than needed to stop over it
+        const rho = run.s / along; this.dvAimed = rho < 1.3; if (rho < 1) eta = 0.93 * rho;   // run.s keeps 7 % of the thrust in hand
+        const u = unit(D); vl = sub(vhV, scale(u, dot(vhV, u)));           // ground speed across the line to the aim point
+      }
+      const T = Math.max(this.brakeRun(vh, clamp(eta, 0.25, 0.93)).t, 12), mEnd = this.mass * Math.exp(-vh / (0.9 * ve));
+      if (!this.dvTop || Math.abs(this.t - this.dvTop.t) > 1) {            // highest ground under the braking run, re-surveyed once a second
+        let top = ground; if (near) { const ux = dot(tH, eL), uy = dot(tH, nL), sb = 1.2 * Math.max(run.s, along > 0 ? Math.min(along, 60e3) : 0); for (let k = 1; k <= 8; k++) top = Math.max(top, this.terrain.height(l.x + (ux * sb * k) / 8, l.y + (uy * sb * k) / 8)); }
+        this.dvTop = { t: this.t, top };
+      }
+      const dh = rn - R_MOON - (Math.max(this.dvTop.top, ground) + this.G.cgh + 150);          // height above where the braking should end
+      let aU = (-6 * dh) / (T * T) - (4 * vv - 8) / T + gEff;                                  // cubic height profile reaching dh = 0 at -4 m/s when the ground speed is gone
+      const aNet = Math.max((0.8 * E.tMax) / mEnd - g, 0.15), vSafe = Math.sqrt(2 * aNet * Math.max(dh + 100, 0)) + 2;
+      if (vv < -vSafe) aU = Math.max(aU, gEff + (-vSafe - vv));                               // never sink faster than the engine can still arrest
+      aU = clamp(aU, 0, 0.98 * aMax);
+      const aBr = Math.min(eta * aMax, Math.sqrt(aMax * aMax - aU * aU), 0.5 * vh);
+      let aT = add(scale(up, aU), scale(tH, -aBr));
+      if (vl) { const k = Math.min(3 / T, (0.15 * aMax) / Math.max(norm(vl), 1e-6)); aT = add(aT, scale(vl, -k)); }
+      this.setThrustCmd(aT);
+      if (eta < 0.6 * E.minThrottle && aU < 0.3 * E.minThrottle * aMax) { this.cmdThr = 0; this.dCmd = scale(tH, -1); }   // well short of the aim point with height in hand: coast, engine off
+      setPhase(vh > 150 || agl > 6000 ? 'BRAKE' : agl < 135 ? 'TERMINAL' : 'APPROACH');
+      return;
+    }
+    const dvL = this.dvLeft(), aCap = Math.max(0.92 * aMax - g, 0.05);
+    if (!this.dvSpot) {                                                    // ground speed nearly gone: choose where to set down
+      this.dvSpot = true;
+      if (near) {
+        const sx = (vh * vh) / 1.2, px = l.x + (dot(vhV, eL) / (vh || 1)) * sx, py = l.y + (dot(vhV, nL) / (vh || 1)) * sx;   // where the remaining drift ends
+        const fall = Math.sqrt(vv * vv + 2 * g * Math.max(agl, 0)), spare = dvL > 2.2 * fall + 90;                           // propellant for a sideways move as well as the descent
+        if (spare && !this.dvFlat && Math.hypot(px - this.tgt[0], py - this.tgt[1]) <= 250) this.retarget();
+        else { const sp = this.safeGround(px, py, spare ? 900 : clamp((4 * (vv + fall)) / g, 30, 900)); this.tgt = sp || [px, py]; this.hda = true; this.say(sp ? `LANDING POINT SET · ${(Math.hypot(this.tgt[0], this.tgt[1]) / 1000).toFixed(1)} km FROM THE PLANNED SITE` : 'NO SAFE GROUND FOUND NEARBY · LANDING HERE', sp ? 'am' : 'bad'); }
+      }
+    }
+    let ex = 0, ey = 0;
+    if (near) { const pS = unit(this.inertialAt(this.tgt[0], this.tgt[1], 0)), c = dot(pS, up), w = sub(pS, scale(up, c)), n = norm(w), k = n > 1e-12 ? (Math.acos(clamp(c, -1, 1)) * R_MOON) / n : 0; ex = dot(w, eL) * k; ey = dot(w, nL) * k; }
+    const e = Math.hypot(ex, ey), vE = dot(vr, eL), vN = dot(vr, nL);
+    let floor = ground;                                                    // ground to stay clear of: under the craft and, until it is over the spot, on the way there
+    if (near && e > 3) {
+      if (!this.dvFloor || Math.abs(this.t - this.dvFloor.t) > 0.5) { let top = -1e9; for (let k = 1; k <= 8; k++) top = Math.max(top, this.terrain.ground(l.x + ((this.tgt[0] - l.x) * k) / 8, l.y + ((this.tgt[1] - l.y) * k) / 8)); this.dvFloor = { t: this.t, top }; }
+      floor = Math.max(floor, this.dvFloor.top);
+    }
+    const hEff = rn - R_MOON - floor - this.G.cgh - clamp(e - 3, 0, 40);   // and up to 40 m higher than that while still off to one side
+    // Descent rate: a constant deceleration aB down to 0.6 m/s for the last 1.5 m. Gentle while there is propellant to spare, the engine's limit when there is not.
+    const vFall = Math.sqrt(vv * vv + 2 * g * Math.max(hEff, 0)), R = (dvL - 20 - vh) / Math.max(vFall, 1);
+    const aB = clamp(R > 1.05 ? (1.15 * g) / (R - 1) : aCap, 0.35 * aCap, aCap);
+    const vzc = hEff >= 0 ? -Math.sqrt(0.36 + 2 * aB * Math.max(hEff - 1.5, 0)) : Math.min(2, -0.3 * hEff);
+    const hv = Math.min(0.2 * e, Math.sqrt(0.8 * e), 6 + 0.01 * clamp(agl, 0, 1400)) * (0.3 + 0.7 * clamp(agl / 30, 0, 1)) * clamp(1 + hEff / 15, 0, 1);   // no sideways move below the ground ahead
+    const cE = e > 0.05 ? (ex / e) * hv : 0, cN = e > 0.05 ? (ey / e) * hv : 0;
+    const want = g + (hEff > 1.5 && vv < 0 ? aB * clamp(vv / vzc, 0, 1) : 0) + 1.1 * (vzc - vv), aU = clamp(want, 0.1, 0.98 * aMax);
+    let aE = 0.7 * (cE - vE), aN = 0.7 * (cN - vN);
+    const room = Math.sqrt(Math.max(aMax * aMax - aU * aU, 0)), lim = agl > 300 ? 0.9 * room : Math.min(Math.tan(24 * DEG) * Math.max(aU, 0.3), room), ah = Math.hypot(aE, aN); if (ah > lim) { aE *= lim / ah; aN *= lim / ah; }
+    this.setThrustCmd(add(add(scale(eL, aE), scale(nL, aN)), scale(up, aU)));
+    if (want < 0.3 * E.minThrottle * aMax && agl > 200 && ah < 0.2) this.cmdThr = 0;         // far too high or still climbing: let gravity do the work, relight on the way down
+    setPhase(agl < 135 ? 'TERMINAL' : 'APPROACH');
+  }
   heading(up) {                                                           // horizontal reference direction ("forward"): the planned approach track, else the direction of travel
     let f; if (this.site) { const B = this.basis(); f = add(scale(B.E, this.site.appr[0]), scale(B.N, this.site.appr[1])); } else f = this.vrel();
     f = sub(f, scale(up, dot(f, up))); return norm(f) > 1e-9 ? unit(f) : unit(cross(up, [0, 0, 1]));
@@ -334,7 +536,7 @@ export class LanderSim {
   setMode(m) {
     if (m === this.mode || this.landed || this.phase === 'CRASHED') return false;
     if (m === 'MANUAL' && (this.phase === 'SEP' || this.phase === 'DOI')) return false;   // the deorbit burn is always automatic
-    this.mode = m; if (m === 'MANUAL') { this.level = this.engine ? clamp(this.thr, 0, 1) : 0; this.hold = null; this.say('MANUAL CONTROL', 'am'); } else { this.hda = this.phase === 'TERMINAL' ? this.hda : false; this.say('AUTOPILOT ENGAGED', 'ok'); }
+    this.mode = m; if (m === 'MANUAL') { this.level = this.engine ? clamp(this.thr, 0, 1) : 0; this.hold = null; this.say('MANUAL CONTROL', 'am'); } else { this.hda = this.phase === 'TERMINAL' ? this.hda : false; this.say('AUTOPILOT ENGAGED', 'ok'); this.replan(); }
     return true;
   }
   setInput(i) { Object.assign(this.input, i); }                           // {pitch, roll} ∈ [-1, 1] rate commands, thr ∈ [-1, 1] throttle slew
@@ -388,28 +590,33 @@ export class LanderSim {
   // ------------------------------------------------------------------ contact, touchdown, rest
   contact() {
     if (!this.site) { if (norm(this.r) - R_MOON < this.G.cgh) this.crash(`Impact before a landing site was established (${(norm(this.vrel())).toFixed(0)} m/s)`); return; }
-    const l = this.local(this.r); if (Math.abs(l.x) > 40000 || Math.abs(l.y) > 40000) { if (l.h < this.G.cgh) this.crash('Impact'); return; }
+    if (!this.nearSite()) {                                                // beyond the site's map projection the Moon is a smooth sphere
+      let hmin = 1e9; for (const f of this.feet()) hmin = Math.min(hmin, norm(f) - R_MOON);
+      this.agl = norm(this.r) - R_MOON - this.G.cgh; this.hFoot = hmin; if (hmin <= 0) this.touchdown(null); return;
+    }
+    const l = this.local(this.r);
     this.agl = l.h - this.terrain.ground(l.x, l.y) - this.G.cgh;
     let hmin = 1e9; const F = this.F;
     for (const f of this.feet()) { const fl = this.local(f, F); hmin = Math.min(hmin, fl.h - this.terrain.ground(fl.x, fl.y)); }
     this.hFoot = hmin; if (hmin <= 0) this.touchdown(l);
   }
-  touchdown(l) {
-    const vr = this.vrel(), up = unit(this.r), vv = dot(vr, up), vh = norm(sub(vr, scale(up, vv))), B = this.basis(), nl = this.terrain.normal(l.x, l.y, this.G.foot);
-    const n = unit(add(add(scale(B.E, nl[0]), scale(B.N, nl[1])), scale(B.U, nl[2]))), by = qrot(this.q, [0, 1, 0]);
-    const tilt = Math.acos(clamp(dot(by, n), -1, 1)) / DEG, slope = Math.acos(clamp(dot(n, up), -1, 1)) / DEG, down = -vv, miss = Math.hypot(l.x - this.tgt[0], l.y - this.tgt[1]);
-    const m = { vv: down, vh, tilt, slope, miss, x: l.x, y: l.y, propLeft: this.prop, mass: this.mass, hda: this.hda, t: this.t, dvUsed: this.dvUsed };
+  touchdown(l) {                                                          // l: site coordinates of the craft, or null where the site map does not reach
+    const vr = this.vrel(), up = unit(this.r), vv = dot(vr, up), vh = norm(sub(vr, scale(up, vv))), B = this.basis();
+    const flat = !l || Math.max(Math.abs(l.x), Math.abs(l.y)) > this.terrain.half, nl = flat ? null : this.terrain.normal(l.x, l.y, this.G.foot);   // past the modelled patch the ground is the bare sphere
+    const n = flat ? up : unit(add(add(scale(B.E, nl[0]), scale(B.N, nl[1])), scale(B.U, nl[2]))), by = qrot(this.q, [0, 1, 0]);
+    const tilt = Math.acos(clamp(dot(by, n), -1, 1)) / DEG, slope = Math.acos(clamp(dot(n, up), -1, 1)) / DEG, down = -vv, miss = l ? Math.hypot(l.x - this.tgt[0], l.y - this.tgt[1]) : undefined;
+    const m = { vv: down, vh, tilt, slope, miss, x: l ? l.x : undefined, y: l ? l.y : undefined, propLeft: this.prop, mass: this.mass, hda: this.hda, t: this.t, dvUsed: this.dvUsed };
     const bad = [];
     if (down > LD.LIM.vv) bad.push(`vertical speed ${down.toFixed(1)} m/s (limit ${LD.LIM.vv})`); if (vh > LD.LIM.vh) bad.push(`horizontal speed ${vh.toFixed(1)} m/s (limit ${LD.LIM.vh})`);
     if (tilt > LD.LIM.tilt) bad.push(`tilt ${tilt.toFixed(0)}° from the surface normal (limit ${LD.LIM.tilt}°)`); if (slope > LD.LIM.slope) bad.push(`${slope.toFixed(0)}° slope (limit ${LD.LIM.slope}°)`);
     // settle: align the body with the ground plane, centre of gravity one leg-length above it
-    const gC = this.terrain.ground(l.x, l.y), cgPos = add(this.inertialAt(l.x, l.y, gC), scale(n, this.G.cgh)), xRef = qrot(this.q, [1, 0, 0]);
-    this.pose = { pMF: this.toMF(cgPos), nMF: this.toMF(n), xMF: this.toMF(xRef), x: l.x, y: l.y };
+    const cgPos = l ? add(this.inertialAt(l.x, l.y, this.terrain.ground(l.x, l.y)), scale(n, this.G.cgh)) : scale(up, R_MOON + this.G.cgh), xRef = qrot(this.q, [1, 0, 0]);
+    this.pose = { pMF: this.toMF(cgPos), nMF: this.toMF(n), xMF: this.toMF(xRef), x: m.x, y: m.y };
     this.engine = false; this.thr = 0; this.cmdThr = 0; this.w = [0, 0, 0];
     if (bad.length) { m.destroyed = true; this.landing = m; this.reason = 'LANDER DESTROYED ON IMPACT — ' + bad.join('; '); this.phase = 'CRASHED'; this.say('IMPACT', 'bad'); }
     else {
       const hard = down > 3.0 || vh > 1.5 || tilt > 12;
-      m.hard = hard; m.score = Math.round(clamp(100 - 8 * Math.max(0, down - 0.7) - 18 * Math.max(0, vh - 0.2) - 1.8 * Math.max(0, tilt - 2) - 1.5 * Math.max(0, slope - 5) - Math.min(15, 0.05 * Math.max(0, miss - 30)) + 10 * (this.prop / this.prop0), 0, 100));
+      m.hard = hard; m.score = Math.round(clamp(100 - 8 * Math.max(0, down - 0.7) - 18 * Math.max(0, vh - 0.2) - 1.8 * Math.max(0, tilt - 2) - 1.5 * Math.max(0, slope - 5) - Math.min(15, 0.05 * Math.max(0, (miss ?? 1e9) - 30)) + 10 * (this.prop / this.prop0), 0, 100));
       m.rating = hard ? 'HARD LANDING' : m.score >= 90 ? 'PERFECT' : m.score >= 75 ? 'EXCELLENT' : m.score >= 55 ? 'GOOD' : 'ROUGH';
       this.landing = m; this.landed = true; this.phase = 'LANDED'; this.say(hard ? `HARD LANDING · ${down.toFixed(1)} m/s` : `TOUCHDOWN · ${down.toFixed(2)} m/s · ${m.rating}`, hard ? 'am' : 'ok');
     }
@@ -426,7 +633,7 @@ export class LanderSim {
   eci() { const rm = this.eph.moonAt(this.t), vm = this.eph.moonVelAt(this.t); return { r: add(rm, this.r), v: add(vm, this.v), a: qrot(this.q, [0, 1, 0]), t: this.t }; }
   maxWarp() {
     if (this.phase === 'COAST' && this.plan && this.mode === 'AUTO') { const left = this.plan.tPDI - this.t; return left < 90 ? 1 : left < 300 ? 10 : left < 1200 ? 50 : left < 2400 ? 100 : 500; }
-    if (this.phase === 'COAST') return 100;
+    if (this.phase === 'COAST') { const left = this.plan ? this.plan.tPDI - this.t : 1e9; return left > 1200 ? 100 : left > 300 ? 50 : left > 90 ? 10 : left > -30 ? 1 : 10; }   // by hand: slow down for the ignition point as the autopilot does
     return this.landed ? 5 : 1;
   }
   telemetry() {

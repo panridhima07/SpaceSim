@@ -3,6 +3,7 @@
 
 import type { Flaw, FlightEvent, RocketModel, SimConfig, SimState } from '../types';
 import { atmosphere } from './atmosphere';
+import { massProps } from './massprops';
 
 export interface AirframeMaterial {
   name: string;
@@ -88,6 +89,52 @@ export function ejectionChargeMass(volume: number, targetPressure = 103e3): numb
   return (targetPressure * volume) / 2.19e5;
 }
 
+export interface TubeAxialLoad {
+  /** Peak axial load over powered flight, N. */
+  peak: number;
+  /** Time of that peak, s. */
+  t: number;
+  /** Mass of everything whose centre is ahead of the tube's aft end (motor excluded), kg. */
+  massAhead: number;
+}
+
+/**
+ * Peak axial compressive load on each body tube, keyed by component id.
+ * N = (mAhead / mass) * (thrust - drag) + drag, with mAhead / mass clamped to 1 and all
+ * drag conservatively assumed to act ahead of the tube.
+ */
+export function tubeAxialLoads(log: SimState[], rocket: RocketModel): Map<string, TubeAxialLoad> {
+  // Per-component mass and centre of gravity, via massProps on a one-component rocket.
+  const parts = rocket.components.map((c) => {
+    const mp = massProps({ ...rocket, components: [c], stages: undefined, sideBodies: undefined }, null, 0);
+    return { m: mp.mass, x: mp.cgX };
+  });
+
+  const out = new Map<string, TubeAxialLoad>();
+  rocket.components.forEach((c) => {
+    if (c.kind !== 'bodytube') return;
+    const xAft = c.x + c.length;
+    let massAhead = 0;
+    for (const p of parts) {
+      if (p.x < xAft && Number.isFinite(p.m) && p.m > 0) massAhead += p.m;
+    }
+    let peak = 0;
+    let t = 0;
+    for (const s of log) {
+      if (!(s.thrust > 0) || !(s.mass > 0)) continue;
+      const drag = Number.isFinite(s.drag) ? s.drag : 0;
+      const frac = Math.min(1, massAhead / s.mass);
+      const n = frac * (s.thrust - drag) + drag;
+      if (n > peak) {
+        peak = n;
+        t = s.t;
+      }
+    }
+    out.set(c.id, { peak, t, massAhead });
+  });
+  return out;
+}
+
 export function analyzeEnvironment(
   sim: { log: SimState[]; events: FlightEvent[] },
   rocket: RocketModel,
@@ -139,16 +186,9 @@ export function analyzeEnvironment(
     }
   }
 
-  // 2. Airframe crushing on body tubes under axial thrust.
-  let maxThrust = 0;
-  let maxThrustT = 0;
-  for (const s of log) {
-    if (s.thrust > maxThrust) {
-      maxThrust = s.thrust;
-      maxThrustT = s.t;
-    }
-  }
-
+  // 2. Airframe crushing on body tubes under axial load. A tube only carries the
+  // force needed to accelerate what sits ahead of it, plus the drag on those parts.
+  const loads = tubeAxialLoads(log, rocket);
   for (const c of rocket.components) {
     if (c.kind !== 'bodytube' || c.thickness <= 0) continue;
     const mat = materialFromDensity(c.density);
@@ -156,16 +196,18 @@ export function analyzeEnvironment(
 
     const crush = tubeCrushLoad(c.outerRadius, c.thickness, mat);
     if (crush <= 0) continue;
-    const util = maxThrust / crush;
+    const load = loads.get(c.id);
+    if (!load) continue;
+    const util = load.peak / crush;
     if (util > 0.5) {
       flaws.push({
         id: `airframe-crush:${c.id}`,
         severity: util > 1 ? 'critical' : 'warning',
         title: `Airframe crush load: ${c.name}`,
-        detail: `Peak thrust of ${maxThrust.toFixed(1)} N ${util > 1 ? 'exceeds' : 'approaches'} the ${crush.toFixed(1)} N crush load of ${c.name}.`,
+        detail: `Peak axial load of ${load.peak.toFixed(1)} N (thrust carried by the ${load.massAhead.toFixed(3)} kg ahead of this tube) ${util > 1 ? 'exceeds' : 'approaches'} the ${crush.toFixed(1)} N crush load of ${c.name}.`,
         fix: 'Use a thicker wall, a stiffer tube, or a lower-thrust motor.',
-        t: maxThrustT,
-        value: maxThrust,
+        t: load.t,
+        value: load.peak,
         limit: crush,
         unit: 'N',
       });

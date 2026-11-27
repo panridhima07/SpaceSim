@@ -36,11 +36,20 @@ const time = (sim: Sim, type: string): number => {
 };
 
 describe('manual flight', () => {
-  it('flies exactly as before at full throttle with no steering', () => {
+  it('flies exactly as before at full throttle with no steering, until recovery', () => {
+    // The two part ways only where the automatic flight fires its ejection charge and parachute.
+    const whole = flying();
+    finish(whole);
+    const recoveryT = Math.min(
+      ...whole.events.filter((e) => e.type === 'ejection' || e.type === 'chuteDeploy').map((e) => e.t),
+    );
+    expect(recoveryT).toBeGreaterThan(time(whole, 'burnout'));
     const auto = flying();
     const manual = flying();
-    finish(auto);
-    finish(manual, ctl({ throttle: 1 }));
+    while (auto.state.t < recoveryT - 0.1) {
+      auto.step(0.05);
+      manual.step(0.05, ctl({ throttle: 1 }));
+    }
     expect(manual.state.t).toBe(auto.state.t);
     expect(manual.state.pos).toEqual(auto.state.pos);
     expect(manual.events.map((e) => [e.type, e.t])).toEqual(auto.events.map((e) => [e.type, e.t]));
@@ -126,6 +135,29 @@ describe('manual flight', () => {
     expect(sim.state.thrust).toBe(0);
     expect(sim.state.phase).toBe('descent');
     expect(sim.events.filter((e) => e.type === 'chuteDeploy')).toHaveLength(1);
+  });
+
+  it('never opens the parachute on its own when hand-flown', () => {
+    const auto = flying();
+    finish(auto);
+    expect(auto.events.some((e) => e.type === 'chuteDeploy')).toBe(true);
+
+    const sim = flying();
+    finish(sim, ctl({ throttle: 1, rate: HOLD }));
+    expect(sim.done).toBe(true);
+    expect(sim.state.chuteDeployed).toBe(false);
+    expect(sim.events.some((e) => e.type === 'chuteDeploy' || e.type === 'ejection')).toBe(false);
+  });
+
+  it('still opens it from the pilot after apogee', () => {
+    const sim = flying();
+    for (let i = 0; i < 4000 && !sim.events.some((e) => e.type === 'apogee'); i++) {
+      sim.step(0.05, ctl({ throttle: 1, rate: HOLD }));
+    }
+    fly(sim, 1, ctl({ rate: HOLD }));
+    expect(sim.state.chuteDeployed).toBe(false);
+    expect(sim.deployChutes()).toBe(true);
+    expect(sim.state.phase).toBe('descent');
   });
 
   it('has no stage to drop on a single-stage rocket', () => {

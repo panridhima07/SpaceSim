@@ -62,10 +62,8 @@
   min-height: 48px;
   padding: 4px 8px;
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--sfb-text, #ededee);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0) 55%),
@@ -431,17 +429,178 @@
   height: calc(var(--fdk-arrow) * 0.5);
 }
 
-/* ---------- Phone, portrait ---------- */
+/* ---------- Phone, portrait ----------
+   The sky is the screen: one slim instrument strip on top, a throttle under the left thumb and a
+   single two-column block under the right thumb. Nothing sits in the middle. */
 
 @media (max-width: 600px) {
   .fdk {
     --fdk-arrow: 76px;
     --fdk-engine: 60px;
-    --fdk-lever: 190px;
+    --fdk-lever: 240px;
+    --fdk-block: calc(var(--fdk-arrow) * 2 + var(--fdk-gap));
+  }
+
+  /* Flat, see-through keys: they must not hide the rocket. */
+  .fdk.fdk .fdk-btn {
+    background: rgba(10, 12, 16, 0.58);
+    border-color: rgba(255, 255, 255, 0.26);
+    box-shadow: none;
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+  }
+
+  .fdk.fdk .fdk-btn.is-held {
+    background: rgba(245, 166, 91, 0.28);
+  }
+
+  /* Unavailable keys stay legible over a bright launch pad. */
+  .fdk.fdk .fdk-btn:disabled {
+    opacity: 0.6;
+    color: rgba(237, 237, 238, 0.6);
+    background: rgba(10, 12, 16, 0.72);
+  }
+
+  /* Instrument strip: readouts in one line, then mode and time controls. */
+  .fdk-top {
+    align-self: stretch;
+    justify-content: space-between;
+    row-gap: 2px;
+    padding: 6px 8px 2px;
+    background: rgba(10, 12, 16, 0.62);
+    border: 0;
+  }
+
+  .fdk-readouts {
+    order: 1;
+    flex-basis: 100%;
+    flex-wrap: nowrap;
+    justify-content: space-between;
+    overflow-x: auto;
+    scrollbar-width: none;
+    pointer-events: auto;
+    touch-action: pan-x;
+  }
+
+  .fdk-readout-label {
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .fdk-readout-value {
+    font-size: 15px;
+  }
+
+  .fdk .fdk-mode {
+    order: 2;
+    min-height: 44px;
+    padding: 0 12px;
+    font-size: 12px;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .fdk-time {
+    order: 3;
+    margin-left: auto;
+    gap: 0;
+  }
+
+  .fdk.fdk .fdk-time .fdk-btn {
+    min-width: 44px;
+    min-height: 44px;
+    background: none;
+    border: 0;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  /* Left thumb: the lever's ends are full and idle, so MAX and MIN are not needed. */
+  .fdk.fdk .fdk-max,
+  .fdk.fdk .fdk-min {
+    display: none;
+  }
+
+  .fdk-left {
+    width: 64px;
+  }
+
+  .fdk-lever {
+    width: 60px;
+    background: rgba(10, 12, 16, 0.58);
+    border-radius: 30px;
+  }
+
+  .fdk-track {
+    top: 22px;
+    bottom: 22px;
+    left: calc(50% - 10px);
+    width: 20px;
+    border-radius: 10px;
+  }
+
+  .fdk-fill {
+    border-radius: 10px;
+  }
+
+  .fdk-handle {
+    left: -16px;
+    width: 52px;
+    height: 32px;
+    border-radius: 16px;
+  }
+
+  /* Right thumb: everything lines up on the width of the two turn arrows. */
+  .fdk-right {
+    align-items: stretch;
+    width: var(--fdk-block);
+  }
+
+  .fdk-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .fdk-toggles {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--fdk-gap);
+    max-width: none;
+  }
+
+  .fdk.fdk .fdk-stage {
+    width: 100%;
+    min-width: 0;
+    min-height: 52px;
+    font-size: 16px;
+    letter-spacing: 0;
+    text-transform: none;
+    background: var(--sfb-accent, #f5a65b);
+  }
+
+  .fdk.fdk .fdk-stage:disabled {
+    color: var(--sfb-text, #ededee);
+    background: rgba(10, 12, 16, 0.58);
+  }
+
+  .fdk-tilt {
+    flex-direction: row;
+    gap: var(--fdk-gap);
+  }
+
+  .fdk.fdk .fdk-tilt .fdk-btn {
+    flex: 1 1 0;
+    flex-direction: column;
+    gap: 0;
+    min-width: 0;
+    min-height: 56px;
+    padding: 2px;
+    font-size: 11px;
+    border-radius: 16px;
   }
 
   .fdk-rotate {
-    gap: 10px;
+    gap: var(--fdk-gap);
   }
 
   /* A smaller arrow keeps a two-line caption inside the circle. */
@@ -449,26 +608,20 @@
     width: calc(var(--fdk-arrow) * 0.42);
     height: calc(var(--fdk-arrow) * 0.42);
   }
+}
 
-  /* Mode chip and time controls share the first row; the readouts sit under them. */
-  .fdk-top {
-    align-self: stretch;
-    justify-content: space-between;
-    row-gap: 4px;
+/* Narrow phones: tighten the time controls so they stay on the mode chip's row. */
+@media (max-width: 380px) {
+  .fdk .fdk-mode {
+    padding: 0 8px;
   }
 
-  .fdk-time {
-    order: 2;
-    margin-left: auto;
+  .fdk.fdk .fdk-time .fdk-btn {
+    min-width: 40px;
   }
 
-  .fdk-readouts {
-    order: 3;
-    flex-basis: 100%;
-  }
-
-  .fdk-toggles {
-    max-width: 220px;
+  .fdk-warp-text {
+    min-width: 34px;
   }
 }
 
@@ -489,6 +642,29 @@
 
   .fdk-left {
     gap: 4px;
+  }
+
+  /* No height to spare: MAX and MIN go, and the lever takes their room. */
+  .fdk.fdk .fdk-max,
+  .fdk.fdk .fdk-min {
+    display: none;
+  }
+
+  .fdk-lever {
+    width: 56px;
+    background: rgba(10, 12, 16, 0.58);
+    border-radius: 28px;
+  }
+
+  .fdk-track {
+    top: 18px;
+    bottom: 18px;
+  }
+
+  .fdk-handle {
+    left: -17px;
+    height: 28px;
+    border-radius: 14px;
   }
 
   /* Stage and toggles move beside the tilt pair so the column fits the height. */

@@ -10,6 +10,7 @@ import {
   finRootStress,
   materialFromDensity,
   recoveryTemp,
+  tubeAxialLoads,
   tubeCrushLoad,
 } from './envFlaws';
 import { FIXTURE_MOTOR, FIXTURE_ROCKET } from './fixture';
@@ -187,13 +188,86 @@ describe('analyzeEnvironment', () => {
         },
       ],
     };
-    const log = [makeState({ t: 0.2, thrust: 400 })];
+    // Thrust raised from 400 N: the tube only carries its own share (~13 %) of it now.
+    const log = [makeState({ t: 0.2, thrust: 3000 })];
     const flaws = analyzeEnvironment({ log, events: [] }, rocket, makeConfig());
     const crush = flaws.filter((f) => f.id.startsWith('airframe-crush:'));
     expect(crush).toHaveLength(1);
     expect(crush[0].severity).toBe('critical');
     // Past the crush load the text must not say it merely approaches it.
     expect(crush[0].detail).toContain('exceeds');
+  });
+
+  function twoTubeRocket(): RocketModel {
+    const tube = (id: string, x: number): RocketModel['components'][number] => ({
+      kind: 'bodytube',
+      id,
+      name: id,
+      x,
+      length: 0.1,
+      density: 680,
+      outerRadius: 0.0125,
+      thickness: 0.0005,
+      massOverride: 0.05,
+    });
+    return {
+      name: 'Two tubes',
+      length: 0.27,
+      maxRadius: 0.0125,
+      stageCount: 1,
+      warnings: [],
+      components: [
+        {
+          kind: 'nosecone',
+          id: 'nose',
+          name: 'Nose',
+          x: 0,
+          length: 0.07,
+          density: 680,
+          shape: 'ogive',
+          shapeParam: 0,
+          baseRadius: 0.0125,
+          thickness: 0.001,
+          massOverride: 0.01,
+        },
+        tube('fore', 0.07),
+        tube('aft', 0.17),
+      ],
+    };
+  }
+
+  it('loads a forward tube less than an aft tube of the same wall', () => {
+    const rocket = twoTubeRocket();
+    const log = [makeState({ t: 0.1, mass: 0.2, thrust: 100 })];
+    const loads = tubeAxialLoads(log, rocket);
+    // fore: nose 0.01 + fore 0.05 = 0.06 kg ahead; aft: all 0.11 kg.
+    expect(loads.get('fore')!.massAhead).toBeCloseTo(0.06, 9);
+    expect(loads.get('aft')!.massAhead).toBeCloseTo(0.11, 9);
+    expect(loads.get('fore')!.peak).toBeLessThan(loads.get('aft')!.peak);
+  });
+
+  it('does not flag a forward tube that carries little while the aft tube is flagged', () => {
+    const rocket = twoTubeRocket();
+    // Crush load of this wall is ~310 N (warning above ~155 N). Fore carries 0.06/0.2 = 30 %
+    // of 400 N = 120 N; aft carries 55 % = 220 N.
+    const log = [makeState({ t: 0.1, mass: 0.2, thrust: 400 })];
+    const crush = analyzeEnvironment({ log, events: [] }, rocket, makeConfig()).filter((f) =>
+      f.id.startsWith('airframe-crush:'),
+    );
+    expect(crush.map((f) => f.id)).toEqual(['airframe-crush:aft']);
+  });
+
+  it('equals thrust * mAhead / mass when drag is zero, and adds drag otherwise', () => {
+    const rocket = twoTubeRocket();
+    const loads = tubeAxialLoads([makeState({ t: 0.3, mass: 0.2, thrust: 100 })], rocket);
+    // 100 * 0.06 / 0.2 = 30 N
+    expect(loads.get('fore')!.peak).toBeCloseTo(30, 9);
+    expect(loads.get('fore')!.t).toBe(0.3);
+    const withDrag = tubeAxialLoads([makeState({ mass: 0.2, thrust: 100, drag: 10 })], rocket);
+    // 0.3 * (100 - 10) + 10 = 37 N
+    expect(withDrag.get('fore')!.peak).toBeCloseTo(37, 9);
+    // Unpowered samples carry no crush load.
+    expect(tubeAxialLoads([makeState({ thrust: 0, drag: 10 })], rocket).get('fore')!.peak).toBe(0);
   });
 
   it('flags excessive fin root bending stress on balsa fins as critical', () => {

@@ -44,10 +44,28 @@ import {
 } from './vec';
 import { makeWindInto, siteAtmosphere } from './wind';
 import { firingMotors, motorCount } from './cluster';
+import { cdAtReynolds } from './aero';
 
 const MAX_SUBSTEP = 0.002; // s, while in atmosphere or thrusting
-const COAST_SUBSTEP = 0.1; // s, above HIGH_ALTITUDE and not thrusting
+const COAST_SUBSTEP = 0.1; // s, above HIGH_ALTITUDE and not thrusting: the shortest coast step
+/**
+ * s, longest coast step above HIGH_ALTITUDE. The air is too thin to steer the rocket there, so
+ * the step only has to follow the orbit (period of an hour or more) and the body's own spin:
+ * it is held to COAST_TURN rad of rotation per step, and to COAST_SUBSTEP while hand-flown.
+ */
+const COAST_SUBSTEP_MAX = 1;
+const COAST_TURN = 0.1; // rad of body rotation per coast step
+/** Pa. Above this the fins can still swing the rocket (around 100 km at orbital-class speeds), so coast steps stay short. */
+const COAST_MAX_Q = 1;
 const HIGH_ALTITUDE = 100_000; // m
+/**
+ * s, substep once every deployed canopy is open and has settled. The slowest dynamics under a
+ * canopy (pendulum swing, CHUTE_DAMPING_RATE) are tens of times slower than this, and the descent
+ * is most of a flight's sim time, so this is where most of the compute goes.
+ */
+const CANOPY_SUBSTEP = 0.02;
+/** s after full inflation before the canopy substep is used, so the opening shock is resolved finely. */
+const CANOPY_SETTLE_TIME = 1;
 const LOG_INTERVAL = 0.02; // s of sim time
 const MAX_SUBSTEPS_PER_CALL = 20_000;
 const CHUTE_DAMPING_RATE = 10; // 1/s, angular damping rate under canopy (torque = -rate * I * omega)
@@ -358,6 +376,7 @@ export function createSim(
     const mach = atm.soundSpeed > 0 ? v / atm.soundSpeed : 0;
     const q = 0.5 * atm.rho * v * v;
     const aero: AeroProps = deps.aeroProps(activeRocket, mach, mp.cgX);
+    const cd = cdAtReynolds(aero, mach, v, atm.rho, atm.temperature, activeRocket.length);
     const vDotA = vrx * ax + vry * ay + vrz * az;
     const alpha = v < 0.1 ? 0 : Math.acos(clamp(vDotA / v, -1, 1));
 
@@ -387,7 +406,7 @@ export function createSim(
       const cfx = vrx * cs;
       const cfy = vry * cs;
       const cfz = vrz * cs;
-      const bodyDrag = q * aero.refArea * aero.cd;
+      const bodyDrag = q * aero.refArea * cd;
       let bfx = 0;
       let bfy = 0;
       let bfz = 0;
@@ -411,13 +430,13 @@ export function createSim(
       const pendX = ly * cfz - lz * cfy;
       const pendY = lz * cfx - lx * cfz;
       const pendZ = lx * cfy - ly * cfx;
-      rotate(qx, qy, qz, qw, omega[0], omega[1], omega[2], sO);
-      const ds = -CHUTE_DAMPING_RATE * mp.iPitch;
-      tx = pendX + sO[0] * ds;
-      ty = pendY + sO[1] * ds;
-      tz = pendZ + sO[2] * ds;
+      // The rotational damping (CHUTE_DAMPING_RATE on each body axis) is added in the body frame
+      // below, so a slender rocket's small roll inertia does not turn it into a stiff term.
+      tx = pendX;
+      ty = pendY;
+      tz = pendZ;
     } else {
-      drag = q * aero.refArea * aero.cd;
+      drag = q * aero.refArea * cd;
       if (v > 0) {
         const ds = -drag / v;
         fx = vrx * ds;
@@ -523,6 +542,12 @@ export function createSim(
     od[0] = (sO[0] - g0) / iP;
     od[1] = (sO[1] - g1) / iR;
     od[2] = (sO[2] - g2) / iP;
+    if (chuteCdA > 0) {
+      // Under a canopy: torque = -CHUTE_DAMPING_RATE * I * omega about each body axis.
+      od[0] -= CHUTE_DAMPING_RATE * o0;
+      od[1] -= CHUTE_DAMPING_RATE * o1;
+      od[2] -= CHUTE_DAMPING_RATE * o2;
+    }
 
     // A hand-flown rocket turns as commanded, in the air or coasting; under a parachute it hangs.
     const rate = controls.rate;
@@ -619,6 +644,11 @@ export function createSim(
   const V4: Vec3 = [0, 0, 0];
   const W4: Vec3 = [0, 0, 0];
   let evalMain = makeEval();
+  // State at the start of the last committed substep, for locating the ground crossing.
+  let prevT = 0;
+  let prevPos: Vec3 | undefined;
+  let prevVel: Vec3 | undefined;
+  let prevAltitude = NaN;
 
   // evalMain holds the evaluation of the committed state. The next step's first RK4 stage
   // evaluates exactly that state again, so it is reused unless something evaluate() reads from
@@ -734,6 +764,25 @@ export function createSim(
   }
 
   function touchdown(): void {
+    // The step that crossed the ground ended below it: move back to where the altitude was zero
+    // (linear in the step), so the landing time, point and speed do not depend on the step size.
+    if (prevPos && prevVel && prevAltitude > 0 && state.altitude < 0 && prevT < state.t) {
+      const f = prevAltitude / (prevAltitude - state.altitude);
+      const p = state.pos;
+      const v = state.vel;
+      state.pos = [
+        prevPos[0] + (p[0] - prevPos[0]) * f,
+        prevPos[1] + (p[1] - prevPos[1]) * f,
+        prevPos[2] + (p[2] - prevPos[2]) * f,
+      ];
+      state.vel = [
+        prevVel[0] + (v[0] - prevVel[0]) * f,
+        prevVel[1] + (v[1] - prevVel[1]) * f,
+        prevVel[2] + (v[2] - prevVel[2]) * f,
+      ];
+      state.speed = len(state.vel);
+      state.t = prevT + (state.t - prevT) * f;
+    }
     const impact = state.speed;
     const vDown = Math.max(0, -radialVelocity(state.pos, state.vel));
     const vHoriz = Math.sqrt(Math.max(0, impact * impact - vDown * vDown));
@@ -900,12 +949,20 @@ export function createSim(
     const rv = radialVelocity(state.pos, state.vel);
 
     if (apogeeT === undefined && railExited && prevRadialV > 0 && rv <= 0) {
-      apogeeT = t;
-      emit('apogee', `Apogee at ${state.altitude.toFixed(1)} m`);
+      // The vertical speed changed sign inside the last substep: place the apex there, with the
+      // vertical speed taken as linear over the substep, so long coast steps do not blur it.
+      const h = t - prevT;
+      const f = prevRadialV / (prevRadialV - rv);
+      const after = (1 - f) * h;
+      const altApex = h > 0 ? state.altitude + (0.5 * (prevRadialV - rv) * after * after) / h : state.altitude;
+      apogeeT = h > 0 ? prevT + f * h : t;
+      emit('apogee', `Apogee at ${altApex.toFixed(1)} m`, apogeeT, altApex);
     }
     prevRadialV = rv;
 
+    // A hand-flown rocket has no automatic recovery: the pilot fires the parachute (deployChutes).
     if (
+      !handFlown &&
       ejectionT === undefined &&
       activeMotor &&
       ignited &&
@@ -918,7 +975,7 @@ export function createSim(
     }
 
     for (const run of chutes) {
-      if (run.deployedAt !== undefined) continue;
+      if (handFlown || run.deployedAt !== undefined) continue;
       const c = run.chute;
       let trigger: number | undefined;
       if (c.deployEvent === 'ejection') {
@@ -936,11 +993,6 @@ export function createSim(
         epoch++;
         run.deployedAt = t;
         state.chuteDeployed = true;
-        // A pilot can still have the engine lit when a parachute opens on its own: shut it.
-        if (handFlown && motorUnburnt()) {
-          engineCut = true;
-          state.phase = 'descent';
-        }
         if (first) {
           if (state.phase === 'coast') state.phase = 'descent';
           emit(
@@ -1023,6 +1075,10 @@ export function createSim(
       railV = railNext.v;
     }
     if (ignited) burnLag += h * (1 - throttle);
+    prevT = t0;
+    prevPos = state.pos;
+    prevVel = state.vel;
+    prevAltitude = state.altitude;
     state.t = t1;
     state.pos = cand.pos;
     state.vel = cand.vel;
@@ -1055,6 +1111,26 @@ export function createSim(
     emit('ignition', `Ignition: ${many}${lit.manufacturer} ${lit.designation}`);
   }
 
+  /** Coast step above HIGH_ALTITUDE: long while the body turns slowly, COAST_SUBSTEP when hand-flown. */
+  function coastSubstep(): number {
+    if ((handFlown && controls.rate) || state.dynamicPressure > COAST_MAX_Q) return COAST_SUBSTEP;
+    const w = state.omega;
+    const rate = Math.sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+    return clamp(rate > 0 ? COAST_TURN / rate : COAST_SUBSTEP_MAX, COAST_SUBSTEP, COAST_SUBSTEP_MAX);
+  }
+
+  /** True when at least one canopy is deployed and every deployed one has opened and settled. */
+  function canopySettled(): boolean {
+    let any = false;
+    for (let i = 0; i < chutes.length; i++) {
+      const d = chutes[i].deployedAt;
+      if (d === undefined) continue;
+      if (state.t < d + CHUTE_INFLATE_TIME + CANOPY_SETTLE_TIME) return false;
+      any = true;
+    }
+    return any;
+  }
+
   function step(dt: number, ctrl?: Controls): void {
     const next = ctrl ?? NO_CONTROLS;
     // The cached evaluation of the current state is stale once the commands change.
@@ -1068,8 +1144,10 @@ export function createSim(
     let remaining = dt;
     let n = 0;
     while (remaining > 1e-12 && !isDone && n < MAX_SUBSTEPS_PER_CALL) {
-      const coasting = state.altitude >= HIGH_ALTITUDE && state.thrust <= 0;
-      const h = Math.min(remaining, coasting ? COAST_SUBSTEP : MAX_SUBSTEP);
+      const unpowered = state.thrust <= 0;
+      const coasting = unpowered && state.altitude >= HIGH_ALTITUDE;
+      const hMax = coasting ? coastSubstep() : unpowered && canopySettled() ? CANOPY_SUBSTEP : MAX_SUBSTEP;
+      const h = Math.min(remaining, hMax);
       substep(h);
       remaining -= h;
       n++;

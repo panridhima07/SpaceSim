@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aeroProps, compressibilityFactor, dragBreakdown, transonicWaveCd } from './aero';
+import { aeroProps, cdAtReynolds, compressibilityFactor, coneWaveCd, dragBreakdown, finCpFraction, noseWaveCd } from './aero';
 import { massProps } from './massprops';
 import { FIXTURE_ROCKET, FIXTURE_MOTOR } from './fixture';
 
@@ -132,21 +132,98 @@ describe('external rings and fin cross-section drag', () => {
 });
 
 
-describe('transonicWaveCd', () => {
-  it('is exact 0 below drag-divergence Mach 0.8', () => {
-    expect(transonicWaveCd(0)).toBe(0);
-    expect(transonicWaveCd(0.5)).toBe(0);
-    expect(transonicWaveCd(0.8)).toBe(0);
+describe('nose wave drag', () => {
+  it('is exactly 0 below Mach 0.86, so subsonic drag is unchanged', () => {
+    for (const M of [0, 0.5, 0.8, 0.86]) expect(noseWaveCd(M, 'ogive', 0.1, 0.0125, 1)).toBe(0);
   });
 
-  it('rises across Mach 0.8..1.15 and decays supersonically', () => {
-    expect(transonicWaveCd(0.95)).toBeGreaterThan(0);
-    expect(transonicWaveCd(1.15)).toBeCloseTo(0.30, 6);
-    expect(transonicWaveCd(1.5)).toBeLessThan(transonicWaveCd(1.15));
-    expect(transonicWaveCd(2.0)).toBeLessThan(transonicWaveCd(1.5));
+  it('a cone follows Hoerner: sin(phi) at Mach 1, 2.1 sin^2 + 0.5 sin / beta from Mach 1.3', () => {
+    const s = Math.sin(Math.atan(0.2));
+    expect(coneWaveCd(1, s)).toBeCloseTo(s, 12);
+    expect(coneWaveCd(2, s)).toBeCloseTo(2.1 * s * s + (0.5 * s) / Math.sqrt(3), 12);
+    let prev = coneWaveCd(1, s);
+    for (let M = 1.001; M <= 2; M += 0.001) {
+      const v = coneWaveCd(M, s);
+      expect(Math.abs(v - prev)).toBeLessThan(0.002);
+      prev = v;
+    }
+  });
+
+  it('counts only the excess over the subsonic 0.8 sin^2 for a cone', () => {
+    const s = Math.sin(Math.atan(0.0125 / 0.1));
+    expect(noseWaveCd(1.2, 'conical', 0.1, 0.0125, 1)).toBeCloseTo(coneWaveCd(1.2, s) - 0.8 * s * s, 12);
+  });
+
+  it('is larger for blunter and shorter noses', () => {
+    const at = (shape: Parameters<typeof noseWaveCd>[1], L = 0.1, p = 1): number => noseWaveCd(1.2, shape, L, 0.0125, p);
+    expect(at('haack')).toBeLessThan(at('ogive'));
+    expect(at('ellipsoid')).toBeGreaterThan(at('ogive'));
+    expect(at('power', 0.1, 0.5)).toBeGreaterThan(at('power', 0.1, 0.75));
+    expect(at('ogive', 0.05)).toBeGreaterThan(at('ogive', 0.1));
+  });
+
+  it('raises drag through Mach 1 and has no step', () => {
+    let prev = dragBreakdown(FIXTURE_ROCKET, 0.5).total;
+    for (let M = 0.505; M <= 2.5; M += 0.005) {
+      const v = dragBreakdown(FIXTURE_ROCKET, M).total;
+      // Continuous but steep near Mach 0.9, where the rounded fin leading edge drag peaks.
+      expect(Math.abs(v - prev), `Mach ${M.toFixed(3)}`).toBeLessThan(0.05);
+      prev = v;
+    }
+    expect(dragBreakdown(FIXTURE_ROCKET, 1.1).pressure).toBeGreaterThan(dragBreakdown(FIXTURE_ROCKET, 0.5).pressure + 0.05);
   });
 });
 
+describe('fin lift and CP with Mach', () => {
+  it('uses Diederich below Mach 0.9: compressibility inside the root, not a 1/beta multiplier', () => {
+    const lo = aeroProps(FIXTURE_ROCKET, 0, 0).cnAlpha;
+    const at08 = aeroProps(FIXTURE_ROCKET, 0.8, 0).cnAlpha;
+    // A Prandtl-Glauert multiplier would give +67 %; the finite-wing slope of this fin rises ~10 %.
+    expect(at08 / lo).toBeGreaterThan(1.02);
+    expect(at08 / lo).toBeLessThan(1.2);
+  });
+
+  it('CNα and CP have no step from Mach 0.5 to 3', () => {
+    let prev = aeroProps(FIXTURE_ROCKET, 0.5, 0);
+    for (let M = 0.505; M <= 3; M += 0.005) {
+      const a = aeroProps(FIXTURE_ROCKET, M, 0);
+      expect(Math.abs(a.cnAlpha / prev.cnAlpha - 1), `CNα at Mach ${M.toFixed(3)}`).toBeLessThan(0.01);
+      expect(Math.abs(a.cpX - prev.cpX), `CP at Mach ${M.toFixed(3)}`).toBeLessThan(5e-4);
+      prev = a;
+    }
+  });
+
+  it('fin CP is the quarter MAC subsonic and moves aft supersonic, never past mid-chord', () => {
+    expect(finCpFraction(0.3, 0.04, 0.0015)).toBe(0.25);
+    expect(finCpFraction(2.5, 0.04, 0.0015)).toBeGreaterThan(0.3);
+    for (let M = 0; M <= 4; M += 0.05) {
+      const f = finCpFraction(M, 0.04, 0.0015);
+      expect(f).toBeGreaterThanOrEqual(0.25);
+      expect(f).toBeLessThanOrEqual(0.5);
+    }
+  });
+});
+
+describe('Reynolds number at altitude', () => {
+  it('leaves cd unchanged at the reference Reynolds number and raises friction higher up', () => {
+    const a = aeroProps(FIXTURE_ROCKET, 0.5, 0);
+    const v = 0.5 * 340.3;
+    // Reference air: kinematic viscosity 1.5e-5 m²/s.
+    const T = 288.15;
+    const mu = (1.458e-6 * T * Math.sqrt(T)) / (T + 110.4);
+    expect(cdAtReynolds(a, 0.5, v, mu / 1.5e-5, T, FIXTURE_ROCKET.length)).toBeCloseTo(a.cd, 4);
+    // 10 km (rho 0.414, 223 K) at Mach 0.05: the Reynolds number is 2.4 times lower and the
+    // smooth-turbulent friction higher. (At Mach 0.5 this painted rocket is roughness-limited,
+    // where friction does not depend on the Reynolds number.)
+    const slow = aeroProps(FIXTURE_ROCKET, 0.05, 0);
+    const high = cdAtReynolds(slow, 0.05, 0.05 * 299.5, 0.414, 223.25, FIXTURE_ROCKET.length);
+    expect(high).toBeGreaterThan(slow.cd * 1.01);
+    expect(high).toBeLessThan(slow.cd * 1.25);
+    expect(cdAtReynolds(a, 0.5, 0.5 * 299.5, 0.414, 223.25, FIXTURE_ROCKET.length)).toBeCloseTo(a.cd, 6);
+    // No friction information: cd passes through.
+    expect(cdAtReynolds({ ...a, cdFriction: undefined }, 0.5, 100, 0.4, 220, 1)).toBe(a.cd);
+  });
+});
 describe('fin compressibility factor', () => {
   it('follows Prandtl-Glauert below Mach 0.8 and 1/sqrt(M^2-1) above Mach 1.2', () => {
     expect(compressibilityFactor(0)).toBe(1);

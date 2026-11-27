@@ -2765,3 +2765,37 @@ body:has(.sfb-builder.sfb-mobile:not(.sfb-hidden) .sfb-b-snap-banner:not(.sfb-hi
     top: 112px;
   }
 }
+
+/* ---------- Phone: flying by hand is a first-class action in the bottom bar ---------- */
+
+.sfb-root.sfb-root.sfb-mobile .sfb-dock .sfb-btn-manual {
+  grid-column: 1 / -1;
+  min-height: 48px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--sfb-accent, #f5a65b);
+  border-color: var(--sfb-accent, #f5a65b);
+}
+
+.sfb-root.sfb-root.sfb-mobile .sfb-hud-fly {
+  display: none;
+}
+
+.sfb-root.sfb-root.sfb-mobile .sfb-replay {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 164px);
+}
+
+/* Landscape is short: the button joins the single row instead of adding one. */
+.sfb-root.sfb-root.sfb-mobile.sfb-landscape .sfb-dock {
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
+}
+
+.sfb-root.sfb-root.sfb-mobile.sfb-landscape .sfb-dock .sfb-btn-manual {
+  grid-column: auto;
+}
+
+.sfb-root.sfb-root.sfb-mobile.sfb-landscape .sfb-replay {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 100px);
+}

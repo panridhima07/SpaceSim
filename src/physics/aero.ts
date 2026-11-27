@@ -161,15 +161,51 @@ function finCountFactor(N: number): number {
  * 18 to 24 % low on all three. OpenRocket is the validation reference, so it is matched
  * here; src/validate/aeroOpenRocket.test.ts pins it.
  */
-function finCnAlphaIncompressible(f: FinSet, d: number): number {
+/** Below this Mach the subsonic fin lift formula is used, above CNA_SUPERSONIC the supersonic one. */
+const CNA_SUBSONIC = 0.9;
+const CNA_SUPERSONIC = 1.5;
+
+/** Cubic Hermite through (x0, y0) with slope m0 and (x1, y1) with slope m1, evaluated at x. */
+function hermite(x: number, x0: number, y0: number, m0: number, x1: number, y1: number, m1: number): number {
+  const h = x1 - x0;
+  const t = (x - x0) / h;
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return (2 * t3 - 3 * t2 + 1) * y0 + (t3 - 2 * t2 + t) * h * m0 + (-2 * t3 + 3 * t2) * y1 + (t3 - t2) * h * m1;
+}
+
+/**
+ * CNα of a fin set (per radian, referenced to the body frontal area) at Mach M, following
+ * OpenRocket (FinSetCalc), which is this project's validation reference:
+ * - M <= 0.9: Diederich's finite-wing slope with the compressibility inside the root,
+ *   2π s² / (1 + sqrt(1 + (1 - M²) X²)), X = s² / (A cosΓ) = 2 l / (Cr + Ct). It stays finite at
+ *   Mach 1, unlike a Prandtl-Glauert multiplier, which overstated a typical fin by 50 % at Mach 0.8.
+ * - M >= 1.5: linear supersonic theory per fin, A K1 with K1 = 2 / sqrt(M² - 1).
+ * - Between: a cubic matching both values and slopes.
+ * Body-fin interference Kfb is applied twice and the fin-count table once, as before (see the note
+ * on Kfb above). Checked against the stored flight data of OpenRocket's "Dual parachute deployment"
+ * example up to Mach 1.13 in src/validate/aeroOpenRocket.test.ts.
+ */
+function finCnAlpha(f: FinSet, d: number, M: number): number {
   const t = trapOf(f);
   const { Cr, Ct, s, m, rb } = t;
   const N = Math.max(0, f.count);
   if (!(s > 0) || !(Cr + Ct > 0) || !(d > 0) || N === 0) return 0;
   const l = Math.sqrt(s * s + (m + Ct / 2 - Cr / 2) ** 2);
   const Kfb = 1 + rb / (s + rb);
-  const denom = 1 + Math.sqrt(1 + (2 * l / (Cr + Ct)) ** 2);
-  return (Kfb * Kfb * (4 * N * (s / d) ** 2)) / denom * finCountFactor(N);
+  const X2 = (2 * l / (Cr + Ct)) ** 2;
+  const scale = Kfb * Kfb * finCountFactor(N);
+  const sub = (mach: number): number => (4 * N * (s / d) ** 2) / (1 + Math.sqrt(1 + (1 - mach * mach) * X2));
+  if (!(M > CNA_SUBSONIC)) return scale * sub(Math.max(0, M));
+  // Planform area of one fin; Aref = π d² / 4.
+  const area = f.finShape === 'freeform' ? finPlanform(f).area : ((t.Cr + t.Ct) / 2) * s;
+  const aRef = (PI * d * d) / 4;
+  const sup = (mach: number): number => (N * area) / (Math.sqrt(mach * mach - 1) * aRef);
+  if (M >= CNA_SUPERSONIC) return scale * sup(M);
+  const e = 1e-4;
+  const m0 = (sub(CNA_SUBSONIC) - sub(CNA_SUBSONIC - e)) / e;
+  const m1 = (sup(CNA_SUPERSONIC + e) - sup(CNA_SUPERSONIC)) / e;
+  return scale * hermite(M, CNA_SUBSONIC, sub(CNA_SUBSONIC), m0, CNA_SUPERSONIC, sup(CNA_SUPERSONIC), m1);
 }
 
 /** Body lift constant K in CN = K (A_planform / A_ref) sin²α (Galejs; OpenRocket uses 1.1). */
@@ -219,13 +255,33 @@ function bodyPlanform(rocket: RocketModel): { area: number; x: number } {
   return { area: 2 * rocket.maxRadius * rocket.length, x: rocket.length / 2 };
 }
 
-/** Fin CP station, from the body nose tip. */
-function finCpX(f: FinSet): number {
+/**
+ * Fin CP station from the body nose tip, at Mach M. Barrowman's subsonic CP is the quarter chord of
+ * the mean aerodynamic chord (MAC). Supersonic lift moves aft towards mid-chord; OpenRocket uses
+ * (AR β - 0.67) / (2 AR β - 1) of the MAC at Mach 2 and above (AR = 2 s² / A) and blends from the
+ * quarter chord at Mach 0.5, which is what is done here (cubic, flat at 0.5).
+ */
+function finCpX(f: FinSet, M = 0): number {
   const t = trapOf(f);
-  const { Cr, Ct, m } = t;
+  const { Cr, Ct, m, s } = t;
   if (!(Cr + Ct > 0)) return f.x + f.rootChord / 2;
-  const xp = (m / 3) * ((Cr + 2 * Ct) / (Cr + Ct)) + (1 / 6) * (Cr + Ct - (Cr * Ct) / (Cr + Ct));
-  return f.x + xp;
+  const mac = (2 / 3) * (Cr + Ct - (Cr * Ct) / (Cr + Ct));
+  const macLe = (m / 3) * ((Cr + 2 * Ct) / (Cr + Ct));
+  return f.x + macLe + finCpFraction(M, s, ((Cr + Ct) / 2) * s) * mac;
+}
+
+/** Fin CP as a fraction of the MAC behind its leading edge (0.25 subsonic). */
+export function finCpFraction(M: number, span: number, area: number): number {
+  if (!(M > 0.5) || !(span > 0) || !(area > 0)) return 0.25;
+  const ar = (2 * span * span) / area;
+  const sup = (mach: number): number => {
+    const x = ar * Math.sqrt(mach * mach - 1);
+    // Very low aspect ratios make the formula fall below the quarter chord; it is not used there.
+    return x > 1 ? Math.min(0.5, Math.max(0.25, (x - 0.67) / (2 * x - 1))) : 0.25;
+  };
+  if (M >= 2) return sup(M);
+  const e = 1e-4;
+  return hermite(M, 0.5, 0.25, 0, 2, sup(2), (sup(2 + e) - sup(2)) / e);
 }
 
 /**
@@ -296,21 +352,27 @@ function meanAerodynamicChord(f: FinSet): number {
   return (2 / 3) * Cr * (1 + lambda + lambda * lambda) / (1 + lambda);
 }
 
-/** Stagnation pressure ratio (1 + M²/4 + M⁴/40), valid for M < 1; held at M = 1 above. */
+/**
+ * Stagnation pressure over dynamic pressure (Niskanen 2009): 1 + M²/4 + M⁴/40 below Mach 1, and
+ * behind the normal shock above it, 1.84 - 0.76/M² + 0.166/M⁴ + 0.035/M⁶.
+ */
 function stagnationRatio(M: number): number {
-  const m = Math.min(M, 1);
-  return 1 + (m * m) / 4 + m ** 4 / 40;
+  if (M <= 1) return 1 + (M * M) / 4 + M ** 4 / 40;
+  const m2 = M * M;
+  return 1.84 - 0.76 / m2 + 0.166 / (m2 * m2) + 0.035 / (m2 * m2 * m2);
 }
 
 /**
- * Leading-edge pressure coefficient referenced to the fin frontal area t·s·N.
- * Square: blunt edge, 0.85 × stagnation ratio. Rounded and airfoil: rounded edge (Niskanen),
- * held at its M = 0.9 value above that.
+ * Leading-edge pressure coefficient referenced to the fin frontal area t·s·N (Niskanen 2009).
+ * Square: blunt edge, 0.85 × stagnation ratio. Rounded and airfoil: rounded edge,
+ * (1 - M²)^-0.417 - 1 to Mach 0.9, a straight line to Mach 1, and 1.214 - 0.502/M² + 0.1095/M⁴ above.
  */
 function finLeadingEdgeCd(M: number, section: NonNullable<FinSet['crossSection']>): number {
   if (section === 'square') return 0.85 * stagnationRatio(M);
-  const m = Math.min(M, 0.9);
-  return (1 - m * m) ** -0.417 - 1;
+  if (M < 0.9) return (1 - M * M) ** -0.417 - 1;
+  if (M < 1) return 1 - 1.785 * (M - 0.9);
+  const m2 = M * M;
+  return 1.214 - 0.502 / m2 + 0.1095 / (m2 * m2);
 }
 
 /**
@@ -367,6 +429,7 @@ export function dragBreakdown(rocket: RocketModel, mach: number): DragBreakdown 
           const half = Math.atan(c.baseRadius / c.length);
           pressureNose += n * 0.8 * Math.sin(half) ** 2 * (c.baseRadius / maxR) ** 2;
         }
+        pressureNose += n * noseWaveCd(M, c.shape, c.length, c.baseRadius, c.shapeParam) * (c.baseRadius / maxR) ** 2;
         if (c.x + c.length > aft.x) {
           aft.x = c.x + c.length;
           aft.r = c.baseRadius;
@@ -394,6 +457,10 @@ export function dragBreakdown(rocket: RocketModel, mach: number): DragBreakdown 
         const R1 = c.foreRadius;
         const R2 = c.aftRadius;
         wettedBody += n * PI * (R1 + R2) * Math.sqrt((R1 - R2) ** 2 + c.length ** 2);
+        if (R2 > R1 && c.length > 0) {
+          // A shoulder makes wave drag like the cone it is cut from, on its annulus.
+          pressureNose += n * noseWaveCd(M, 'conical', c.length, R2 - R1, 1) * ((R2 * R2 - R1 * R1) / (maxR * maxR));
+        }
         if (c.x + c.length > aft.x) {
           aft.x = c.x + c.length;
           aft.r = c.aftRadius;
@@ -450,7 +517,7 @@ export function dragBreakdown(rocket: RocketModel, mach: number): DragBreakdown 
   const cdBase0 = M < 1 ? 0.12 + 0.13 * M * M : 0.25 / Math.max(M, 1e-6);
   const base = (cdBase0 * aftArea) / A;
 
-  const pressure = pressureNose + finLE + protrusionPressure + transonicWaveCd(M);
+  const pressure = pressureNose + finLE + protrusionPressure;
   const total = friction + pressure + base;
   const ok = Number.isFinite(total) && total > 0;
   return {
@@ -463,21 +530,65 @@ export function dragBreakdown(rocket: RocketModel, mach: number): DragBreakdown 
   };
 }
 
+// ---------- Nose and shoulder wave drag ----------
+
+/** Wave drag starts rising here (drag-divergence Mach) and is fully developed at WAVE_M1. */
+const WAVE_M0 = 0.86;
+const WAVE_M1 = 1.1;
+
 /**
- * Transonic and supersonic wave-drag increment (referenced to body frontal area).
- * Uncalibrated placeholder with a typical magnitude (0.30 peak at Mach 1.15):
- * exact 0 below drag-divergence Mach 0.8 so subsonic results are unchanged,
- * smoothstep rise across Mach 0.8..1.15, and 1 / sqrt(M^2 - 1) decay above 1.15.
+ * Pressure drag of a cone with half angle φ (sin φ given), referenced to its base area, at
+ * Mach 1 and above (Hoerner; Niskanen 2009): sin φ at Mach 1, 2.1 sin²φ + 0.5 sin φ / sqrt(M² - 1)
+ * from Mach 1.3, a cubic in between. Below Mach 1 the Mach 1 value is returned.
  */
-export function transonicWaveCd(M: number): number {
-  if (!(M > 0.8)) return 0;
-  const peakCd = 0.30;
-  const mPeak = 1.15;
-  if (M < mPeak) {
-    const t = (M - 0.8) / (mPeak - 0.8);
-    return peakCd * t * t * (3 - 2 * t);
+export function coneWaveCd(M: number, sinPhi: number): number {
+  const s2 = sinPhi * sinPhi;
+  const sup = (m: number): number => 2.1 * s2 + (0.5 * sinPhi) / Math.sqrt(m * m - 1);
+  if (M >= 1.3) return sup(M);
+  if (!(M > 1)) return sinPhi;
+  const e = 1e-4;
+  return hermite(M, 1, sinPhi, 0, 1.3, sup(1.3), (sup(1.3 + e) - sup(1.3)) / e);
+}
+
+/**
+ * Transonic and supersonic drag of a nose shape relative to a cone of the same length and base
+ * (the cone itself follows Hoerner, coneWaveCd). Ogive 1.6 is fitted to OpenRocket's stored data
+ * for a fineness-5 tangent ogive (Dual parachute deployment, J570W flight to Mach 1.13). The others
+ * are set relative to the ogive from the published ranking of nose shapes near Mach 1 (Stoney,
+ * fineness 3: Haack, parabolic and 3/4-power noses below the ogive, half-power and ellipsoid
+ * noses above). They have no reference data in this project and are estimates.
+ */
+function noseWaveFactor(shape: NoseCone['shape'], param: number): number {
+  switch (shape) {
+    case 'conical': return 1;
+    case 'ogive': return 1.6;
+    case 'haack': return 1.2;
+    case 'parabolic': return 1.3;
+    case 'ellipsoid': return 2.4;
+    case 'power': {
+      const n = param > 0 ? param : 0.5;
+      if (n >= 1) return 1;
+      if (n >= 0.75) return 1.3 - 1.2 * (n - 0.75);
+      if (n >= 0.5) return 1.9 - 2.4 * (n - 0.5);
+      return Math.min(2.4, 1.9 + 2 * (0.5 - n));
+    }
   }
-  return peakCd * Math.sqrt((mPeak * mPeak - 1) / (M * M - 1));
+}
+
+/**
+ * Wave drag a nose adds above its subsonic pressure drag, referenced to the nose base area.
+ * It rises from Mach 0.86 to 1.1 (smoothstep, fitted to the same OpenRocket flight) towards the
+ * shape factor times the cone value. A cone's subsonic 0.8 sin²φ is counted separately, so only
+ * the excess is returned for it.
+ */
+export function noseWaveCd(M: number, shape: NoseCone['shape'], length: number, baseRadius: number, param: number): number {
+  if (!(M > WAVE_M0) || !(length > 0) || !(baseRadius > 0)) return 0;
+  const sinPhi = Math.sin(Math.atan(baseRadius / length));
+  const t = Math.min(1, (M - WAVE_M0) / (WAVE_M1 - WAVE_M0));
+  const rise = t * t * (3 - 2 * t);
+  const cone = coneWaveCd(M, sinPhi);
+  if (shape === 'conical') return rise * Math.max(0, cone - 0.8 * sinPhi * sinPhi);
+  return rise * noseWaveFactor(shape, param) * cone;
 }
 
 // ---------- Public ----------
@@ -499,8 +610,8 @@ export const aeroProps: AeroPropsFn = (rocket: RocketModel, mach: number, cgX: n
         comps.push({ cn: transitionCnAlpha(c, maxR), cp: transitionCpX(c) });
         break;
       case 'finset': {
-        const cnInc = finCnAlphaIncompressible(c, d);
-        comps.push({ cn: cnInc * compressibilityFactor(Math.max(0, mach)), cp: finCpX(c) });
+        const M = Math.max(0, mach);
+        comps.push({ cn: finCnAlpha(c, d, M), cp: finCpX(c, M) });
         break;
       }
       default:
@@ -547,15 +658,43 @@ export const aeroProps: AeroPropsFn = (rocket: RocketModel, mach: number, cgX: n
   }
 
   const body = bodyPlanform(rocket);
+  const drag = dragBreakdown(rocket, mach);
 
   return {
     refArea,
     refLength,
     cnAlpha,
     cpX,
-    cd: dragBreakdown(rocket, mach).total,
+    cd: drag.total,
     dampSum,
     bodyLift: refArea > 0 ? (BODY_LIFT_K * body.area) / refArea : 0,
     bodyLiftX: body.x,
+    cdFriction: drag.friction,
+    cfRef: drag.cf,
   };
 };
+
+/**
+ * Drag coefficient with the skin friction recomputed at the actual Reynolds number. aeroProps
+ * evaluates friction at a sea-level Reynolds number for the Mach number (it is cached by Mach
+ * alone); higher up the air is thinner and colder, the Reynolds number drops (2.4 times lower at
+ * 10 km for the same Mach) and turbulent friction rises. Viscosity from Sutherland's law.
+ */
+export function cdAtReynolds(
+  aero: AeroProps,
+  mach: number,
+  speed: number,
+  rho: number,
+  temperature: number,
+  length: number,
+): number {
+  const fr = aero.cdFriction;
+  const cf0 = aero.cfRef;
+  if (!(fr !== undefined && fr > 0) || !(cf0 !== undefined && cf0 > 0) || !(speed > 0) || !(rho > 0) || !(temperature > 0) || !(length > 0)) {
+    return aero.cd;
+  }
+  const mu = (1.458e-6 * temperature * Math.sqrt(temperature)) / (temperature + 110.4);
+  const cf = skinFriction((rho * speed * length) / mu, Math.max(0, mach), length);
+  const cd = aero.cd + fr * (cf / cf0 - 1);
+  return Number.isFinite(cd) && cd > 0 ? cd : aero.cd;
+}

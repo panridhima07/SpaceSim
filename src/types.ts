@@ -287,6 +287,10 @@ export interface AeroProps {
   /** Station the body lift acts at (body planform centroid), m from the nose tip.
    *  Absent: body lift acts at cpX. */
   bodyLiftX?: number;
+  /** Skin-friction part of cd, and the friction coefficient it was computed with (sea-level
+   *  Reynolds number). The sim rescales it to the Reynolds number at altitude (cdAtReynolds). */
+  cdFriction?: number;
+  cfRef?: number;
 }
 
 export type AtmosphereFn = (altitude: number) => Atmosphere;

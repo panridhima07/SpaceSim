@@ -16,9 +16,30 @@ describe('Chandrayaan-3 cruise', () => {
 
   it('flies every step of the mission in order', () => {
     expect(rec.events.map((e) => e.id)).toEqual(
-      ['inject', 'ebn1', 'ebn2', 'ebn3', 'ebn4', 'ebn5', 'tli', 'tcm', 'loi', 'lbn2', 'lbn3', 'lbn4', 'lbn5', 'sep', 'db1', 'db2', 'pdi'],
+      ['liftoff', 'inject', 'ebn1', 'ebn2', 'ebn3', 'ebn4', 'ebn5', 'tli', 'tcm', 'loi', 'lbn2', 'lbn3', 'lbn4', 'lbn5', 'sep', 'db1', 'db2', 'pdi'],
     );
     for (let i = 1; i < rec.n; i++) expect(rec.t[i]).toBeGreaterThanOrEqual(rec.t[i - 1]);
+  });
+
+  it('starts on the pad and carries the launch into the same record', () => {
+    // First sample: on the ground at Sriharikota, the whole launch vehicle, before release.
+    expect(Math.hypot(rec.r[0], rec.r[1], rec.r[2]) - 6371e3).toBeLessThan(25e3);
+    expect(Math.asin(rec.r[2] / Math.hypot(rec.r[0], rec.r[1], rec.r[2])) / DEG).toBeCloseTo(13.7, 0);
+    expect(rec.mass[0]).toBeGreaterThan(600e3);
+    expect(rec.t[0]).toBeLessThanOrEqual(ev('liftoff').t);
+    expect(ev('liftoff').t).toBeLessThan(rec.injectT);
+    expect(ev('inject').t).toBe(rec.injectT);
+    // The launch is sampled finely and joins the cruise without a jump in position.
+    let i = 0;
+    while (rec.t[i] < rec.injectT) i++;
+    expect(i).toBeGreaterThan(500);
+    expect(rec.t[i]).toBe(rec.injectT);
+    expect(rec.mass[i]).toBe(CH3.stackMass);
+    const gap = Math.hypot(rec.r[3 * i] - rec.r[3 * i - 3], rec.r[3 * i + 1] - rec.r[3 * i - 2], rec.r[3 * i + 2] - rec.r[3 * i - 1]);
+    expect(gap).toBeLessThan(1.5 * Math.hypot(rec.v[3 * i], rec.v[3 * i + 1], rec.v[3 * i + 2]) * (rec.t[i] - rec.t[i - 1]) + 1);
+    // Climbing all the way: the launcher is in orbit by the time it lets go.
+    expect(cruiseStateAt(rec, rec.injectT - 5).burning || cruiseStateAt(rec, rec.injectT - 60).burning).toBe(true);
+    expect(ev('inject').orbit!.peri).toBeGreaterThan(120e3);
   });
 
   it('reaches the published orbits after each Earth-bound burn', () => {
